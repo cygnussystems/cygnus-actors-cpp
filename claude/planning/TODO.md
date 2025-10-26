@@ -11,6 +11,8 @@
 - [x] Add queue metrics (high water marks)
 - [x] Add configurable queue threshold warnings
 - [x] Reorganize planning documents
+- [x] Add comprehensive test suite for ask pattern (9 tests, 19 assertions)
+- [x] Fix ask pattern compilation (friend template, include headers)
 
 ### In Progress 🔄
 - None currently
