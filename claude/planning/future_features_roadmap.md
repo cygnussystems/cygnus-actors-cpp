@@ -495,7 +495,7 @@ TEST_CASE("actor responds to ping") {
 
 1. **Supervision**: Should we support dynamic supervision trees, or only static hierarchies?
 2. **Ask pattern**: std::future, custom future, or callback-based?
-3. **Remote**: Build our own protocol or use existing (ZeroMQ, gRPC)?
+3. **Remote/IPC**: ✅ **DECISION: Use ZeroMQ** - Don't reinvent the wheel. ZeroMQ provides battle-tested messaging patterns (REQ/REP, PUB/SUB, DEALER/ROUTER) that map naturally to actor patterns. Mature, cross-platform, excellent performance.
 4. **Serialization**: Mandatory or optional? Code generation or reflection?
 5. **Memory model**: Shared-nothing strict, or allow shared state with locks?
 

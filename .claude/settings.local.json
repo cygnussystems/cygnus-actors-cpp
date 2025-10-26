@@ -48,7 +48,10 @@
       "Bash(git commit:*)",
       "Bash(\"cmake-build-debug\\unit_tests.exe\" \"[00_basic][system]\")",
       "Bash(\"cmake-build-debug\\unit_tests.exe\" \"[instance_id]\")",
-      "Bash(\"cmake-build-debug\\unit_tests.exe\" \"[stateful]\" --reporter compact)"
+      "Bash(\"cmake-build-debug\\unit_tests.exe\" \"[stateful]\" --reporter compact)",
+      "Bash(\"cmake-build-debug\\unit_tests.exe\" \"[ping_pong]\" --reporter compact)",
+      "Bash(git mv:*)",
+      "Bash(git rm:*)"
     ],
     "deny": [],
     "ask": []
