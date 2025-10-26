@@ -2,7 +2,7 @@
 
 // Level 0: Test actor naming functionality
 
-TEST_CASE("Actor has empty name by default", "[00_basic][naming]") {
+TEST_CASE("Actor has auto-generated name by default", "[00_basic][naming]") {
     class simple_actor : public cas::actor {
     protected:
         void on_start() override {}
@@ -10,7 +10,9 @@ TEST_CASE("Actor has empty name by default", "[00_basic][naming]") {
 
     auto actor_ref = cas::system::create<simple_actor>();
 
-    REQUIRE(actor_ref.name() == "");
+    // Name should be auto-generated as typename_id
+    REQUIRE(!actor_ref.name().empty());
+    REQUIRE(actor_ref.name().find("_1") != std::string::npos);  // Should end with _1 (first instance)
 
     TEST_CLEANUP();
 }

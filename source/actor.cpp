@@ -5,6 +5,17 @@
 #include "cas/message_base.h"
 #include "cas/ask_message.h"
 #include <iostream>
+#include <typeinfo>
+
+// Platform-specific demangling
+#ifdef _MSC_VER
+    // MSVC doesn't mangle names in typeid, just use as-is
+    #include <string>
+#else
+    // GCC/Clang need demangling
+    #include <cxxabi.h>
+    #include <memory>
+#endif
 
 namespace cas {
 
@@ -16,11 +27,46 @@ actor* actor::get_current_actor() {
 }
 
 const std::string& actor::name() const {
+    // If no custom name set, generate default: typename_id
+    if (m_name.empty()) {
+        // Cache the auto-generated name
+        const_cast<actor*>(this)->m_name = type_name() + "_" + std::to_string(m_instance_id);
+    }
     return m_name;
 }
 
 size_t actor::instance_id() const {
     return m_instance_id;
+}
+
+std::string actor::type_name() const {
+    const char* mangled = typeid(*this).name();
+
+#ifdef _MSC_VER
+    // MSVC: typeid().name() returns "class foo" or "struct foo"
+    // Strip the "class " or "struct " prefix
+    std::string full_name(mangled);
+    if (full_name.compare(0, 6, "class ") == 0) {
+        return full_name.substr(6);
+    } else if (full_name.compare(0, 7, "struct ") == 0) {
+        return full_name.substr(7);
+    }
+    return full_name;
+#else
+    // GCC/Clang: need to demangle
+    int status = 0;
+    std::unique_ptr<char, void(*)(void*)> demangled(
+        abi::__cxa_demangle(mangled, nullptr, nullptr, &status),
+        std::free
+    );
+
+    if (status == 0 && demangled) {
+        return std::string(demangled.get());
+    }
+
+    // Fallback: return mangled name
+    return std::string(mangled);
+#endif
 }
 
 void actor::set_self_ref(std::shared_ptr<actor> self) {

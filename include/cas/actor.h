@@ -153,8 +153,11 @@ public:
     actor(actor&&) = delete;
     actor& operator=(actor&&) = delete;
 
-    // Get actor name
+    // Get actor name (user-set or auto-generated type_id)
     const std::string& name() const;
+
+    // Get actor type name (demangled class name from RTTI)
+    std::string type_name() const;
 
     // Get current actor being processed (thread-local)
     static actor* get_current_actor();
