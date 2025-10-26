@@ -19,11 +19,16 @@
 ### Claude Working Directory
 - **`claude/`** - All Claude-specific files, scripts, and documentation
   - `build.bat` - Build script that sets up Visual Studio environment
-  - `planning/` - Design docs, bug reports, research notes
-    - `bug_message_sender.md` - Critical bug documentation
-    - `build_setup_paths.md` - Build system setup guide
+  - `planning/` - Active planning docs (design docs, bug tracking, roadmaps)
+    - `future_features_roadmap.md` - Comprehensive roadmap for future features
     - `CLAUDE.md` - Framework design notes and principles
+    - `bug_message_sender.md` - Bug tracking (resolved)
+    - `build_setup_paths.md` - Build system setup guide
     - Other planning documents...
+- **`planning/`** - Research documents (not active implementation plans)
+  - `automatic_handler_registration.md` - Research on automatic handler detection
+  - `automatic_message_handler_research.md` - Detailed research notes
+  - `statis_reflections.md` - Static reflection research
 
 ## Build System Information
 
@@ -111,7 +116,7 @@ CYGNUS_ACTOR_FRAMEWORK/
 │   └── system.cpp
 ├── tests/
 │   └── example_usage.cpp  # Example demonstrating framework
-├── planning/              # User planning directory (preserved)
+├── planning/              # Research documents (automatic handlers, static reflection)
 └── cmake-build-debug/     # Build output
     ├── CygnusActorFramework.lib
     └── example_usage.exe
@@ -119,12 +124,11 @@ CYGNUS_ACTOR_FRAMEWORK/
 
 ## Known Issues
 
-### Critical Bug: Message Sender
-- **Status**: 🔴 CRITICAL - Blocks all reply-based communication
-- **Problem**: `msg.sender` is set to target actor instead of source actor
-- **Impact**: Replies are sent back to the wrong actor, causing hangs
+### Message Sender Bug
+- **Status**: ✅ RESOLVED - Fixed using thread-local context
+- **Solution**: Uses `current_actor_context` to track sender
 - **Details**: See `claude/planning/bug_message_sender.md`
-- **Symptom**: Ping-pong example hangs after first exchange
+- **Tests**: All ping-pong tests passing
 
 ### Build System
 - **Status**: ✅ RESOLVED - Use `claude/build.bat`
@@ -148,8 +152,10 @@ CYGNUS_ACTOR_FRAMEWORK/
 - ✅ Graceful shutdown with message draining
 - ✅ Actor state tracking (running/stopping/stopped)
 - ✅ Actor registry for name-based lookup
-- 🔴 **BROKEN**: Message sender tracking (critical bug)
-- ⏳ RPC-style `invoke()` (registered but not implemented yet)
+- ✅ Message sender tracking (using thread-local context)
+- ✅ Actor identity (instance_id, type_name, auto-generated names)
+- ✅ Queue metrics (high water marks, configurable threshold warnings)
+- ⏳ RPC-style `invoke()` (infrastructure exists, API not implemented)
 
 ### API Examples
 
