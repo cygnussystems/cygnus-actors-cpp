@@ -112,31 +112,24 @@ void actor::enqueue_message(std::unique_ptr<message_base> msg) {
         return;  // Silently drop message
     }
 
-    size_t mailbox_size = 0;
-    size_t ask_size = 0;
+    // Lock-free enqueue
+    m_mailbox.enqueue(std::move(msg));
 
-    {
-        std::lock_guard<std::mutex> lock(m_mailbox_mutex);
-        m_mailbox.push(std::move(msg));
-        mailbox_size = m_mailbox.size();
+    // Get approximate size for metrics and threshold checking
+    size_t mailbox_size = m_mailbox.size_approx();
 
-        // Update high water mark
-        size_t current_hwm = m_mailbox_high_water_mark.load();
-        while (mailbox_size > current_hwm &&
-               !m_mailbox_high_water_mark.compare_exchange_weak(current_hwm, mailbox_size)) {
-            // Loop until we successfully update or find that someone else updated to a higher value
-        }
+    // Update high water mark
+    size_t current_hwm = m_mailbox_high_water_mark.load();
+    while (mailbox_size > current_hwm &&
+           !m_mailbox_high_water_mark.compare_exchange_weak(current_hwm, mailbox_size)) {
+        // Loop until we successfully update or find that someone else updated to a higher value
     }
 
-    // Check threshold (after releasing mailbox lock)
+    // Check threshold
     if (m_queue_threshold > 0 && !m_threshold_warning_sent.load()) {
-        // Get ask queue size
-        {
-            std::lock_guard<std::mutex> lock(m_ask_queue_mutex);
-            ask_size = m_ask_queue.size();
-        }
-
+        size_t ask_size = m_ask_queue.size_approx();
         size_t total = mailbox_size + ask_size;
+
         if (total > m_queue_threshold) {
             // Send warning once per threshold breach
             bool expected = false;
@@ -160,31 +153,24 @@ void actor::enqueue_ask_message(std::unique_ptr<message_base> msg) {
         return;  // Silently drop message
     }
 
-    size_t ask_size = 0;
-    size_t mailbox_size = 0;
+    // Lock-free enqueue
+    m_ask_queue.enqueue(std::move(msg));
 
-    {
-        std::lock_guard<std::mutex> lock(m_ask_queue_mutex);
-        m_ask_queue.push(std::move(msg));
-        ask_size = m_ask_queue.size();
+    // Get approximate sizes for metrics
+    size_t ask_size = m_ask_queue.size_approx();
 
-        // Update high water mark
-        size_t current_hwm = m_ask_queue_high_water_mark.load();
-        while (ask_size > current_hwm &&
-               !m_ask_queue_high_water_mark.compare_exchange_weak(current_hwm, ask_size)) {
-            // Loop until we successfully update or find that someone else updated to a higher value
-        }
+    // Update high water mark
+    size_t current_hwm = m_ask_queue_high_water_mark.load();
+    while (ask_size > current_hwm &&
+           !m_ask_queue_high_water_mark.compare_exchange_weak(current_hwm, ask_size)) {
+        // Loop until we successfully update or find that someone else updated to a higher value
     }
 
-    // Check threshold (after releasing ask queue lock)
+    // Check threshold
     if (m_queue_threshold > 0 && !m_threshold_warning_sent.load()) {
-        // Get mailbox size
-        {
-            std::lock_guard<std::mutex> lock(m_mailbox_mutex);
-            mailbox_size = m_mailbox.size();
-        }
-
+        size_t mailbox_size = m_mailbox.size_approx();
         size_t total = mailbox_size + ask_size;
+
         if (total > m_queue_threshold) {
             // Send warning once per threshold breach
             bool expected = false;
@@ -250,61 +236,35 @@ void actor::dispatch_message(message_base* msg) {
 void actor::process_next_message() {
     std::unique_ptr<message_base> msg;
 
-    // Check ask queue first (priority)
-    {
-        std::lock_guard<std::mutex> lock(m_ask_queue_mutex);
-        if (!m_ask_queue.empty()) {
-            msg = std::move(m_ask_queue.front());
-            m_ask_queue.pop();
-        }
-    }
-
-    // If no priority message, check regular mailbox
-    if (!msg) {
-        std::lock_guard<std::mutex> lock(m_mailbox_mutex);
-        if (!m_mailbox.empty()) {
-            msg = std::move(m_mailbox.front());
-            m_mailbox.pop();
-        }
-    }
-
-    // Dispatch if we got a message
-    if (msg) {
-        // Set thread-local current actor context
+    // Try ask queue first (priority)
+    if (m_ask_queue.try_dequeue(msg)) {
+        // Got a message from ask queue - dispatch it
         current_actor_context = this;
         dispatch_message(msg.get());
         current_actor_context = nullptr;
+        return;
     }
+
+    // If no ask message, try regular mailbox
+    if (m_mailbox.try_dequeue(msg)) {
+        // Got a message from mailbox - dispatch it
+        current_actor_context = this;
+        dispatch_message(msg.get());
+        current_actor_context = nullptr;
+        return;
+    }
+
+    // No messages in either queue
 }
 
 bool actor::has_messages() {
-    {
-        std::lock_guard<std::mutex> lock(m_ask_queue_mutex);
-        if (!m_ask_queue.empty()) {
-            return true;
-        }
-    }  // Release ask_queue lock before acquiring mailbox lock
-
-    {
-        std::lock_guard<std::mutex> lock(m_mailbox_mutex);
-        return !m_mailbox.empty();
-    }
+    // Approximate check - may have false positives/negatives but fast and lock-free
+    return m_ask_queue.size_approx() > 0 || m_mailbox.size_approx() > 0;
 }
 
 size_t actor::queue_size() const {
-    size_t total = 0;
-
-    {
-        std::lock_guard<std::mutex> lock(m_ask_queue_mutex);
-        total += m_ask_queue.size();
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(m_mailbox_mutex);
-        total += m_mailbox.size();
-    }
-
-    return total;
+    // Approximate sizes - lock-free and fast
+    return m_ask_queue.size_approx() + m_mailbox.size_approx();
 }
 
 actor_state actor::get_state() const {

@@ -3,8 +3,6 @@
 
 #include <string>
 #include <memory>
-#include <queue>
-#include <mutex>
 #include <unordered_map>
 #include <typeindex>
 #include <functional>
@@ -13,6 +11,7 @@
 #include <chrono>
 #include <set>
 #include "timer.h"
+#include "external/concurrentqueue.h"
 
 // Uncomment to enable debug logging
 // #define CAS_DEBUG_LOGGING
@@ -55,14 +54,13 @@ private:
 
     // Two queues for different message priorities
     // Regular mailbox: fire-and-forget messages (receive/push/enqueue)
-    // Multiple threads can SEND (write), but only assigned thread READS
-    std::queue<std::unique_ptr<message_base>> m_mailbox;
-    mutable std::mutex m_mailbox_mutex;  // Mutable for const methods like queue_size()
+    // Lock-free MPMC queue - multiple threads can send, assigned thread reads
+    moodycamel::ConcurrentQueue<std::unique_ptr<message_base>> m_mailbox;
 
     // Ask queue: priority request-response messages (ask)
     // Processed before regular mailbox to provide RPC-like semantics
-    std::queue<std::unique_ptr<message_base>> m_ask_queue;
-    mutable std::mutex m_ask_queue_mutex;  // Mutable for const methods like queue_size()
+    // Lock-free MPMC queue
+    moodycamel::ConcurrentQueue<std::unique_ptr<message_base>> m_ask_queue;
 
     // Message type -> handler function map
     std::unordered_map<std::type_index, std::function<void(message_base*)>> m_handlers;

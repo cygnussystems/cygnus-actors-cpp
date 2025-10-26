@@ -24,6 +24,10 @@
 - **stateful_actor**: Disabled due to ABI sensitivity issues with base class layout
   - Will revisit after core features stabilized
   - See: `planning/automatic_handler_registration.md` for potential solution
+- **Actor-to-actor ask() deadlock**: Disabled test case in `test_ask_basic.cpp`
+  - Blocking ask() from within actor message handlers can deadlock if both actors on same thread
+  - Need to either: (1) detect and prevent same-thread assignment, (2) use work-stealing, or (3) document limitation
+  - For now: recommend async messaging or fast_actor for inter-actor RPC
 
 ## Future Features 🔮
 
