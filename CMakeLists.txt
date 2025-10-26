@@ -77,6 +77,9 @@ if(BUILD_TESTS)
         # tests/04_advanced/test_stateful_actor.cpp  # Disabled: has ABI sensitivity issues with base class layout changes
         tests/04_advanced/test_fast_actor.cpp
         tests/04_advanced/test_inline_actor.cpp
+        # Level 5: Ask pattern (RPC-style)
+        tests/05_ask_pattern/test_ask_basic.cpp
+        tests/05_ask_pattern/test_ask_timeout.cpp
     )
 
     target_link_libraries(unit_tests

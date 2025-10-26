@@ -21,6 +21,7 @@ class actor_ref;
 class system;
 struct message_base;
 struct ask_request_base;  // For friend declaration
+template<typename ReturnType, typename OpTag, typename... Args> struct ask_request;  // For friend declaration
 
 // Actor lifecycle state
 enum class actor_state {
@@ -36,6 +37,7 @@ class actor {
     friend class system;
     // Allow ask requests to access handlers
     friend struct ask_request_base;
+    template<typename ReturnType, typename OpTag, typename... Args> friend struct ask_request;
 
 private:
     std::string m_name;
