@@ -1,0 +1,80 @@
+# CMake build directories
+cmake-build-*/
+build/
+out/
+
+# CMake cache and files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+CTestTestfile.cmake
+_deps/
+
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exp
+
+# IDE specific files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.VC.opendb
+
+# JetBrains CLion
+cmake-build-*/
+.idea/
+
+# Visual Studio
+.vs/
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.sln
+
+# Windows specific
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Temporary files
+*.swp
+*.swo
+*~
+*.tmp
+*.temp
+*.log
+
+# Test artifacts
+Testing/
+tests/Testing/
+
+# Package manager
+_deps/
+vcpkg_installed/
+
+# Compiled executables (keep source, ignore built binaries)
+example_usage
+simple_test
+unit_tests
+
+# Backup files
+*.bak
+*.orig
+
+# Build script artifacts
+build_simple.bat
