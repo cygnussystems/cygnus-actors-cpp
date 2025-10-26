@@ -110,6 +110,15 @@ void actor::enqueue_message(std::unique_ptr<message_base> msg) {
 
     std::lock_guard<std::mutex> lock(m_mailbox_mutex);
     m_mailbox.push(std::move(msg));
+
+    // Update high water mark
+    size_t current_size = m_mailbox.size();
+    size_t current_hwm = m_mailbox_high_water_mark.load();
+    while (current_size > current_hwm &&
+           !m_mailbox_high_water_mark.compare_exchange_weak(current_hwm, current_size)) {
+        // Loop until we successfully update or find that someone else updated to a higher value
+    }
+
     // TODO: Notify worker thread that message is available
 }
 
@@ -121,6 +130,15 @@ void actor::enqueue_ask_message(std::unique_ptr<message_base> msg) {
 
     std::lock_guard<std::mutex> lock(m_ask_queue_mutex);
     m_ask_queue.push(std::move(msg));
+
+    // Update high water mark
+    size_t current_size = m_ask_queue.size();
+    size_t current_hwm = m_ask_queue_high_water_mark.load();
+    while (current_size > current_hwm &&
+           !m_ask_queue_high_water_mark.compare_exchange_weak(current_hwm, current_size)) {
+        // Loop until we successfully update or find that someone else updated to a higher value
+    }
+
     // TODO: Notify worker thread that priority message is available
 }
 
@@ -235,6 +253,18 @@ actor_state actor::get_state() const {
 
 void actor::set_state(actor_state new_state) {
     m_state.store(new_state);
+}
+
+size_t actor::mailbox_high_water_mark() const {
+    return m_mailbox_high_water_mark.load();
+}
+
+size_t actor::ask_queue_high_water_mark() const {
+    return m_ask_queue_high_water_mark.load();
+}
+
+size_t actor::total_high_water_mark() const {
+    return m_mailbox_high_water_mark.load() + m_ask_queue_high_water_mark.load();
 }
 
 } // namespace cas

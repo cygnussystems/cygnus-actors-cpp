@@ -1,10 +1,16 @@
 # Bug: Message Sender Set to Wrong Actor
 
 ## Status
-🔴 **CRITICAL BUG** - Blocks all reply-based actor communication
+✅ **RESOLVED** - Fixed using thread-local current_actor_context
 
 ## Discovery Date
 2025-10-24
+
+## Resolution Date
+2025-10-26
+
+## Verification Date
+2025-10-26 - Confirmed fix working, all ping-pong tests passing
 
 ## Summary
 The `msg.sender` field is incorrectly set to the **target actor** instead of the **source actor** when sending messages. This causes reply messages to be sent back to the wrong actor.

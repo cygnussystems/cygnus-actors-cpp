@@ -70,6 +70,10 @@ private:
     // Placed at end with explicit alignment to minimize layout impact
     alignas(8) size_t m_instance_id = 0;
 
+    // Queue metrics - track high water marks
+    std::atomic<size_t> m_mailbox_high_water_mark{0};
+    std::atomic<size_t> m_ask_queue_high_water_mark{0};
+
 protected:
     // Lifecycle hooks - override these
     // on_start() is required - use it to register message handlers and initialize state
@@ -200,6 +204,11 @@ public:
 
     // Internal: set state (called by system during shutdown)
     void set_state(actor_state new_state);
+
+    // Queue metrics - get high water marks
+    size_t mailbox_high_water_mark() const;
+    size_t ask_queue_high_water_mark() const;
+    size_t total_high_water_mark() const;
 };
 
 // Thread-local storage for current actor being processed (defined in actor.cpp)
