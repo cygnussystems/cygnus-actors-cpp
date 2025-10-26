@@ -327,4 +327,16 @@ size_t actor::total_high_water_mark() const {
     return m_mailbox_high_water_mark.load() + m_ask_queue_high_water_mark.load();
 }
 
+void actor::cancel_timer(timer_id id) {
+    if (id == INVALID_TIMER_ID) {
+        return;  // No-op for invalid ID
+    }
+
+    // Remove from our tracking set
+    m_active_timers.erase(id);
+
+    // Cancel in system
+    system::cancel_timer_internal(id);
+}
+
 } // namespace cas

@@ -58,6 +58,9 @@ void system::start() {
     // Initialize per-thread actor lists
     inst.m_actors_per_thread.resize(thread_count);
 
+    // Start timer manager
+    inst.m_timer_manager.start();
+
     // Start all pooled actors (call on_start)
     {
         std::lock_guard<std::mutex> lock(inst.m_actors_mutex);
@@ -193,6 +196,12 @@ void system::shutdown(const shutdown_config& config) {
 void system::wait_for_shutdown() {
     auto& inst = instance();
 
+    // Stop timer manager
+    inst.m_timer_manager.stop();
+
+    // Set m_running to false now that timer manager is stopped
+    inst.m_running = false;
+
     // Wait for all pooled actor threads to finish
     for (auto& thread : inst.m_thread_pool) {
         if (thread.joinable()) {
@@ -220,6 +229,9 @@ void system::wait_for_shutdown() {
         std::lock_guard<std::mutex> lock(inst.m_actors_mutex);
         for (auto& thread_actors : inst.m_actors_per_thread) {
             for (auto& actor_ptr : thread_actors) {
+                // Cancel any active timers for this actor
+                cancel_actor_timers(actor_ptr.get());
+
                 // Set actor context (though on_stop shouldn't send messages)
                 current_actor_context = actor_ptr.get();
                 actor_ptr->on_stop();
@@ -229,7 +241,7 @@ void system::wait_for_shutdown() {
         }
     }
 
-    inst.m_running = false;
+    // Note: m_running was already set to false at the start of this function
 }
 
 void system::reset() {
@@ -381,5 +393,43 @@ void system::worker_thread(size_t thread_id) {
     std::cout << "[WORKER-" << thread_id << "] Thread stopping\n" << std::flush;
 #endif
 }
+
+timer_id system::schedule_timer(actor* target, std::unique_ptr<message_base> msg,
+                                std::function<std::unique_ptr<message_base>()> copy_func,
+                                std::chrono::milliseconds delay,
+                                std::chrono::milliseconds interval) {
+    auto& inst = instance();
+
+    // Create callback that delivers message to target actor
+    auto callback = [target](timer_id, std::unique_ptr<message_base> fired_msg) {
+        target->enqueue_message(std::move(fired_msg));
+    };
+
+    // Delegate to timer_manager
+    return inst.m_timer_manager.schedule(
+        std::move(msg),
+        std::move(copy_func),
+        delay,
+        interval,
+        std::move(callback)
+    );
+}
+
+void system::cancel_timer_internal(timer_id id) {
+    auto& inst = instance();
+    inst.m_timer_manager.cancel(id);
+}
+
+void system::cancel_actor_timers(actor* target) {
+    auto& inst = instance();
+
+    // Cancel all timers that belong to this actor
+    // The actor tracks its own timer IDs in m_active_timers
+    for (timer_id id : target->m_active_timers) {
+        inst.m_timer_manager.cancel(id);
+    }
+    target->m_active_timers.clear();
+}
+
 
 } // namespace cas

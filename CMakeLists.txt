@@ -17,6 +17,7 @@ set(SOURCES
     source/system.cpp
     source/stateful_actor.cpp
     source/fast_actor.cpp
+    source/timer_manager.cpp
 )
 
 # Create library
@@ -80,6 +81,12 @@ if(BUILD_TESTS)
         # Level 5: Ask pattern (RPC-style)
         tests/05_ask_pattern/test_ask_basic.cpp
         tests/05_ask_pattern/test_ask_timeout.cpp
+        # Level 6: Timers
+        tests/06_timers/test_timer_basic.cpp
+        tests/06_timers/test_timer_periodic.cpp
+        tests/06_timers/test_timer_lifecycle.cpp
+        # Standalone timer manager tests (no actor system dependency)
+        tests/test_timer_manager_standalone.cpp
     )
 
     target_link_libraries(unit_tests

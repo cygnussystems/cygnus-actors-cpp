@@ -13,6 +13,7 @@
 #include "actor_registry.h"
 #include "system.h"
 #include "ask_message.h"
+#include "timer.h"
 
 // Main namespace: cas (Cygnus Actor System)
 namespace cas {

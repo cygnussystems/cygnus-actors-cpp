@@ -7,12 +7,17 @@
 #include <atomic>
 #include <mutex>
 #include <unordered_map>
+#include <queue>
+#include <condition_variable>
+#include "timer.h"
+#include "timer_manager.h"
 
 namespace cas {
 
 // Forward declarations
 class actor;
 class actor_ref;
+struct scheduled_timer;
 
 // Threading model for actors
 enum class threading_model {
@@ -65,6 +70,9 @@ private:
     // Shutdown log - warnings/errors during shutdown
     std::vector<std::string> m_shutdown_log;
     std::mutex m_shutdown_log_mutex;
+
+    // Timer management
+    timer_manager m_timer_manager;
 
     // Singleton instance
     static system& instance();
@@ -125,6 +133,18 @@ public:
 
     // Internal: get next unique message ID
     static uint64_t next_message_id();
+
+    // Internal: Timer management (called by actor::schedule_once/periodic)
+    static timer_id schedule_timer(actor* target, std::unique_ptr<message_base> msg,
+                                   std::function<std::unique_ptr<message_base>()> copy_func,
+                                   std::chrono::milliseconds delay,
+                                   std::chrono::milliseconds interval = std::chrono::milliseconds(0));
+
+    // Internal: Cancel a timer (called by actor::cancel_timer)
+    static void cancel_timer_internal(timer_id id);
+
+    // Internal: Cancel all timers for an actor (called on actor stop)
+    static void cancel_actor_timers(actor* target);
 };
 
 // Template implementations (must be in header)

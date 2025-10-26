@@ -10,6 +10,9 @@
 #include <functional>
 #include <atomic>
 #include <iostream>
+#include <chrono>
+#include <set>
+#include "timer.h"
 
 // Uncomment to enable debug logging
 // #define CAS_DEBUG_LOGGING
@@ -71,6 +74,9 @@ private:
     // Unique instance ID (assigned by system during registration)
     // Placed at end with explicit alignment to minimize layout impact
     alignas(8) size_t m_instance_id = 0;
+
+    // Active timer IDs for this actor (for lifecycle management)
+    std::set<timer_id> m_active_timers;
 
     // Queue metrics - track high water marks
     std::atomic<size_t> m_mailbox_high_water_mark{0};
@@ -148,6 +154,22 @@ protected:
         };
     }
 
+    // Timer API: Schedule messages to be sent in the future
+
+    // Schedule a message to be sent once after a delay
+    // Returns a timer_id that can be used to cancel the timer
+    template<typename MessageType>
+    timer_id schedule_once(std::chrono::milliseconds delay, MessageType msg);
+
+    // Schedule a message to be sent repeatedly at intervals
+    // Returns a timer_id that can be used to cancel the timer
+    template<typename MessageType>
+    timer_id schedule_periodic(std::chrono::milliseconds interval, MessageType msg);
+
+    // Cancel a scheduled timer
+    // Safe to call with already-fired or cancelled timers (no-op)
+    void cancel_timer(timer_id id);
+
     // Set the actor's name (typically called in on_start)
     // Also registers with actor_registry for name-based lookup
     void set_name(const std::string& name);
@@ -224,6 +246,57 @@ public:
 
 // Thread-local storage for current actor being processed (defined in actor.cpp)
 extern thread_local actor* current_actor_context;
+
+// Forward declare system for template implementations
+class system;
+
+// Template implementations for timer methods
+
+template<typename MessageType>
+timer_id actor::schedule_once(std::chrono::milliseconds delay, MessageType msg) {
+    // Verify message is copy-constructible at compile time
+    static_assert(std::is_copy_constructible_v<MessageType>,
+                  "Timer messages must be copy-constructible");
+
+    // Clone the message to ensure proper ownership
+    auto msg_ptr = std::make_unique<MessageType>(msg);
+
+    // Create copy function (captures a copy of the message)
+    auto copier = [msg]() -> std::unique_ptr<message_base> {
+        return std::make_unique<MessageType>(msg);
+    };
+
+    // Schedule with system
+    timer_id id = system::schedule_timer(this, std::move(msg_ptr), std::move(copier), delay);
+
+    // Track this timer
+    m_active_timers.insert(id);
+
+    return id;
+}
+
+template<typename MessageType>
+timer_id actor::schedule_periodic(std::chrono::milliseconds interval, MessageType msg) {
+    // Verify message is copy-constructible at compile time
+    static_assert(std::is_copy_constructible_v<MessageType>,
+                  "Timer messages must be copy-constructible");
+
+    // Clone the message to ensure proper ownership
+    auto msg_ptr = std::make_unique<MessageType>(msg);
+
+    // Create copy function (captures a copy of the message)
+    auto copier = [msg]() -> std::unique_ptr<message_base> {
+        return std::make_unique<MessageType>(msg);
+    };
+
+    // Schedule with system (interval parameter makes it periodic)
+    timer_id id = system::schedule_timer(this, std::move(msg_ptr), std::move(copier), interval, interval);
+
+    // Track this timer
+    m_active_timers.insert(id);
+
+    return id;
+}
 
 } // namespace cas
 
