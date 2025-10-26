@@ -81,3 +81,28 @@ TEST_CASE("System starts and stops cleanly", "[00_basic][system]") {
 
     TEST_CLEANUP();
 }
+
+TEST_CASE("Minimal test - instance_id member", "[00_basic][instance_id]") {
+    class minimal_actor : public cas::actor {
+    protected:
+        void on_start() override {
+            // Just call instance_id() to verify it works
+            size_t id = instance_id();
+            (void)id; // Suppress unused warning
+        }
+    };
+
+    // Just create one actor
+    auto actor = cas::system::create<minimal_actor>();
+    REQUIRE(actor.is_valid());
+
+    // Start system - this is where the crash happens
+    cas::system::start();
+
+    wait_ms(10);
+
+    cas::system::shutdown();
+    cas::system::wait_for_shutdown();
+
+    TEST_CLEANUP();
+}

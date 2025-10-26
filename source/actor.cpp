@@ -19,6 +19,10 @@ const std::string& actor::name() const {
     return m_name;
 }
 
+size_t actor::instance_id() const {
+    return system::get_instance_id(const_cast<actor*>(this));
+}
+
 void actor::set_self_ref(std::shared_ptr<actor> self) {
     m_self_ref = self;
 }

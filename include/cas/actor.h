@@ -143,15 +143,20 @@ public:
     actor() = default;
     virtual ~actor() = default;
 
-    // Non-copyable
+    // Non-copyable, non-movable
     actor(const actor&) = delete;
     actor& operator=(const actor&) = delete;
+    actor(actor&&) = delete;
+    actor& operator=(actor&&) = delete;
 
     // Get actor name
     const std::string& name() const;
 
     // Get current actor being processed (thread-local)
     static actor* get_current_actor();
+
+    // Get unique instance ID (looks up in system registry)
+    size_t instance_id() const;
 
     // Internal: set self reference (called by framework)
     void set_self_ref(std::shared_ptr<actor> self);
