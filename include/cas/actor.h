@@ -66,6 +66,10 @@ private:
     // Maps operation tag type to a handler that processes args and returns result
     std::unordered_map<std::type_index, std::function<void*(void*)>> m_ask_handlers;
 
+    // Unique instance ID (assigned by system during registration)
+    // Placed at end with explicit alignment to minimize layout impact
+    alignas(8) size_t m_instance_id = 0;
+
 protected:
     // Lifecycle hooks - override these
     // on_start() is required - use it to register message handlers and initialize state
@@ -155,7 +159,7 @@ public:
     // Get current actor being processed (thread-local)
     static actor* get_current_actor();
 
-    // Get unique instance ID (looks up in system registry)
+    // Get unique instance ID (assigned during actor creation)
     size_t instance_id() const;
 
     // Internal: set self reference (called by framework)

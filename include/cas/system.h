@@ -58,10 +58,8 @@ private:
     // Message ID counter (globally unique across all messages)
     std::atomic<uint64_t> m_next_message_id{1};  // Start at 1, 0 means "no ID"
 
-    // Instance ID tracking (external to avoid ABI layout issues)
+    // Instance ID counter (globally unique across all actors)
     std::atomic<size_t> m_next_instance_id{1};  // Start at 1, 0 means "unassigned"
-    std::unordered_map<actor*, size_t> m_actor_instance_ids;
-    std::mutex m_instance_id_mutex;
 
     // Shutdown log - warnings/errors during shutdown
     std::vector<std::string> m_shutdown_log;
@@ -126,9 +124,6 @@ public:
 
     // Internal: get next unique message ID
     static uint64_t next_message_id();
-
-    // Internal: get instance ID for an actor (returns 0 if not found)
-    static size_t get_instance_id(actor* actor_ptr);
 };
 
 // Template implementations (must be in header)

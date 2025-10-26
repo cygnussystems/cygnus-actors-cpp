@@ -255,11 +255,8 @@ void system::reset() {
     // Clear actor registry
     actor_registry::clear();
 
-    // Clear instance ID map
-    {
-        std::lock_guard<std::mutex> lock(inst.m_instance_id_mutex);
-        inst.m_actor_instance_ids.clear();
-    }
+    // Reset instance ID counter
+    inst.m_next_instance_id.store(1);
 
     // Reset thread assignment counter
     inst.m_next_thread_assignment.store(0);
@@ -305,12 +302,8 @@ std::vector<std::string> system::get_shutdown_log() {
 void system::register_actor(std::shared_ptr<actor> actor_ptr) {
     auto& inst = instance();
 
-    // Assign unique instance ID
-    {
-        size_t new_id = inst.m_next_instance_id.fetch_add(1);
-        std::lock_guard<std::mutex> lock(inst.m_instance_id_mutex);
-        inst.m_actor_instance_ids[actor_ptr.get()] = new_id;
-    }
+    // Assign unique instance ID (do this FIRST, before any virtual calls)
+    actor_ptr->m_instance_id = inst.m_next_instance_id.fetch_add(1);
 
     // Set the actor's self reference
     actor_ptr->set_self_ref(actor_ptr);
@@ -346,22 +339,6 @@ system* system::get_instance() {
 
 uint64_t system::next_message_id() {
     return instance().m_next_message_id.fetch_add(1);
-}
-
-size_t system::get_instance_id(actor* actor_ptr) {
-    if (!actor_ptr) {
-        return 0;
-    }
-
-    auto& inst = instance();
-    std::lock_guard<std::mutex> lock(inst.m_instance_id_mutex);
-
-    auto it = inst.m_actor_instance_ids.find(actor_ptr);
-    if (it != inst.m_actor_instance_ids.end()) {
-        return it->second;
-    }
-
-    return 0;  // Not found
 }
 
 void system::worker_thread(size_t thread_id) {
