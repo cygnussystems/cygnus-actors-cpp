@@ -23,6 +23,7 @@ enum class threading_model {
 // Configuration for the actor system
 struct system_config {
     size_t thread_pool_size = 0;  // 0 = auto (use hardware concurrency)
+    size_t queue_threshold = 1000;  // Warn if total queue size exceeds this (0 = disabled)
 };
 
 // Configuration for shutdown behavior

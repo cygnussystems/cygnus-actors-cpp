@@ -308,6 +308,9 @@ void system::register_actor(std::shared_ptr<actor> actor_ptr) {
     // Set the actor's self reference
     actor_ptr->set_self_ref(actor_ptr);
 
+    // Set queue threshold from system config
+    actor_ptr->set_queue_threshold(inst.m_config.queue_threshold);
+
     // Check if this is a fast actor
     fast_actor* fast_ptr = dynamic_cast<fast_actor*>(actor_ptr.get());
     if (fast_ptr) {

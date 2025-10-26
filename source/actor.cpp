@@ -81,6 +81,10 @@ size_t actor::get_thread_affinity() const {
     return m_assigned_thread_id;
 }
 
+void actor::set_queue_threshold(size_t threshold) {
+    m_queue_threshold = threshold;
+}
+
 void actor::set_name(const std::string& name) {
     m_name = name;
 
@@ -108,15 +112,43 @@ void actor::enqueue_message(std::unique_ptr<message_base> msg) {
         return;  // Silently drop message
     }
 
-    std::lock_guard<std::mutex> lock(m_mailbox_mutex);
-    m_mailbox.push(std::move(msg));
+    size_t mailbox_size = 0;
+    size_t ask_size = 0;
 
-    // Update high water mark
-    size_t current_size = m_mailbox.size();
-    size_t current_hwm = m_mailbox_high_water_mark.load();
-    while (current_size > current_hwm &&
-           !m_mailbox_high_water_mark.compare_exchange_weak(current_hwm, current_size)) {
-        // Loop until we successfully update or find that someone else updated to a higher value
+    {
+        std::lock_guard<std::mutex> lock(m_mailbox_mutex);
+        m_mailbox.push(std::move(msg));
+        mailbox_size = m_mailbox.size();
+
+        // Update high water mark
+        size_t current_hwm = m_mailbox_high_water_mark.load();
+        while (mailbox_size > current_hwm &&
+               !m_mailbox_high_water_mark.compare_exchange_weak(current_hwm, mailbox_size)) {
+            // Loop until we successfully update or find that someone else updated to a higher value
+        }
+    }
+
+    // Check threshold (after releasing mailbox lock)
+    if (m_queue_threshold > 0 && !m_threshold_warning_sent.load()) {
+        // Get ask queue size
+        {
+            std::lock_guard<std::mutex> lock(m_ask_queue_mutex);
+            ask_size = m_ask_queue.size();
+        }
+
+        size_t total = mailbox_size + ask_size;
+        if (total > m_queue_threshold) {
+            // Send warning once per threshold breach
+            bool expected = false;
+            if (m_threshold_warning_sent.compare_exchange_strong(expected, true)) {
+                // TODO: Send queue_threshold_warning message to system
+                // For now, just log it
+#ifdef CAS_DEBUG_LOGGING
+                std::cout << "[QUEUE WARNING] Actor " << name() << " exceeded threshold: "
+                          << total << " > " << m_queue_threshold << "\n" << std::flush;
+#endif
+            }
+        }
     }
 
     // TODO: Notify worker thread that message is available
@@ -128,15 +160,43 @@ void actor::enqueue_ask_message(std::unique_ptr<message_base> msg) {
         return;  // Silently drop message
     }
 
-    std::lock_guard<std::mutex> lock(m_ask_queue_mutex);
-    m_ask_queue.push(std::move(msg));
+    size_t ask_size = 0;
+    size_t mailbox_size = 0;
 
-    // Update high water mark
-    size_t current_size = m_ask_queue.size();
-    size_t current_hwm = m_ask_queue_high_water_mark.load();
-    while (current_size > current_hwm &&
-           !m_ask_queue_high_water_mark.compare_exchange_weak(current_hwm, current_size)) {
-        // Loop until we successfully update or find that someone else updated to a higher value
+    {
+        std::lock_guard<std::mutex> lock(m_ask_queue_mutex);
+        m_ask_queue.push(std::move(msg));
+        ask_size = m_ask_queue.size();
+
+        // Update high water mark
+        size_t current_hwm = m_ask_queue_high_water_mark.load();
+        while (ask_size > current_hwm &&
+               !m_ask_queue_high_water_mark.compare_exchange_weak(current_hwm, ask_size)) {
+            // Loop until we successfully update or find that someone else updated to a higher value
+        }
+    }
+
+    // Check threshold (after releasing ask queue lock)
+    if (m_queue_threshold > 0 && !m_threshold_warning_sent.load()) {
+        // Get mailbox size
+        {
+            std::lock_guard<std::mutex> lock(m_mailbox_mutex);
+            mailbox_size = m_mailbox.size();
+        }
+
+        size_t total = mailbox_size + ask_size;
+        if (total > m_queue_threshold) {
+            // Send warning once per threshold breach
+            bool expected = false;
+            if (m_threshold_warning_sent.compare_exchange_strong(expected, true)) {
+                // TODO: Send queue_threshold_warning message to system
+                // For now, just log it
+#ifdef CAS_DEBUG_LOGGING
+                std::cout << "[QUEUE WARNING] Actor " << name() << " exceeded threshold: "
+                          << total << " > " << m_queue_threshold << "\n" << std::flush;
+#endif
+            }
+        }
     }
 
     // TODO: Notify worker thread that priority message is available

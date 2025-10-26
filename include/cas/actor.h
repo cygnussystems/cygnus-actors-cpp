@@ -74,6 +74,12 @@ private:
     std::atomic<size_t> m_mailbox_high_water_mark{0};
     std::atomic<size_t> m_ask_queue_high_water_mark{0};
 
+    // Queue threshold - warn if total queue exceeds this (0 = disabled)
+    size_t m_queue_threshold = 0;
+
+    // Track if we've already warned about queue threshold to avoid spam
+    std::atomic<bool> m_threshold_warning_sent{false};
+
 protected:
     // Lifecycle hooks - override these
     // on_start() is required - use it to register message handlers and initialize state
@@ -177,6 +183,9 @@ public:
 
     // Internal: get thread affinity
     size_t get_thread_affinity() const;
+
+    // Internal: set queue threshold (called by framework)
+    void set_queue_threshold(size_t threshold);
 
     // Get an actor_ref to this actor
     actor_ref self();

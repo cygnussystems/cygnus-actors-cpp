@@ -19,6 +19,17 @@ struct message_base {
 // Actors receive this and should call on_shutdown() and stop accepting external messages
 struct system_shutdown : public message_base {};
 
+// System message sent when an actor's queue exceeds threshold
+// Allows system or monitoring actors to react to queue buildup
+struct queue_threshold_warning : public message_base {
+    std::string actor_name;
+    size_t actor_instance_id = 0;
+    size_t mailbox_size = 0;
+    size_t ask_queue_size = 0;
+    size_t total_size = 0;
+    size_t threshold = 0;
+};
+
 } // namespace cas
 
 #endif // CAS_MESSAGE_BASE_H
