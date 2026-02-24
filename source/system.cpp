@@ -79,6 +79,12 @@ void system::start() {
         inst.m_thread_pool.emplace_back(&system::worker_thread, &inst, i);
     }
 
+    // Start ask thread pool (dedicated RPC threads)
+    size_t ask_thread_count = inst.m_config.ask_thread_pool_size;
+    for (size_t i = 0; i < ask_thread_count; ++i) {
+        inst.m_ask_thread_pool.emplace_back(&system::ask_worker_thread, &inst);
+    }
+
     // Start all fast actors with dedicated threads
     {
         std::lock_guard<std::mutex> lock(inst.m_fast_actors_mutex);
@@ -209,6 +215,14 @@ void system::wait_for_shutdown() {
         }
     }
     inst.m_thread_pool.clear();
+
+    // Wait for all ask threads to finish
+    for (auto& thread : inst.m_ask_thread_pool) {
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+    inst.m_ask_thread_pool.clear();
 
     // Wait for all fast actor threads to finish
     // Fast actors call their own on_stop() in their dedicated threads
@@ -394,6 +408,34 @@ void system::worker_thread(size_t thread_id) {
 #endif
 }
 
+void system::ask_worker_thread() {
+    // Ask worker threads process ask requests from the global queue
+#ifdef CAS_DEBUG_LOGGING
+    std::cout << "[ASK-WORKER] Thread started\n" << std::flush;
+#endif
+
+    while (!m_shutdown_requested) {
+        ask_request_envelope envelope;
+
+        // Try to dequeue an ask request
+        if (m_global_ask_queue.try_dequeue(envelope)) {
+#ifdef CAS_DEBUG_LOGGING
+            std::cout << "[ASK-WORKER] Processing ask request\n" << std::flush;
+#endif
+            // Process the ask request on the target actor
+            // Note: We're calling dispatch directly, NOT through the regular message queue
+            envelope.target->dispatch_message(envelope.request.get());
+        } else {
+            // No work - sleep briefly
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+
+#ifdef CAS_DEBUG_LOGGING
+    std::cout << "[ASK-WORKER] Thread stopping\n" << std::flush;
+#endif
+}
+
 timer_id system::schedule_timer(actor* target, std::unique_ptr<message_base> msg,
                                 std::function<std::unique_ptr<message_base>()> copy_func,
                                 std::chrono::milliseconds delay,
@@ -429,6 +471,14 @@ void system::cancel_actor_timers(actor* target) {
         inst.m_timer_manager.cancel(id);
     }
     target->m_active_timers.clear();
+}
+
+void system::enqueue_global_ask(actor* target, std::unique_ptr<message_base> request) {
+    auto& inst = instance();
+
+    // Enqueue to global ask queue
+    ask_request_envelope envelope{target, std::move(request)};
+    inst.m_global_ask_queue.enqueue(std::move(envelope));
 }
 
 

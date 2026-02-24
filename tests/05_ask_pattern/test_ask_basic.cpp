@@ -70,11 +70,8 @@ TEST_CASE("Multiple ask operations", "[05_ask_pattern][basic]") {
     TEST_CLEANUP();
 }
 
-// NOTE: This test is disabled due to potential deadlock when calling ask() from within an actor's message handler.
-// If both actors are assigned to the same worker thread, the requester blocks waiting for calculator, but calculator
-// can't run because the thread is blocked. This is a known limitation of synchronous ask patterns in actor systems.
-// Recommendation: Use async message passing instead of blocking ask() from within actors.
-/*
+// NOTE: With dedicated ask thread pool, this test now works without deadlock!
+// Ask requests are processed by separate threads, so actors can call ask() safely.
 TEST_CASE("Ask from one actor to another", "[05_ask_pattern][basic]") {
     class requester_actor : public cas::actor {
     private:
@@ -114,7 +111,6 @@ TEST_CASE("Ask from one actor to another", "[05_ask_pattern][basic]") {
 
     TEST_CLEANUP();
 }
-*/
 
 TEST_CASE("Ask blocks until result ready", "[05_ask_pattern][blocking]") {
     class slow_actor : public cas::actor {

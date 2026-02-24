@@ -153,39 +153,11 @@ void actor::enqueue_ask_message(std::unique_ptr<message_base> msg) {
         return;  // Silently drop message
     }
 
-    // Lock-free enqueue
-    m_ask_queue.enqueue(std::move(msg));
+    // Enqueue to global ask queue (processed by dedicated ask threads)
+    system::enqueue_global_ask(this, std::move(msg));
 
-    // Get approximate sizes for metrics
-    size_t ask_size = m_ask_queue.size_approx();
-
-    // Update high water mark
-    size_t current_hwm = m_ask_queue_high_water_mark.load();
-    while (ask_size > current_hwm &&
-           !m_ask_queue_high_water_mark.compare_exchange_weak(current_hwm, ask_size)) {
-        // Loop until we successfully update or find that someone else updated to a higher value
-    }
-
-    // Check threshold
-    if (m_queue_threshold > 0 && !m_threshold_warning_sent.load()) {
-        size_t mailbox_size = m_mailbox.size_approx();
-        size_t total = mailbox_size + ask_size;
-
-        if (total > m_queue_threshold) {
-            // Send warning once per threshold breach
-            bool expected = false;
-            if (m_threshold_warning_sent.compare_exchange_strong(expected, true)) {
-                // TODO: Send queue_threshold_warning message to system
-                // For now, just log it
-#ifdef CAS_DEBUG_LOGGING
-                std::cout << "[QUEUE WARNING] Actor " << name() << " exceeded threshold: "
-                          << total << " > " << m_queue_threshold << "\n" << std::flush;
-#endif
-            }
-        }
-    }
-
-    // TODO: Notify worker thread that priority message is available
+    // Note: We no longer track ask queue metrics locally since ask requests
+    // are handled by dedicated threads and don't go through actor's local queue
 }
 
 void actor::dispatch_message(message_base* msg) {
@@ -236,35 +208,25 @@ void actor::dispatch_message(message_base* msg) {
 void actor::process_next_message() {
     std::unique_ptr<message_base> msg;
 
-    // Try ask queue first (priority)
-    if (m_ask_queue.try_dequeue(msg)) {
-        // Got a message from ask queue - dispatch it
-        current_actor_context = this;
-        dispatch_message(msg.get());
-        current_actor_context = nullptr;
-        return;
-    }
-
-    // If no ask message, try regular mailbox
+    // Try to dequeue from mailbox
+    // Note: Ask requests are now processed by dedicated ask threads,
+    // so regular workers only process fire-and-forget messages
     if (m_mailbox.try_dequeue(msg)) {
-        // Got a message from mailbox - dispatch it
+        // Got a message - dispatch it
         current_actor_context = this;
         dispatch_message(msg.get());
         current_actor_context = nullptr;
-        return;
     }
-
-    // No messages in either queue
 }
 
 bool actor::has_messages() {
-    // Approximate check - may have false positives/negatives but fast and lock-free
-    return m_ask_queue.size_approx() > 0 || m_mailbox.size_approx() > 0;
+    // Check mailbox only (ask requests handled by dedicated threads)
+    return m_mailbox.size_approx() > 0;
 }
 
 size_t actor::queue_size() const {
-    // Approximate sizes - lock-free and fast
-    return m_ask_queue.size_approx() + m_mailbox.size_approx();
+    // Return mailbox size only (ask requests handled by dedicated threads)
+    return m_mailbox.size_approx();
 }
 
 actor_state actor::get_state() const {

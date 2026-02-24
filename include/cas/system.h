@@ -11,6 +11,7 @@
 #include <condition_variable>
 #include "timer.h"
 #include "timer_manager.h"
+#include "external/concurrentqueue.h"
 
 namespace cas {
 
@@ -27,8 +28,9 @@ enum class threading_model {
 
 // Configuration for the actor system
 struct system_config {
-    size_t thread_pool_size = 0;  // 0 = auto (use hardware concurrency)
-    size_t queue_threshold = 1000;  // Warn if total queue size exceeds this (0 = disabled)
+    size_t thread_pool_size = 0;      // 0 = auto (use hardware concurrency)
+    size_t ask_thread_pool_size = 4;  // Dedicated threads for ask (RPC) requests
+    size_t queue_threshold = 1000;    // Warn if total queue size exceeds this (0 = disabled)
 };
 
 // Configuration for shutdown behavior
@@ -74,6 +76,14 @@ private:
     // Timer management
     timer_manager m_timer_manager;
 
+    // Ask (RPC) request handling
+    struct ask_request_envelope {
+        actor* target;  // Target actor
+        std::unique_ptr<message_base> request;  // The ask request message
+    };
+    moodycamel::ConcurrentQueue<ask_request_envelope> m_global_ask_queue;
+    std::vector<std::thread> m_ask_thread_pool;
+
     // Singleton instance
     static system& instance();
 
@@ -82,6 +92,9 @@ private:
 
     // Worker thread function for thread pool
     void worker_thread(size_t thread_id);
+
+    // Ask worker thread function
+    void ask_worker_thread();
 
 public:
     // Non-copyable
@@ -145,6 +158,9 @@ public:
 
     // Internal: Cancel all timers for an actor (called on actor stop)
     static void cancel_actor_timers(actor* target);
+
+    // Internal: Enqueue ask request to global queue (called by actor::enqueue_ask_message)
+    static void enqueue_global_ask(actor* target, std::unique_ptr<message_base> request);
 };
 
 // Template implementations (must be in header)

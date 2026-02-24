@@ -67,7 +67,8 @@
       "Bash(git restore:*)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(mkdir:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(cmd /c \"call \"\"C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Auxiliary\\Build\\vcvarsall.bat\"\" x64 >nul 2>&1 && \"\"C:\\Users\\ritte\\AppData\\Local\\Programs\\CLion 2\\bin\\cmake\\win\\x64\\bin\\cmake.exe\"\" --build cmake-build-debug --target unit_tests && echo BUILD_COMPLETE\")"
     ],
     "deny": [],
     "ask": []
