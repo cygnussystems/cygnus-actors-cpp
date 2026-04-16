@@ -3,6 +3,7 @@
 
 #include "actor.h"
 #include <mutex>
+#include <variant>
 
 namespace cas {
 
