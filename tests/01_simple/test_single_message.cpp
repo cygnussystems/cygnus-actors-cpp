@@ -44,7 +44,7 @@ TEST_CASE("Can send a single message to an actor", "[01_simple][messaging]") {
     // Send one message
     single_msg_test::ping msg;
     msg.value = 42;
-    receiver_ref.receive(msg);
+    receiver_ref.tell(msg);
 
     wait_ms(100);
 
@@ -70,7 +70,7 @@ TEST_CASE("Can send multiple messages to same actor", "[01_simple][messaging]") 
     for (int i = 1; i <= 5; i++) {
         single_msg_test::ping msg;
         msg.value = i * 10;
-        receiver_ref.receive(msg);
+        receiver_ref.tell(msg);
     }
 
     wait_ms(100);
@@ -113,7 +113,7 @@ TEST_CASE("Message sent from main has invalid sender", "[01_simple][messaging]")
     // Send from main (no actor context)
     single_msg_test::ping msg;
     msg.value = 1;
-    checker_ref.receive(msg);
+    checker_ref.tell(msg);
 
     wait_ms(100);
 

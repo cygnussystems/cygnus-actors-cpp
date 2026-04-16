@@ -1,5 +1,6 @@
 #include "cas/actor_ref.h"
 #include "cas/actor.h"
+#include "cas/actor_ref_impl.h"
 #include <stdexcept>
 
 namespace cas {
@@ -31,6 +32,13 @@ bool actor_ref::operator==(const actor_ref& other) const {
 
 bool actor_ref::operator!=(const actor_ref& other) const {
     return !(*this == other);
+}
+
+bool actor_ref::is_running() const {
+    if (!m_actor_ptr) {
+        return false;
+    }
+    return m_actor_ptr->get_state() == actor_state::running;
 }
 
 // Template implementations would go in header or be explicitly instantiated

@@ -41,7 +41,7 @@ TEST_CASE("Messages are drained during shutdown", "[03_lifecycle][draining]") {
     for (int i = 0; i < 10; ++i) {
         draining_test::test_msg msg;
         msg.id = i;
-        actor_ref.receive(msg);
+        actor_ref.tell(msg);
     }
 
     // Shutdown immediately (messages may still be in queue)
@@ -68,7 +68,7 @@ TEST_CASE("New messages rejected during shutdown", "[03_lifecycle][draining]") {
     // Send one message
     draining_test::test_msg msg1;
     msg1.id = 1;
-    actor_ref.receive(msg1);
+    actor_ref.tell(msg1);
 
     wait_ms(50);
 
@@ -78,7 +78,7 @@ TEST_CASE("New messages rejected during shutdown", "[03_lifecycle][draining]") {
     // Try to send another message (should be dropped)
     draining_test::test_msg msg2;
     msg2.id = 2;
-    actor_ref.receive(msg2);
+    actor_ref.tell(msg2);
 
     cas::system::wait_for_shutdown();
 

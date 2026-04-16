@@ -78,3 +78,10 @@ unit_tests
 
 # Build script artifacts
 build_simple.bat
+build_test.bat
+
+# Internal development directories (not for public repo)
+planning/
+claude/
+AGENTS.md
+CLAUDE.md

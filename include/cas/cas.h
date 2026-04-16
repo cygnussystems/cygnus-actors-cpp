@@ -15,6 +15,13 @@
 #include "ask_message.h"
 #include "timer.h"
 
+// Include template implementations AFTER all headers are fully defined
+// This resolves the circular dependency between actor_ref.h and actor.h
+#include "actor_ref_impl.h"
+
+// ZeroMQ relay actor (optional - requires CAS_ENABLE_ZEROMQ)
+#include "zeromq_relay_actor.h"
+
 // Main namespace: cas (Cygnus Actor System)
 namespace cas {
     // All types available in namespace

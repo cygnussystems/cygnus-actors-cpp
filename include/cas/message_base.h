@@ -30,6 +30,14 @@ struct queue_threshold_warning : public message_base {
     size_t threshold = 0;
 };
 
+// System message sent to watchers when a watched actor terminates
+// Sent as part of the watch pattern for actor lifecycle monitoring
+struct termination_msg : public message_base {
+    std::string actor_name;
+    size_t instance_id = 0;
+    std::string type_name;
+};
+
 } // namespace cas
 
 #endif // CAS_MESSAGE_BASE_H

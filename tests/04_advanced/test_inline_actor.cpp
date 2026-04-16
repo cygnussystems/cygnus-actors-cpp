@@ -104,7 +104,7 @@ TEST_CASE("Inline actor with message passing (synchronous)", "[04_advanced][inli
     calculate msg;
     msg.value = 21;
     msg.result = 0;
-    calc_ref.receive(msg);
+    calc_ref.tell(msg);
 
     // Message was processed, but result is in the copy, not original
     // For inline actors, direct method calls are preferred

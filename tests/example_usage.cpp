@@ -77,7 +77,7 @@ protected:
 
         if (msg.sender.is_valid()) {
             println("[PONG] Sending pong response to sender");
-            msg.sender.receive(response);
+            msg.sender.tell(response);
             println("[PONG] Pong response sent");
         } else {
             println("[PONG] ERROR: msg.sender is invalid!");
@@ -124,7 +124,7 @@ protected:
         message::ping ping_msg;
         ping_msg.id = ++ping_count;
         ping_msg.data = "hello from ping";
-        pong_actor_ref.receive(ping_msg);
+        pong_actor_ref.tell(ping_msg);
 
         println("[PING] initial ping sent");
     }
@@ -145,7 +145,7 @@ protected:
             message::ping ping_msg;
             ping_msg.id = ++ping_count;
             ping_msg.data = "ping again";
-            pong_actor_ref.receive(ping_msg);
+            pong_actor_ref.tell(ping_msg);
             println("[PING] sent ping #", ping_count);
         } else {
             // TODO: Test invoke() when implemented

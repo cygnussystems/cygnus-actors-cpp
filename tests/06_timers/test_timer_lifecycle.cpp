@@ -62,7 +62,7 @@ TEST_CASE("Cancel timer before it fires", "[06_timers][lifecycle]") {
     timer_lifecycle_test::start_timer_msg start_msg;
     start_msg.delay_ms = 200;
     start_msg.value = 99;
-    actor_ref.receive(start_msg);
+    actor_ref.tell(start_msg);
 
     wait_ms(50);  // Let message be processed
 
@@ -73,7 +73,7 @@ TEST_CASE("Cancel timer before it fires", "[06_timers][lifecycle]") {
     // Cancel immediately
     timer_lifecycle_test::cancel_timer_msg cancel_msg;
     cancel_msg.id_to_cancel = id;
-    actor_ref.receive(cancel_msg);
+    actor_ref.tell(cancel_msg);
 
     wait_ms(50);  // Let cancel message be processed
 
@@ -99,7 +99,7 @@ TEST_CASE("Cancelling same timer multiple times is safe", "[06_timers][lifecycle
     timer_lifecycle_test::start_timer_msg start_msg;
     start_msg.delay_ms = 100;
     start_msg.value = 1;
-    actor_ref.receive(start_msg);
+    actor_ref.tell(start_msg);
 
     wait_ms(50);  // Let message be processed
 
@@ -110,9 +110,9 @@ TEST_CASE("Cancelling same timer multiple times is safe", "[06_timers][lifecycle
     // Cancel multiple times
     timer_lifecycle_test::cancel_timer_msg cancel_msg;
     cancel_msg.id_to_cancel = id;
-    actor_ref.receive(cancel_msg);
-    actor_ref.receive(cancel_msg);
-    actor_ref.receive(cancel_msg);
+    actor_ref.tell(cancel_msg);
+    actor_ref.tell(cancel_msg);
+    actor_ref.tell(cancel_msg);
 
     wait_ms(50);  // Let cancel messages be processed
 
@@ -136,8 +136,8 @@ TEST_CASE("Cancelling INVALID_TIMER_ID is safe", "[06_timers][lifecycle]") {
     timer_lifecycle_test::cancel_timer_msg cancel_msg1, cancel_msg2;
     cancel_msg1.id_to_cancel = cas::INVALID_TIMER_ID;
     cancel_msg2.id_to_cancel = 99999;
-    actor_ref.receive(cancel_msg1);
-    actor_ref.receive(cancel_msg2);
+    actor_ref.tell(cancel_msg1);
+    actor_ref.tell(cancel_msg2);
 
     wait_ms(50);  // Let messages be processed
 
@@ -145,7 +145,7 @@ TEST_CASE("Cancelling INVALID_TIMER_ID is safe", "[06_timers][lifecycle]") {
     timer_lifecycle_test::start_timer_msg start_msg;
     start_msg.delay_ms = 50;
     start_msg.value = 42;
-    actor_ref.receive(start_msg);
+    actor_ref.tell(start_msg);
 
     wait_ms(150);
 
@@ -202,7 +202,7 @@ TEST_CASE("Timers are cleaned up when actor stops", "[06_timers][lifecycle]") {
     // Start periodic timers
     start_periodic_msg start_msg;
     start_msg.interval_ms = 50;
-    actor_ref.receive(start_msg);
+    actor_ref.tell(start_msg);
 
     wait_ms(50);  // Let message be processed
 
@@ -236,7 +236,7 @@ TEST_CASE("Timer fires to correct actor after system restart", "[06_timers][life
         timer_lifecycle_test::start_timer_msg start_msg;
         start_msg.delay_ms = 50;
         start_msg.value = 1;
-        actor_ref.receive(start_msg);
+        actor_ref.tell(start_msg);
 
         wait_ms(150);
 
@@ -263,7 +263,7 @@ TEST_CASE("Timer fires to correct actor after system restart", "[06_timers][life
         timer_lifecycle_test::start_timer_msg start_msg;
         start_msg.delay_ms = 50;
         start_msg.value = 1;
-        actor_ref.receive(start_msg);
+        actor_ref.tell(start_msg);
 
         wait_ms(150);
 

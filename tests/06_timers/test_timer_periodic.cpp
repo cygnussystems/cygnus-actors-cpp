@@ -66,7 +66,7 @@ TEST_CASE("Periodic timer fires repeatedly", "[06_timers][periodic]") {
     timer_periodic_test::start_periodic start_msg;
     start_msg.interval_ms = 50;
     start_msg.value = 10;
-    actor_ref.receive(start_msg);
+    actor_ref.tell(start_msg);
 
     wait_ms(50);  // Let message be processed
 
@@ -92,7 +92,7 @@ TEST_CASE("Periodic timer fires repeatedly", "[06_timers][periodic]") {
 
     // Stop timer
     timer_periodic_test::stop_periodic stop_msg;
-    actor_ref.receive(stop_msg);
+    actor_ref.tell(stop_msg);
 
     wait_ms(50);  // Let stop message be processed
 
@@ -118,7 +118,7 @@ TEST_CASE("Periodic timer copies message for each firing", "[06_timers][periodic
     timer_periodic_test::start_periodic start_msg;
     start_msg.interval_ms = 50;
     start_msg.value = 5;
-    actor_ref.receive(start_msg);
+    actor_ref.tell(start_msg);
 
     wait_ms(50);  // Let message be processed
 
@@ -209,7 +209,7 @@ TEST_CASE("Cancelled periodic timer stops firing", "[06_timers][periodic]") {
     timer_periodic_test::start_periodic start_msg;
     start_msg.interval_ms = 50;
     start_msg.value = 1;
-    actor_ref.receive(start_msg);
+    actor_ref.tell(start_msg);
 
     wait_ms(50);  // Let message be processed
 
@@ -222,7 +222,7 @@ TEST_CASE("Cancelled periodic timer stops firing", "[06_timers][periodic]") {
 
     // Cancel timer
     timer_periodic_test::stop_periodic stop_msg;
-    actor_ref.receive(stop_msg);
+    actor_ref.tell(stop_msg);
 
     wait_ms(50);  // Let stop message be processed
 

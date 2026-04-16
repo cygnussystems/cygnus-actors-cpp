@@ -85,7 +85,7 @@ TEST_CASE("Stateful actor rejects messages in wrong state", "[04_advanced][state
 
     // Send cancel while idle - should be queued but not processed
     cancel_download cancel_msg;
-    dl_ref.receive(cancel_msg);
+    dl_ref.tell(cancel_msg);
 
     wait_ms(100);
 
@@ -109,14 +109,14 @@ TEST_CASE("Stateful actor processes deferred messages when state changes", "[04_
 
     // Send cancel while idle (will be queued)
     cancel_download cancel_msg;
-    dl_ref.receive(cancel_msg);
+    dl_ref.tell(cancel_msg);
 
     wait_ms(50);
 
     // Start download (should process, then process queued cancel)
     start_download start_msg;
     start_msg.file_id = 42;
-    dl_ref.receive(start_msg);
+    dl_ref.tell(start_msg);
 
     wait_ms(100);
 
@@ -141,18 +141,18 @@ TEST_CASE("Stateful actor only processes accepted message types", "[04_advanced]
     // Start download
     start_download start_msg;
     start_msg.file_id = 123;
-    dl_ref.receive(start_msg);
+    dl_ref.tell(start_msg);
 
     wait_ms(50);
 
     // Try to start another download while downloading (should be queued/ignored)
     start_download start_msg2;
     start_msg2.file_id = 456;
-    dl_ref.receive(start_msg2);
+    dl_ref.tell(start_msg2);
 
     // Complete the download
     download_complete complete_msg;
-    dl_ref.receive(complete_msg);
+    dl_ref.tell(complete_msg);
 
     wait_ms(100);
 

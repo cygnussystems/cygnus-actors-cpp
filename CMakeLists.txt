@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(CygnusActorFramework VERSION 0.1.0 LANGUAGES CXX)
+project(CygnusActorFramework VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Project options
 option(BUILD_TESTS "Build unit tests" ON)
 option(BUILD_EXAMPLES "Build examples" ON)
+option(ENABLE_ZEROMQ "Enable ZeroMQ relay actor" ON)
 
 # Source files
 set(SOURCES
@@ -19,6 +20,11 @@ set(SOURCES
     source/fast_actor.cpp
     source/timer_manager.cpp
 )
+
+# ZeroMQ relay actor (optional)
+if(ENABLE_ZEROMQ)
+    list(APPEND SOURCES source/zeromq_relay_actor.cpp)
+endif()
 
 # Create library
 add_library(${PROJECT_NAME} STATIC ${SOURCES})
@@ -32,6 +38,14 @@ target_include_directories(${PROJECT_NAME}
 # Link threads library (required for std::thread)
 find_package(Threads REQUIRED)
 target_link_libraries(${PROJECT_NAME} PUBLIC Threads::Threads)
+
+# ZeroMQ relay actor dependencies (optional)
+if(ENABLE_ZEROMQ)
+    find_package(cppzmq CONFIG REQUIRED)
+    find_package(nlohmann_json CONFIG REQUIRED)
+    target_link_libraries(${PROJECT_NAME} PUBLIC cppzmq nlohmann_json::nlohmann_json)
+    target_compile_definitions(${PROJECT_NAME} PUBLIC CAS_ENABLE_ZEROMQ)
+endif()
 
 # Compiler warnings
 if(MSVC)
@@ -87,6 +101,10 @@ if(BUILD_TESTS)
         tests/06_timers/test_timer_lifecycle.cpp
         # Standalone timer manager tests (no actor system dependency)
         tests/test_timer_manager_standalone.cpp
+        # Level 7: Dynamic actor removal
+        tests/07_dynamic_removal/test_basic_removal.cpp
+        # Level 8: ZeroMQ relay (optional - requires CAS_ENABLE_ZEROMQ)
+        tests/08_zeromq_relay/test_zeromq_relay.cpp
     )
 
     target_link_libraries(unit_tests

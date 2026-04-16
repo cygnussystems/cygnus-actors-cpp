@@ -4,6 +4,7 @@
 #include "cas/actor_registry.h"
 #include "cas/fast_actor.h"
 #include "cas/message_base.h"
+#include "cas/actor_ref_impl.h"
 #include <iostream>
 #include <stdexcept>
 
@@ -479,6 +480,202 @@ void system::enqueue_global_ask(actor* target, std::unique_ptr<message_base> req
     // Enqueue to global ask queue
     ask_request_envelope envelope{target, std::move(request)};
     inst.m_global_ask_queue.enqueue(std::move(envelope));
+}
+
+bool system::stop_actor(actor_ref ref, const stop_config& config) {
+    auto& inst = instance();
+
+    // Step 1: Validate actor_ref and get raw pointer
+    actor* actor_ptr = ref.get<actor>();
+    if (!actor_ptr) {
+        return false;  // Invalid reference
+    }
+
+    // Step 2: Check current state - if already stopping/stopped, return false
+    actor_state expected = actor_state::running;
+    if (!actor_ptr->m_state.compare_exchange_strong(expected, actor_state::stopping)) {
+        return false;  // Already stopping or stopped (another thread got here first)
+    }
+
+    // Step 3: Cancel all timers for this actor
+    cancel_actor_timers(actor_ptr);
+
+    // Step 4: Handle message draining based on config.mode
+    if (config.mode == stop_mode::drain && config.wait_for_stop) {
+        // Wait for queues to empty with timeout
+        auto start_time = std::chrono::steady_clock::now();
+        auto deadline = start_time + config.drain_timeout;
+
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (!actor_ptr->has_messages()) {
+                break;  // Queue drained successfully
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    // If discard mode or async, skip draining
+
+    // Step 5: Call on_shutdown() hook (actor can send final messages)
+    // Set thread-local context so actor knows it's the current actor
+    actor* prev_context = current_actor_context;
+    current_actor_context = actor_ptr;
+    actor_ptr->on_shutdown();
+    current_actor_context = prev_context;
+
+    // Step 6: Call on_stop() hook (final cleanup, no messaging)
+    current_actor_context = actor_ptr;
+    actor_ptr->on_stop();
+    current_actor_context = prev_context;
+
+    // Step 7: Notify watchers if configured
+    if (config.notify_watchers) {
+        notify_watchers_internal(actor_ptr);
+    }
+
+    // Step 8: Remove from thread's actor list
+    // Determine if this is a fast_actor or pooled actor
+    fast_actor* fast_ptr = dynamic_cast<fast_actor*>(actor_ptr);
+
+    if (fast_ptr) {
+        // Fast actor - remove from m_fast_actors and join thread
+        std::lock_guard<std::mutex> lock(inst.m_fast_actors_mutex);
+
+        // Join dedicated thread if needed
+        if (fast_ptr->m_dedicated_thread.joinable()) {
+            // Thread should exit naturally when it sees state == stopping
+            fast_ptr->m_dedicated_thread.join();
+        }
+
+        // Remove from vector
+        auto it = std::find_if(inst.m_fast_actors.begin(), inst.m_fast_actors.end(),
+                               [actor_ptr](const std::shared_ptr<actor>& ptr) {
+                                   return ptr.get() == actor_ptr;
+                               });
+        if (it != inst.m_fast_actors.end()) {
+            inst.m_fast_actors.erase(it);
+        }
+    } else {
+        // Pooled actor - remove from m_actors_per_thread
+        std::lock_guard<std::mutex> lock(inst.m_actors_mutex);
+
+        size_t thread_id = actor_ptr->m_assigned_thread_id;
+        if (thread_id < inst.m_actors_per_thread.size()) {
+            auto& thread_actors = inst.m_actors_per_thread[thread_id];
+
+            // Remove from vector
+            auto it = std::find_if(thread_actors.begin(), thread_actors.end(),
+                                   [actor_ptr](const std::shared_ptr<actor>& ptr) {
+                                       return ptr.get() == actor_ptr;
+                                   });
+            if (it != thread_actors.end()) {
+                thread_actors.erase(it);
+            }
+        }
+    }
+
+    // Step 9: Unregister from actor_registry (if registered)
+    std::string actor_name = actor_ptr->name();
+    if (!actor_name.empty()) {
+        actor_registry::unregister_actor(actor_name);
+    }
+
+    // Step 10: Set state to stopped
+    actor_ptr->set_state(actor_state::stopped);
+
+    // Step 11: Release shared_ptr happens automatically when we return
+    // (the shared_ptr in the vector was removed, but caller may still hold a reference)
+
+    return true;  // Success
+}
+
+bool system::stop_actor(const std::string& name, const stop_config& config) {
+    auto ref = actor_registry::get(name);
+    if (!ref.is_valid()) {
+        return false;
+    }
+    return stop_actor(ref, config);
+}
+
+bool system::is_actor_running(actor_ref ref) {
+    actor* ptr = ref.get<actor>();
+    if (!ptr) {
+        return false;
+    }
+    return ptr->get_state() == actor_state::running;
+}
+
+void system::watch(actor_ref watcher, actor_ref watched) {
+    auto& inst = instance();
+
+    // Get raw pointers
+    actor* watcher_ptr = watcher.get<actor>();
+    actor* watched_ptr = watched.get<actor>();
+
+    // Validate both actors exist
+    if (!watcher_ptr || !watched_ptr) {
+        return;  // Invalid reference
+    }
+
+    // Add watcher to watchers set for watched actor
+    std::lock_guard<std::mutex> lock(inst.m_watchers_mutex);
+    inst.m_watchers[watched_ptr].insert(watcher_ptr);
+}
+
+void system::unwatch(actor_ref watcher, actor_ref watched) {
+    auto& inst = instance();
+
+    // Get raw pointers
+    actor* watcher_ptr = watcher.get<actor>();
+    actor* watched_ptr = watched.get<actor>();
+
+    // Validate both actors exist
+    if (!watcher_ptr || !watched_ptr) {
+        return;  // Invalid reference
+    }
+
+    // Remove watcher from watchers set
+    std::lock_guard<std::mutex> lock(inst.m_watchers_mutex);
+
+    auto it = inst.m_watchers.find(watched_ptr);
+    if (it != inst.m_watchers.end()) {
+        it->second.erase(watcher_ptr);
+
+        // Clean up empty entry
+        if (it->second.empty()) {
+            inst.m_watchers.erase(it);
+        }
+    }
+}
+
+void system::notify_watchers_internal(actor* stopped_actor) {
+    auto& inst = instance();
+
+    // Copy the watcher set while holding lock (to release lock quickly)
+    std::unordered_set<actor*> watchers_copy;
+    {
+        std::lock_guard<std::mutex> lock(inst.m_watchers_mutex);
+
+        auto it = inst.m_watchers.find(stopped_actor);
+        if (it != inst.m_watchers.end()) {
+            watchers_copy = it->second;
+            // Remove entry from map (watched actor is stopping)
+            inst.m_watchers.erase(it);
+        }
+    }
+
+    // Send termination_msg to each watcher (without holding lock)
+    for (actor* watcher_ptr : watchers_copy) {
+        termination_msg msg;
+        msg.actor_name = stopped_actor->name();
+        msg.instance_id = stopped_actor->instance_id();
+        msg.type_name = stopped_actor->type_name();
+
+        // Create actor_ref and send message
+        actor_ref watcher_ref(watcher_ptr->m_self_ref.lock());
+        if (watcher_ref.is_valid()) {
+            watcher_ref.tell(msg);
+        }
+    }
 }
 
 

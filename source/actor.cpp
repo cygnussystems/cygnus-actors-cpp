@@ -4,6 +4,7 @@
 #include "cas/actor_registry.h"
 #include "cas/message_base.h"
 #include "cas/ask_message.h"
+#include "cas/actor_ref_impl.h"
 #include <iostream>
 #include <typeinfo>
 

@@ -1,6 +1,7 @@
 #include "cas/actor_registry.h"
 #include "cas/actor.h"
 #include "cas/actor_ref.h"
+#include "cas/actor_ref_impl.h"
 
 namespace cas {
 

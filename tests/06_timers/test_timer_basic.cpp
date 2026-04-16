@@ -56,7 +56,7 @@ TEST_CASE("One-shot timer fires after delay", "[06_timers][basic]") {
     timer_basic_test::start_timer start_msg;
     start_msg.delay_ms = 100;
     start_msg.value = 42;
-    actor_ref.receive(start_msg);
+    actor_ref.tell(start_msg);
 
     wait_ms(50);  // Let message be processed and timer scheduled
 
@@ -98,9 +98,9 @@ TEST_CASE("Multiple one-shot timers fire independently", "[06_timers][basic]") {
     msg3.delay_ms = 150;
     msg3.value = 3;
 
-    actor_ref.receive(msg1);
-    actor_ref.receive(msg2);
-    actor_ref.receive(msg3);
+    actor_ref.tell(msg1);
+    actor_ref.tell(msg2);
+    actor_ref.tell(msg3);
 
     wait_ms(50);  // Let messages be processed
 
@@ -134,7 +134,7 @@ TEST_CASE("Timer with zero delay fires immediately", "[06_timers][basic]") {
     timer_basic_test::start_timer start_msg;
     start_msg.delay_ms = 0;
     start_msg.value = 99;
-    actor_ref.receive(start_msg);
+    actor_ref.tell(start_msg);
 
     // Should fire almost immediately
     wait_ms(100);

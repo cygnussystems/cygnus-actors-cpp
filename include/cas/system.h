@@ -7,6 +7,7 @@
 #include <atomic>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <queue>
 #include <condition_variable>
 #include "timer.h"
@@ -37,6 +38,20 @@ struct system_config {
 struct shutdown_config {
     std::chrono::milliseconds drain_timeout{5000};  // Max time to wait for queues to drain
     std::chrono::milliseconds check_interval{10};   // How often to check if queues are empty
+};
+
+// Stop mode for individual actor removal
+enum class stop_mode {
+    drain,    // Process remaining messages before stopping (default)
+    discard   // Drop pending messages immediately
+};
+
+// Configuration for stopping individual actors
+struct stop_config {
+    stop_mode mode = stop_mode::drain;               // How to handle pending messages
+    std::chrono::milliseconds drain_timeout{1000};   // Max time to wait for drain
+    bool wait_for_stop{true};                        // Synchronous (block) vs async (return immediately)
+    bool notify_watchers{true};                      // Send termination_msg to watchers
 };
 
 // The actor system/runtime
@@ -83,6 +98,10 @@ private:
     };
     moodycamel::ConcurrentQueue<ask_request_envelope> m_global_ask_queue;
     std::vector<std::thread> m_ask_thread_pool;
+
+    // Watch pattern - maps watched_actor -> set of watcher actors
+    std::unordered_map<actor*, std::unordered_set<actor*>> m_watchers;
+    std::mutex m_watchers_mutex;
 
     // Singleton instance
     static system& instance();
@@ -161,6 +180,26 @@ public:
 
     // Internal: Enqueue ask request to global queue (called by actor::enqueue_ask_message)
     static void enqueue_global_ask(actor* target, std::unique_ptr<message_base> request);
+
+    // Stop a single actor gracefully
+    // Returns true if actor was found and stopped, false if not found or already stopped
+    static bool stop_actor(actor_ref ref, const stop_config& config = stop_config{});
+
+    // Stop actor by name (convenience)
+    static bool stop_actor(const std::string& name, const stop_config& config = stop_config{});
+
+    // Check if actor is still running
+    static bool is_actor_running(actor_ref ref);
+
+    // Watch an actor for termination notification
+    // When 'watched' actor stops, 'watcher' receives termination_msg
+    static void watch(actor_ref watcher, actor_ref watched);
+
+    // Unwatch an actor
+    static void unwatch(actor_ref watcher, actor_ref watched);
+
+    // Internal: notify watchers when actor stops
+    static void notify_watchers_internal(actor* stopped_actor);
 };
 
 // Template implementations (must be in header)

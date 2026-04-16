@@ -28,7 +28,7 @@ namespace ping_pong_test {
             if (msg.sender.is_valid()) {
                 pong reply;
                 reply.count = msg.count;
-                msg.sender.receive(reply);
+                msg.sender.tell(reply);
             }
         }
 
@@ -54,7 +54,7 @@ namespace ping_pong_test {
             if (pong_ref.is_valid()) {
                 ping msg;
                 msg.count = 1;
-                pong_ref.receive(msg);
+                pong_ref.tell(msg);
             }
         }
 
@@ -67,7 +67,7 @@ namespace ping_pong_test {
                 if (pong_ref.is_valid()) {
                     ping next_msg;
                     next_msg.count = msg.count + 1;
-                    pong_ref.receive(next_msg);
+                    pong_ref.tell(next_msg);
                 }
             }
         }
@@ -135,7 +135,7 @@ TEST_CASE("Sender field is correctly set in actor-to-actor messages", "[02_inter
             if (validator_ref.is_valid()) {
                 ping_pong_test::ping msg;
                 msg.count = 1;
-                validator_ref.receive(msg);
+                validator_ref.tell(msg);
             }
         }
     };

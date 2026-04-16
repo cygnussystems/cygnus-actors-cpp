@@ -69,7 +69,7 @@ TEST_CASE("Fast actor processes messages with low latency", "[04_advanced][fast_
     for (int i = 0; i < num_ticks; ++i) {
         tick t;
         t.sent_time = std::chrono::steady_clock::now();
-        actor_ref.receive(t);
+        actor_ref.tell(t);
     }
 
     // Wait for processing
@@ -96,7 +96,7 @@ TEST_CASE("Fast actor with yield strategy (default)", "[04_advanced][fast_actor]
     for (int i = 0; i < 10; ++i) {
         tick t;
         t.sent_time = std::chrono::steady_clock::now();
-        actor_ref.receive(t);
+        actor_ref.tell(t);
     }
 
     wait_ms(50);
@@ -121,7 +121,7 @@ TEST_CASE("Fast actor with hybrid strategy", "[04_advanced][fast_actor]") {
     for (int i = 0; i < 20; ++i) {
         tick t;
         t.sent_time = std::chrono::steady_clock::now();
-        actor_ref.receive(t);
+        actor_ref.tell(t);
     }
 
     wait_ms(50);
@@ -145,7 +145,7 @@ TEST_CASE("Fast actor handles shutdown correctly", "[04_advanced][fast_actor]") 
     for (int i = 0; i < 10; ++i) {
         tick t;
         t.sent_time = std::chrono::steady_clock::now();
-        actor_ref.receive(t);
+        actor_ref.tell(t);
     }
 
     wait_ms(50);
