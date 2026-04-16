@@ -1,6 +1,6 @@
-#ifdef CAS_ENABLE_ZEROMQ
-
 #include "../test_common.h"
+
+#ifdef CAS_ENABLE_ZEROMQ
 #include "cas/cas.h"
 #include <thread>
 #include <chrono>
