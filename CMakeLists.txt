@@ -19,6 +19,7 @@ set(SOURCES
     source/stateful_actor.cpp
     source/fast_actor.cpp
     source/timer_manager.cpp
+    source/message_pool.cpp
 )
 
 # ZeroMQ relay actor (optional)
