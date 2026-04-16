@@ -1,7 +1,9 @@
 #ifdef CAS_ENABLE_ZEROMQ
 
 #include "cas/zeromq_relay_actor.h"
+#include "cas/system.h"
 #include "cas/actor_ref_impl.h"
+#include "cas/actor_impl.h"
 #include <zmq.hpp>
 #include <iostream>
 #include <string>

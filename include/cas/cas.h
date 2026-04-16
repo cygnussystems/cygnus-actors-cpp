@@ -16,8 +16,9 @@
 #include "timer.h"
 
 // Include template implementations AFTER all headers are fully defined
-// This resolves the circular dependency between actor_ref.h and actor.h
+// This resolves circular dependencies between actor.h, actor_ref.h, and system.h
 #include "actor_ref_impl.h"
+#include "actor_impl.h"
 
 // ZeroMQ relay actor (optional - requires CAS_ENABLE_ZEROMQ)
 #include "zeromq_relay_actor.h"
