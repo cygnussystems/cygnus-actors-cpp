@@ -59,6 +59,14 @@ endif()
 if(BUILD_EXAMPLES)
     add_executable(example_usage tests/example_usage.cpp)
     target_link_libraries(example_usage ${PROJECT_NAME})
+
+    # Benchmark executable
+    add_executable(benchmark benchmarks/throughput_benchmark.cpp)
+    target_link_libraries(benchmark ${PROJECT_NAME})
+
+    # Size check utility
+    add_executable(size_check benchmarks/size_check.cpp)
+    target_link_libraries(size_check ${PROJECT_NAME})
 endif()
 
 # Unit tests - reorganized for granular debugging
@@ -106,6 +114,10 @@ if(BUILD_TESTS)
         tests/07_dynamic_removal/test_basic_removal.cpp
         # Level 8: ZeroMQ relay (optional - requires CAS_ENABLE_ZEROMQ)
         tests/08_zeromq_relay/test_zeromq_relay.cpp
+        # Level 9: Fixed types (zero-allocation)
+        tests/09_fixed_types/test_fixed_string.cpp
+        # Level 10: Dead letter handling
+        tests/10_dead_letters/test_dead_letter_handling.cpp
     )
 
     target_link_libraries(unit_tests

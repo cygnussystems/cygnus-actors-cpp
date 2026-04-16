@@ -5,9 +5,11 @@ namespace cas {
 
 // Static member definitions
 std::array<message_pool::size_class_pool, message_pool::NUM_SIZE_CLASSES> message_pool::s_pools;
+std::atomic<size_t> message_pool::s_max_blocks_per_class{message_pool::DEFAULT_MAX_BLOCKS_PER_CLASS};
 std::atomic<size_t> message_pool::s_pool_hits{0};
 std::atomic<size_t> message_pool::s_pool_misses{0};
 std::atomic<size_t> message_pool::s_heap_fallbacks{0};
+std::atomic<size_t> message_pool::s_pool_full_frees{0};
 std::atomic<bool> message_pool::s_initialized{false};
 
 void message_pool::init_pools() {
@@ -61,6 +63,7 @@ void* message_pool::allocate(size_t size) {
                 std::memory_order_acquire,
                 std::memory_order_acquire)) {
             // Successfully popped from pool
+            pool.count.fetch_sub(1, std::memory_order_relaxed);
             s_pool_hits.fetch_add(1, std::memory_order_relaxed);
             return old_head;
         }
@@ -86,6 +89,15 @@ void message_pool::deallocate(void* ptr, size_t size) {
     size_t idx = size_class_index(size);
     size_class_pool& pool = s_pools[idx];
 
+    // Check if pool is at capacity
+    size_t max_blocks = s_max_blocks_per_class.load(std::memory_order_relaxed);
+    if (max_blocks > 0 && pool.count.load(std::memory_order_relaxed) >= max_blocks) {
+        // Pool full - free to OS instead
+        s_pool_full_frees.fetch_add(1, std::memory_order_relaxed);
+        ::operator delete(ptr);
+        return;
+    }
+
     // Push to free list (lock-free)
     free_node* node = static_cast<free_node*>(ptr);
     node->next = pool.head.load(std::memory_order_relaxed);
@@ -97,6 +109,8 @@ void message_pool::deallocate(void* ptr, size_t size) {
             std::memory_order_relaxed)) {
         // CAS failed, node->next updated, retry
     }
+
+    pool.count.fetch_add(1, std::memory_order_relaxed);
 }
 
 void message_pool::prewarm(size_t count_per_class) {
@@ -116,11 +130,20 @@ void message_pool::prewarm(size_t count_per_class) {
     }
 }
 
+void message_pool::set_max_pool_size(size_t max_blocks_per_class) {
+    s_max_blocks_per_class.store(max_blocks_per_class, std::memory_order_relaxed);
+}
+
+size_t message_pool::get_max_pool_size() {
+    return s_max_blocks_per_class.load(std::memory_order_relaxed);
+}
+
 message_pool::stats message_pool::get_stats() {
     stats s;
     s.pool_hits = s_pool_hits.load(std::memory_order_relaxed);
     s.pool_misses = s_pool_misses.load(std::memory_order_relaxed);
     s.heap_fallbacks = s_heap_fallbacks.load(std::memory_order_relaxed);
+    s.pool_full_frees = s_pool_full_frees.load(std::memory_order_relaxed);
     return s;
 }
 
@@ -128,6 +151,7 @@ void message_pool::reset_stats() {
     s_pool_hits.store(0, std::memory_order_relaxed);
     s_pool_misses.store(0, std::memory_order_relaxed);
     s_heap_fallbacks.store(0, std::memory_order_relaxed);
+    s_pool_full_frees.store(0, std::memory_order_relaxed);
 }
 
 } // namespace cas

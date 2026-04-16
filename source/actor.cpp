@@ -109,8 +109,11 @@ system* actor::get_system() {
 
 void actor::enqueue_message(std::unique_ptr<message_base> msg) {
     // Don't accept new messages if actor is stopping or stopped
-    if (m_state.load() != actor_state::running) {
-        return;  // Silently drop message
+    actor_state current_state = m_state.load();
+    if (current_state != actor_state::running) {
+        // Report dead letter before dropping
+        system::report_dead_letter(name(), msg.get(), current_state, false);
+        return;  // Drop message
     }
 
     // Lock-free enqueue
@@ -150,8 +153,11 @@ void actor::enqueue_message(std::unique_ptr<message_base> msg) {
 
 void actor::enqueue_ask_message(std::unique_ptr<message_base> msg) {
     // Don't accept new messages if actor is stopping or stopped
-    if (m_state.load() != actor_state::running) {
-        return;  // Silently drop message
+    actor_state current_state = m_state.load();
+    if (current_state != actor_state::running) {
+        // Report dead letter before dropping
+        system::report_dead_letter(name(), msg.get(), current_state, true);
+        return;  // Drop message
     }
 
     // Enqueue to global ask queue (processed by dedicated ask threads)

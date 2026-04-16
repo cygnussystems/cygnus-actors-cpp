@@ -10,6 +10,8 @@
 #include <unordered_set>
 #include <queue>
 #include <condition_variable>
+#include <functional>
+#include <typeindex>
 #include "timer.h"
 #include "timer_manager.h"
 #include "external/concurrentqueue.h"
@@ -20,6 +22,7 @@ namespace cas {
 class actor;
 class actor_ref;
 struct scheduled_timer;
+struct message_base;
 
 // Threading model for actors
 enum class threading_model {
@@ -27,11 +30,36 @@ enum class threading_model {
     dedicated  // Runs on its own dedicated thread
 };
 
+// Forward declaration of actor_state (defined in actor.h)
+enum class actor_state;
+
+// Dead letter statistics - always collected (negligible overhead)
+struct dead_letter_stats {
+    size_t dropped_tell = 0;       // Fire-and-forget messages dropped
+    size_t dropped_ask = 0;        // Ask messages dropped (no response sent)
+    size_t dropped_to_invalid = 0; // Messages to null/invalid actor refs
+};
+
+// Information about a dead letter (passed to callback handler)
+struct dead_letter_info {
+    std::string target_actor_name;   // Name of the target actor
+    std::type_index message_type;    // Type of the dropped message
+    uint64_t message_id;             // Unique message ID
+    actor_state target_state;        // State of actor when message was dropped
+
+    dead_letter_info(std::string name, std::type_index type, uint64_t id, actor_state state)
+        : target_actor_name(std::move(name)), message_type(type), message_id(id), target_state(state) {}
+};
+
+// Dead letter handler callback type
+using dead_letter_handler = std::function<void(const dead_letter_info&)>;
+
 // Configuration for the actor system
 struct system_config {
     size_t thread_pool_size = 0;      // 0 = auto (use hardware concurrency)
     size_t ask_thread_pool_size = 4;  // Dedicated threads for ask (RPC) requests
     size_t queue_threshold = 1000;    // Warn if total queue size exceeds this (0 = disabled)
+    bool log_dead_letters = false;    // Log dropped messages to stderr (for debugging)
 };
 
 // Configuration for shutdown behavior
@@ -102,6 +130,15 @@ private:
     // Watch pattern - maps watched_actor -> set of watcher actors
     std::unordered_map<actor*, std::unordered_set<actor*>> m_watchers;
     std::mutex m_watchers_mutex;
+
+    // Dead letter tracking (always-on statistics)
+    std::atomic<size_t> m_dead_letter_tell{0};
+    std::atomic<size_t> m_dead_letter_ask{0};
+    std::atomic<size_t> m_dead_letter_invalid{0};
+
+    // Optional dead letter callback handler
+    std::shared_ptr<dead_letter_handler> m_dead_letter_handler;
+    std::mutex m_dead_letter_handler_mutex;
 
     // Singleton instance
     static system& instance();
@@ -200,6 +237,26 @@ public:
 
     // Internal: notify watchers when actor stops
     static void notify_watchers_internal(actor* stopped_actor);
+
+    // Dead letter handling
+    // Get statistics for dropped messages (always-on, negligible overhead)
+    static dead_letter_stats get_dead_letter_stats();
+
+    // Reset dead letter statistics to zero
+    static void reset_dead_letter_stats();
+
+    // Set custom handler for dead letters (receives info about each dropped message)
+    // Pass nullptr or empty function to clear
+    static void set_dead_letter_handler(dead_letter_handler handler);
+
+    // Clear the dead letter handler
+    static void clear_dead_letter_handler();
+
+    // Internal: report a dead letter (called by actor::enqueue_message)
+    static void report_dead_letter(const std::string& actor_name,
+                                   const message_base* msg,
+                                   actor_state state,
+                                   bool was_ask);
 };
 
 // Template implementations (must be in header)

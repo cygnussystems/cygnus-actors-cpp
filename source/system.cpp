@@ -678,5 +678,76 @@ void system::notify_watchers_internal(actor* stopped_actor) {
     }
 }
 
+// Dead letter handling implementation
+
+dead_letter_stats system::get_dead_letter_stats() {
+    auto& inst = instance();
+
+    dead_letter_stats stats;
+    stats.dropped_tell = inst.m_dead_letter_tell.load(std::memory_order_relaxed);
+    stats.dropped_ask = inst.m_dead_letter_ask.load(std::memory_order_relaxed);
+    stats.dropped_to_invalid = inst.m_dead_letter_invalid.load(std::memory_order_relaxed);
+    return stats;
+}
+
+void system::reset_dead_letter_stats() {
+    auto& inst = instance();
+
+    inst.m_dead_letter_tell.store(0, std::memory_order_relaxed);
+    inst.m_dead_letter_ask.store(0, std::memory_order_relaxed);
+    inst.m_dead_letter_invalid.store(0, std::memory_order_relaxed);
+}
+
+void system::set_dead_letter_handler(dead_letter_handler handler) {
+    auto& inst = instance();
+
+    std::lock_guard<std::mutex> lock(inst.m_dead_letter_handler_mutex);
+    if (handler) {
+        inst.m_dead_letter_handler = std::make_shared<dead_letter_handler>(std::move(handler));
+    } else {
+        inst.m_dead_letter_handler.reset();
+    }
+}
+
+void system::clear_dead_letter_handler() {
+    auto& inst = instance();
+
+    std::lock_guard<std::mutex> lock(inst.m_dead_letter_handler_mutex);
+    inst.m_dead_letter_handler.reset();
+}
+
+void system::report_dead_letter(const std::string& actor_name,
+                                 const message_base* msg,
+                                 actor_state state,
+                                 bool was_ask) {
+    auto& inst = instance();
+
+    // Always increment counter (negligible overhead)
+    if (was_ask) {
+        inst.m_dead_letter_ask.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        inst.m_dead_letter_tell.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    // Optional logging (controlled by config)
+    if (inst.m_config.log_dead_letters) {
+        const char* state_str = (state == actor_state::stopping) ? "stopping" : "stopped";
+        std::cerr << "[DEAD LETTER] Message " << msg->message_id
+                  << " to actor '" << actor_name << "' dropped (state: "
+                  << state_str << ")\n";
+    }
+
+    // Optional callback handler
+    std::shared_ptr<dead_letter_handler> handler;
+    {
+        std::lock_guard<std::mutex> lock(inst.m_dead_letter_handler_mutex);
+        handler = inst.m_dead_letter_handler;
+    }
+
+    if (handler && *handler) {
+        dead_letter_info info(actor_name, typeid(*msg), msg->message_id, state);
+        (*handler)(info);
+    }
+}
 
 } // namespace cas

@@ -5,6 +5,7 @@
 // Include this to get access to all framework components
 
 #include "message_base.h"
+#include "fixed_string.h"
 #include "actor_ref.h"
 #include "actor.h"
 #include "stateful_actor.h"
