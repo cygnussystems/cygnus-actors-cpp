@@ -78,6 +78,7 @@ namespace ping_pong_test {
 }
 
 TEST_CASE("Two actors can exchange one message", "[02_interactions][ping_pong]") {
+    CAS_TEST_GUARD();
     auto pong = cas::system::create<ping_pong_test::pong_actor>();
     auto ping = cas::system::create<ping_pong_test::ping_actor>(1);
 
@@ -93,6 +94,7 @@ TEST_CASE("Two actors can exchange one message", "[02_interactions][ping_pong]")
 }
 
 TEST_CASE("Two actors can exchange multiple messages", "[02_interactions][ping_pong]") {
+    CAS_TEST_GUARD();
     auto pong = cas::system::create<ping_pong_test::pong_actor>();
     auto ping = cas::system::create<ping_pong_test::ping_actor>(5);
 
@@ -108,6 +110,7 @@ TEST_CASE("Two actors can exchange multiple messages", "[02_interactions][ping_p
 }
 
 TEST_CASE("Sender field is correctly set in actor-to-actor messages", "[02_interactions][sender]") {
+    CAS_TEST_GUARD();
     class sender_validator : public cas::actor {
     private:
         bool sender_was_valid_ = false;

@@ -27,6 +27,7 @@ namespace draining_test {
 }
 
 TEST_CASE("Messages are drained during shutdown", "[03_lifecycle][draining]") {
+    CAS_TEST_GUARD();
     std::atomic<int> message_count{0};
 
     auto actor = cas::system::create<draining_test::message_counter>(&message_count);
@@ -55,6 +56,7 @@ TEST_CASE("Messages are drained during shutdown", "[03_lifecycle][draining]") {
 }
 
 TEST_CASE("New messages rejected during shutdown", "[03_lifecycle][draining]") {
+    CAS_TEST_GUARD();
     std::atomic<int> message_count{0};
 
     auto actor = cas::system::create<draining_test::message_counter>(&message_count);

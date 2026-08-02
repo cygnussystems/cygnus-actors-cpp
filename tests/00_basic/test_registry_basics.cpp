@@ -3,6 +3,7 @@
 // Level 0: Test basic registry operations
 
 TEST_CASE("Registry lookup of non-existent actor returns invalid ref", "[00_basic][registry]") {
+    CAS_TEST_GUARD();
     cas::system::start();
     wait_ms(50);
 
@@ -14,6 +15,7 @@ TEST_CASE("Registry lookup of non-existent actor returns invalid ref", "[00_basi
 }
 
 TEST_CASE("Actor can be registered and found by name", "[00_basic][registry]") {
+    CAS_TEST_GUARD();
     class named_actor : public cas::actor {
     protected:
         void on_start() override {
@@ -34,6 +36,7 @@ TEST_CASE("Actor can be registered and found by name", "[00_basic][registry]") {
 }
 
 TEST_CASE("Registry lookup before start returns invalid ref", "[00_basic][registry]") {
+    CAS_TEST_GUARD();
     class named_actor : public cas::actor {
     protected:
         void on_start() override {
@@ -59,6 +62,7 @@ TEST_CASE("Registry lookup before start returns invalid ref", "[00_basic][regist
 }
 
 TEST_CASE("Multiple actors with different names can be registered", "[00_basic][registry]") {
+    CAS_TEST_GUARD();
     class named_actor : public cas::actor {
     private:
         std::string name_to_set_;
@@ -94,6 +98,7 @@ TEST_CASE("Multiple actors with different names can be registered", "[00_basic][
 }
 
 TEST_CASE("Registry count is correct", "[00_basic][registry]") {
+    CAS_TEST_GUARD();
     class named_actor : public cas::actor {
     private:
         std::string name_to_set_;

@@ -50,6 +50,7 @@ namespace timer_lifecycle_test {
 }
 
 TEST_CASE("Cancel timer before it fires", "[06_timers][lifecycle]") {
+    CAS_TEST_GUARD();
     auto actor = cas::system::create<timer_lifecycle_test::lifecycle_actor>();
 
     cas::system::start();
@@ -87,6 +88,7 @@ TEST_CASE("Cancel timer before it fires", "[06_timers][lifecycle]") {
 }
 
 TEST_CASE("Cancelling same timer multiple times is safe", "[06_timers][lifecycle]") {
+    CAS_TEST_GUARD();
     auto actor = cas::system::create<timer_lifecycle_test::lifecycle_actor>();
 
     cas::system::start();
@@ -124,6 +126,7 @@ TEST_CASE("Cancelling same timer multiple times is safe", "[06_timers][lifecycle
 }
 
 TEST_CASE("Cancelling INVALID_TIMER_ID is safe", "[06_timers][lifecycle]") {
+    CAS_TEST_GUARD();
     auto actor = cas::system::create<timer_lifecycle_test::lifecycle_actor>();
 
     cas::system::start();
@@ -156,6 +159,7 @@ TEST_CASE("Cancelling INVALID_TIMER_ID is safe", "[06_timers][lifecycle]") {
 }
 
 TEST_CASE("Timers are cleaned up when actor stops", "[06_timers][lifecycle]") {
+    CAS_TEST_GUARD();
     struct start_periodic_msg : public cas::message_base {
         int interval_ms;
     };
@@ -224,6 +228,7 @@ TEST_CASE("Timers are cleaned up when actor stops", "[06_timers][lifecycle]") {
 }
 
 TEST_CASE("Timer fires to correct actor after system restart", "[06_timers][lifecycle]") {
+    CAS_TEST_GUARD();
     // First run
     {
         auto actor = cas::system::create<timer_lifecycle_test::lifecycle_actor>();

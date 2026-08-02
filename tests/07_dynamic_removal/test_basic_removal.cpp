@@ -22,6 +22,7 @@ struct ping : public cas::message_base {};
 } // namespace message
 
 TEST_CASE("Basic actor removal", "[07_dynamic_removal][basic]") {
+    CAS_TEST_GUARD();
     cas::system::reset();
     cas::system::configure(cas::system_config{});
 

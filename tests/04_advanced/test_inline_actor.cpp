@@ -75,6 +75,7 @@ namespace inline_actor_test {
 }
 
 TEST_CASE("Inline actor with direct method calls", "[04_advanced][inline_actor]") {
+    CAS_TEST_GUARD();
     using namespace inline_actor_test;
 
     auto calc = cas::system::create<calculator>();
@@ -90,6 +91,7 @@ TEST_CASE("Inline actor with direct method calls", "[04_advanced][inline_actor]"
 }
 
 TEST_CASE("Inline actor with message passing (synchronous)", "[04_advanced][inline_actor]") {
+    CAS_TEST_GUARD();
     using namespace inline_actor_test;
 
     auto calc = cas::system::create<calculator>();
@@ -114,6 +116,7 @@ TEST_CASE("Inline actor with message passing (synchronous)", "[04_advanced][inli
 }
 
 TEST_CASE("Inline actor with multiple callers (thread-safe)", "[04_advanced][inline_actor]") {
+    CAS_TEST_GUARD();
     using namespace inline_actor_test;
 
     auto calc = cas::system::create<calculator>();
@@ -143,6 +146,7 @@ TEST_CASE("Inline actor with multiple callers (thread-safe)", "[04_advanced][inl
 }
 
 TEST_CASE("Non-thread-safe inline actor (single caller)", "[04_advanced][inline_actor]") {
+    CAS_TEST_GUARD();
     using namespace inline_actor_test;
 
     auto calc = cas::system::create<fast_calculator>();

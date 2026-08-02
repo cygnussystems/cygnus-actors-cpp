@@ -50,6 +50,7 @@ namespace ask_serialization_test {
 }
 
 TEST_CASE("Ask handlers are serialised with regular handlers", "[11_concurrency][invariant1]") {
+    CAS_TEST_GUARD();
     using namespace ask_serialization_test;
 
     constexpr int kPerThread = 400;
@@ -110,6 +111,7 @@ TEST_CASE("Ask handlers are serialised with regular handlers", "[11_concurrency]
 }
 
 TEST_CASE("Ask that would deadlock throws instead of hanging", "[11_concurrency][invariant1]") {
+    CAS_TEST_GUARD();
     using namespace ask_serialization_test;
 
     // An actor asking a target pinned to its own worker thread would block that

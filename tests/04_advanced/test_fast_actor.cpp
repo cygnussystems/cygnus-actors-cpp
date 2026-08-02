@@ -55,6 +55,7 @@ namespace fast_actor_test {
 }
 
 TEST_CASE("Fast actor processes messages with low latency", "[04_advanced][fast_actor]") {
+    CAS_TEST_GUARD();
     using namespace fast_actor_test;
 
     auto actor = cas::system::create<low_latency_actor>();
@@ -82,6 +83,7 @@ TEST_CASE("Fast actor processes messages with low latency", "[04_advanced][fast_
 }
 
 TEST_CASE("Fast actor with yield strategy (default)", "[04_advanced][fast_actor]") {
+    CAS_TEST_GUARD();
     using namespace fast_actor_test;
 
     // Yield strategy - cooperative CPU usage
@@ -107,6 +109,7 @@ TEST_CASE("Fast actor with yield strategy (default)", "[04_advanced][fast_actor]
 }
 
 TEST_CASE("Fast actor with hybrid strategy", "[04_advanced][fast_actor]") {
+    CAS_TEST_GUARD();
     using namespace fast_actor_test;
 
     // Hybrid strategy - spin then yield
@@ -132,6 +135,7 @@ TEST_CASE("Fast actor with hybrid strategy", "[04_advanced][fast_actor]") {
 }
 
 TEST_CASE("Fast actor handles shutdown correctly", "[04_advanced][fast_actor]") {
+    CAS_TEST_GUARD();
     using namespace fast_actor_test;
 
     auto actor = cas::system::create<low_latency_actor>();

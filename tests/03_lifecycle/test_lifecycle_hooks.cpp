@@ -38,6 +38,7 @@ namespace lifecycle_test {
 }
 
 TEST_CASE("on_start is called when system starts", "[03_lifecycle][hooks]") {
+    CAS_TEST_GUARD();
     std::atomic<bool> on_start_called{false};
     std::atomic<bool> on_shutdown_called{false};
     std::atomic<bool> on_stop_called{false};
@@ -60,6 +61,7 @@ TEST_CASE("on_start is called when system starts", "[03_lifecycle][hooks]") {
 }
 
 TEST_CASE("All lifecycle hooks are called in order", "[03_lifecycle][hooks]") {
+    CAS_TEST_GUARD();
     std::atomic<bool> on_start_called{false};
     std::atomic<bool> on_shutdown_called{false};
     std::atomic<bool> on_stop_called{false};
@@ -87,6 +89,7 @@ TEST_CASE("All lifecycle hooks are called in order", "[03_lifecycle][hooks]") {
 }
 
 TEST_CASE("Multiple actors all complete lifecycle", "[03_lifecycle][hooks]") {
+    CAS_TEST_GUARD();
     const int NUM_ACTORS = 3;
     std::vector<std::atomic<bool>> starts(NUM_ACTORS);
     std::vector<std::atomic<bool>> shutdowns(NUM_ACTORS);

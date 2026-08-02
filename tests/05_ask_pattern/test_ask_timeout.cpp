@@ -19,6 +19,7 @@ protected:
 };
 
 TEST_CASE("Ask with timeout returns value when fast enough", "[05_ask_pattern][timeout]") {
+    CAS_TEST_GUARD();
     auto slow = cas::system::create<slow_responder>();
 
     cas::system::start();
@@ -34,6 +35,7 @@ TEST_CASE("Ask with timeout returns value when fast enough", "[05_ask_pattern][t
 }
 
 TEST_CASE("Ask with timeout returns nullopt when too slow", "[05_ask_pattern][timeout]") {
+    CAS_TEST_GUARD();
     auto slow = cas::system::create<slow_responder>();
 
     cas::system::start();
@@ -48,6 +50,7 @@ TEST_CASE("Ask with timeout returns nullopt when too slow", "[05_ask_pattern][ti
 }
 
 TEST_CASE("Ask timeout does not block forever", "[05_ask_pattern][timeout]") {
+    CAS_TEST_GUARD();
     auto slow = cas::system::create<slow_responder>();
 
     cas::system::start();
@@ -69,6 +72,7 @@ TEST_CASE("Ask timeout does not block forever", "[05_ask_pattern][timeout]") {
 }
 
 TEST_CASE("Multiple asks with different timeouts", "[05_ask_pattern][timeout]") {
+    CAS_TEST_GUARD();
     auto slow = cas::system::create<slow_responder>();
 
     cas::system::start();

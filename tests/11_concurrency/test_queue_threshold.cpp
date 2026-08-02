@@ -28,16 +28,14 @@ namespace threshold_test {
 }
 
 TEST_CASE("Queue threshold breach invokes the handler", "[11_concurrency][threshold]") {
+    // Restores default config and clears handlers even if a REQUIRE throws
+    CAS_CONFIG_GUARD();
     using namespace threshold_test;
 
     std::atomic<int> callback_count{0};
     std::atomic<size_t> reported_threshold{0};
     std::string reported_name;
     std::mutex name_mutex;
-
-    // A previous test may have left the system running; configure() rejects
-    // that. Ensure a clean slate before touching configuration.
-    TEST_CLEANUP();
 
     cas::system_config config;
     config.queue_threshold = 20;
@@ -82,17 +80,13 @@ TEST_CASE("Queue threshold breach invokes the handler", "[11_concurrency][thresh
     // Fires once per breach, not once per message
     REQUIRE(callback_count.load() == 1);
 
-    cas::system::clear_queue_threshold_handler();
-    TEST_CLEANUP();
-
-    // Restore default configuration so later tests are unaffected
-    cas::system::configure(cas::system_config{});
+    // CAS_CONFIG_GUARD() resets the system, clears the handler and restores
+    // default configuration on scope exit.
 }
 
 TEST_CASE("No threshold handler is safe", "[11_concurrency][threshold]") {
+    CAS_CONFIG_GUARD();
     using namespace threshold_test;
-
-    TEST_CLEANUP();
 
     cas::system_config config;
     config.queue_threshold = 5;
@@ -115,7 +109,4 @@ TEST_CASE("No threshold handler is safe", "[11_concurrency][threshold]") {
     wait_ms(100);
 
     SUCCEED("Breaching the threshold with no handler installed did not crash");
-
-    TEST_CLEANUP();
-    cas::system::configure(cas::system_config{});
 }

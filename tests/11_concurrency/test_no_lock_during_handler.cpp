@@ -44,6 +44,7 @@ namespace lock_scope_test {
 }
 
 TEST_CASE("Handler can create an actor without deadlocking", "[11_concurrency][invariant2]") {
+    CAS_TEST_GUARD();
     using namespace lock_scope_test;
 
     auto spawner = cas::system::create<spawner_actor>();
@@ -71,6 +72,7 @@ TEST_CASE("Handler can create an actor without deadlocking", "[11_concurrency][i
 }
 
 TEST_CASE("A slow handler does not block other worker threads", "[11_concurrency][invariant2]") {
+    CAS_TEST_GUARD();
     // With the system-wide mutex held across dispatch, one slow handler stalled
     // every worker. Two actors on different threads should make progress
     // independently.

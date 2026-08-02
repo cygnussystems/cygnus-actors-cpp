@@ -76,6 +76,7 @@ namespace handler_test {
 }
 
 TEST_CASE("Actor can register a handler", "[01_simple][handler]") {
+    CAS_TEST_GUARD();
     auto actor = cas::system::create<handler_test::handler_actor>();
 
     cas::system::start();
@@ -88,6 +89,7 @@ TEST_CASE("Actor can register a handler", "[01_simple][handler]") {
 }
 
 TEST_CASE("Actor can register lambda handler", "[01_simple][handler]") {
+    CAS_TEST_GUARD();
     auto actor = cas::system::create<handler_test::lambda_handler_actor>();
 
     cas::system::start();
@@ -99,6 +101,7 @@ TEST_CASE("Actor can register lambda handler", "[01_simple][handler]") {
 }
 
 TEST_CASE("Actor can register multiple handlers", "[01_simple][handler]") {
+    CAS_TEST_GUARD();
     auto actor = cas::system::create<handler_test::multi_handler_actor>();
 
     cas::system::start();

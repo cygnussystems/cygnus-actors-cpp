@@ -168,6 +168,38 @@ creating another actor during initialisation self-deadlocked.
 
 ---
 
+## Test hygiene — why every test declares a guard
+
+The actor system is a process-wide singleton, so a test that leaves it running
+corrupts every test after it: `start()` returns early when already running, so
+`on_start()` never runs and no handlers register. One real failure then produces a
+cascade of fake ones, and the only trustworthy line in the output is the first.
+
+Catch2's `REQUIRE` throws on failure, so cleanup written at the *end* of a test
+body is skipped exactly when it is most needed. Cleanup must therefore be RAII:
+
+```cpp
+TEST_CASE("...") {
+    CAS_TEST_GUARD();     // resets the system on scope exit, including on throw
+    ...
+}
+
+TEST_CASE("...") {
+    CAS_CONFIG_GUARD();   // as above, plus restores default system_config and
+    ...                   // clears global handlers - use when the test calls
+}                         // configure() or set_*_handler()
+```
+
+Both guards are `noexcept` in the destructor: they run during unwinding, where
+throwing would call `std::terminate`.
+
+**Reviewer question:** does every new `TEST_CASE` that calls `system::start()`
+declare a guard on its first line?
+
+Verified: injecting a failure into test 17 of 98 produces exactly one failure.
+
+---
+
 ## Defense in depth
 
 Tests alone cannot prove the absence of a data race — races are probabilistic and

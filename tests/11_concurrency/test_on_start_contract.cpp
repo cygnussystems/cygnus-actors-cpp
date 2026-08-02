@@ -35,6 +35,7 @@ namespace on_start_contract_test {
 
 TEST_CASE("ask() from on_start() throws instead of hanging",
           "[11_concurrency][on_start_contract]") {
+    CAS_TEST_GUARD();
     using namespace on_start_contract_test;
 
     class asking_actor : public cas::actor {
@@ -73,6 +74,7 @@ TEST_CASE("ask() from on_start() throws instead of hanging",
 
 TEST_CASE("tell() from on_start() is permitted and delivered",
           "[11_concurrency][on_start_contract]") {
+    CAS_TEST_GUARD();
     using namespace on_start_contract_test;
 
     // This is the documented pattern in README.md and doc/120_best_practices.md.
@@ -109,6 +111,7 @@ TEST_CASE("tell() from on_start() is permitted and delivered",
 
 TEST_CASE("system::create() from on_start() does not deadlock at startup",
           "[11_concurrency][on_start_contract]") {
+    CAS_TEST_GUARD();
     // start() used to hold m_actors_mutex across on_start(), so an actor that
     // created another actor during initialisation self-deadlocked. This is the
     // documented supervisor pattern (README.md, doc/70_dynamic_removal.md).
@@ -143,6 +146,7 @@ TEST_CASE("system::create() from on_start() does not deadlock at startup",
 
 TEST_CASE("is_initialising() is false outside on_start()",
           "[11_concurrency][on_start_contract]") {
+    CAS_TEST_GUARD();
     using namespace on_start_contract_test;
 
     // The flag must be cleared when on_start() returns, or ask() would be

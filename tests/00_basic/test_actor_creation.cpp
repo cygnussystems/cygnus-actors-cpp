@@ -3,6 +3,7 @@
 // Level 0: Most basic test - can we even create an actor?
 
 TEST_CASE("Can create a simple actor", "[00_basic][creation]") {
+    CAS_TEST_GUARD();
     class simple_actor : public cas::actor {
     protected:
         void on_start() override {}
@@ -17,6 +18,7 @@ TEST_CASE("Can create a simple actor", "[00_basic][creation]") {
 }
 
 TEST_CASE("Can create multiple actors", "[00_basic][creation]") {
+    CAS_TEST_GUARD();
     class simple_actor : public cas::actor {
     protected:
         void on_start() override {}
@@ -40,6 +42,7 @@ TEST_CASE("Can create multiple actors", "[00_basic][creation]") {
 }
 
 TEST_CASE("Actor count is tracked correctly", "[00_basic][creation]") {
+    CAS_TEST_GUARD();
     class simple_actor : public cas::actor {
     protected:
         void on_start() override {}
@@ -61,6 +64,7 @@ TEST_CASE("Actor count is tracked correctly", "[00_basic][creation]") {
 }
 
 TEST_CASE("System starts and stops cleanly", "[00_basic][system]") {
+    CAS_TEST_GUARD();
     class simple_actor : public cas::actor {
     protected:
         void on_start() override {}
@@ -83,6 +87,7 @@ TEST_CASE("System starts and stops cleanly", "[00_basic][system]") {
 }
 
 TEST_CASE("Minimal test - instance_id member", "[00_basic][instance_id]") {
+    CAS_TEST_GUARD();
     class minimal_actor : public cas::actor {
     protected:
         void on_start() override {

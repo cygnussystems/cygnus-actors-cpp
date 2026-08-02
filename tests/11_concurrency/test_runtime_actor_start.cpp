@@ -32,6 +32,7 @@ namespace runtime_start_test {
 
 TEST_CASE("Actor created after start() is started and handles messages",
           "[11_concurrency][runtime_start]") {
+    CAS_TEST_GUARD();
     using namespace runtime_start_test;
 
     // Nothing is created before start() - the system comes up empty
@@ -63,6 +64,7 @@ TEST_CASE("Actor created after start() is started and handles messages",
 
 TEST_CASE("Actor spawned from inside a handler is started",
           "[11_concurrency][runtime_start]") {
+    CAS_TEST_GUARD();
     using namespace runtime_start_test;
 
     // Combines the runtime-start fix with INVARIANT 2: creating an actor from
@@ -118,6 +120,7 @@ TEST_CASE("Actor spawned from inside a handler is started",
 
 TEST_CASE("Fast actor created after start() is started and polls",
           "[11_concurrency][runtime_start][fast_actor]") {
+    CAS_TEST_GUARD();
     using namespace runtime_start_test;
 
     // A fast_actor gets a dedicated polling thread launched by system::start().
@@ -176,6 +179,7 @@ TEST_CASE("Fast actor created after start() is started and polls",
 
 TEST_CASE("Fast actor created after start() drains a burst",
           "[11_concurrency][runtime_start][fast_actor]") {
+    CAS_TEST_GUARD();
     using namespace runtime_start_test;
 
     // Guards against the thread being launched but immediately exiting: a
@@ -216,6 +220,7 @@ TEST_CASE("Fast actor created after start() drains a burst",
 
 TEST_CASE("Actors created before start() are started exactly once",
           "[11_concurrency][runtime_start]") {
+    CAS_TEST_GUARD();
     using namespace runtime_start_test;
 
     // Guards against the obvious regression: register_actor() must not start
@@ -241,6 +246,7 @@ TEST_CASE("Actors created before start() are started exactly once",
 
 TEST_CASE("Fast actor created before start() is started exactly once",
           "[11_concurrency][runtime_start][fast_actor]") {
+    CAS_TEST_GUARD();
     // run_dedicated_thread() calls on_start() then delegates to
     // run_dedicated_thread_started(). If register_actor() also started
     // pre-start fast actors, on_start() would run twice.

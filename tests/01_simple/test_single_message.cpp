@@ -33,6 +33,7 @@ namespace single_msg_test {
 }
 
 TEST_CASE("Can send a single message to an actor", "[01_simple][messaging]") {
+    CAS_TEST_GUARD();
     auto receiver = cas::system::create<single_msg_test::receiver>();
 
     cas::system::start();
@@ -58,6 +59,7 @@ TEST_CASE("Can send a single message to an actor", "[01_simple][messaging]") {
 }
 
 TEST_CASE("Can send multiple messages to same actor", "[01_simple][messaging]") {
+    CAS_TEST_GUARD();
     auto receiver = cas::system::create<single_msg_test::receiver>();
 
     cas::system::start();
@@ -84,6 +86,7 @@ TEST_CASE("Can send multiple messages to same actor", "[01_simple][messaging]") 
 }
 
 TEST_CASE("Message sent from main has invalid sender", "[01_simple][messaging]") {
+    CAS_TEST_GUARD();
     class sender_checker : public cas::actor {
     private:
         bool sender_was_invalid_ = false;

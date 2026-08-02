@@ -73,6 +73,7 @@ namespace stateful_test {
 }
 
 TEST_CASE("Stateful actor rejects messages in wrong state", "[04_advanced][stateful]") {
+    CAS_TEST_GUARD();
     using namespace stateful_test;
 
     auto dl = cas::system::create<downloader>();
@@ -97,6 +98,7 @@ TEST_CASE("Stateful actor rejects messages in wrong state", "[04_advanced][state
 }
 
 TEST_CASE("Stateful actor processes deferred messages when state changes", "[04_advanced][stateful]") {
+    CAS_TEST_GUARD();
     using namespace stateful_test;
 
     auto dl = cas::system::create<downloader>();
@@ -128,6 +130,7 @@ TEST_CASE("Stateful actor processes deferred messages when state changes", "[04_
 }
 
 TEST_CASE("Stateful actor only processes accepted message types", "[04_advanced][stateful]") {
+    CAS_TEST_GUARD();
     using namespace stateful_test;
 
     auto dl = cas::system::create<downloader>();

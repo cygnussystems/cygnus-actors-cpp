@@ -44,6 +44,7 @@ namespace timer_basic_test {
 }
 
 TEST_CASE("One-shot timer fires after delay", "[06_timers][basic]") {
+    CAS_TEST_GUARD();
     auto actor = cas::system::create<timer_basic_test::timer_actor>();
 
     cas::system::start();
@@ -52,9 +53,12 @@ TEST_CASE("One-shot timer fires after delay", "[06_timers][basic]") {
     auto actor_ref = cas::actor_registry::get("timer_actor");
     REQUIRE(actor_ref.is_valid());
 
-    // Tell actor to schedule a timer for 100ms
+    // Tell actor to schedule a timer for 400ms.
+    // Sampling points sit far from the firing time so scheduler jitter cannot
+    // flip an assertion. The previous 100ms delay left only ~20ms of margin
+    // before the "not yet fired" check and failed intermittently.
     timer_basic_test::start_timer start_msg;
-    start_msg.delay_ms = 100;
+    start_msg.delay_ms = 400;
     start_msg.value = 42;
     actor_ref.tell(start_msg);
 
@@ -64,23 +68,24 @@ TEST_CASE("One-shot timer fires after delay", "[06_timers][basic]") {
     auto& timer_actor = actor.get_checked<timer_basic_test::timer_actor>();
     REQUIRE(timer_actor.get_last_timer_id() != cas::INVALID_TIMER_ID);
 
-    // Wait less than delay - should not have fired yet
-    wait_ms(30);
+    // ~150ms in: well before the 400ms deadline, so it must not have fired
+    wait_ms(100);
     REQUIRE(timer_actor.get_tick_count() == 0);
 
-    // Wait for timer to fire
-    wait_ms(50);
+    // ~600ms in: comfortably past the deadline
+    wait_ms(450);
     REQUIRE(timer_actor.get_tick_count() == 1);
     REQUIRE(timer_actor.get_last_value() == 42);
 
     // Wait more - should not fire again (one-shot)
-    wait_ms(200);
+    wait_ms(300);
     REQUIRE(timer_actor.get_tick_count() == 1);
 
     TEST_CLEANUP();
 }
 
 TEST_CASE("Multiple one-shot timers fire independently", "[06_timers][basic]") {
+    CAS_TEST_GUARD();
     auto actor = cas::system::create<timer_basic_test::timer_actor>();
 
     cas::system::start();
@@ -125,6 +130,7 @@ TEST_CASE("Multiple one-shot timers fire independently", "[06_timers][basic]") {
 }
 
 TEST_CASE("Timer with zero delay fires immediately", "[06_timers][basic]") {
+    CAS_TEST_GUARD();
     auto actor = cas::system::create<timer_basic_test::timer_actor>();
 
     cas::system::start();

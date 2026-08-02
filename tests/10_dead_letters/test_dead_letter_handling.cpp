@@ -1,5 +1,4 @@
-#include <catch2/catch.hpp>
-#include "cas/cas.h"
+#include "../test_common.h"
 #include <atomic>
 #include <thread>
 #include <chrono>
@@ -24,6 +23,7 @@ public:
 };
 
 TEST_CASE("Dead letter stats track dropped messages", "[10_dead_letters][stats]") {
+    CAS_TEST_GUARD();
     // Reset stats before test
     cas::system::reset_dead_letter_stats();
 
@@ -67,6 +67,7 @@ TEST_CASE("Dead letter stats track dropped messages", "[10_dead_letters][stats]"
 }
 
 TEST_CASE("Dead letter stats can be reset", "[10_dead_letters][stats]") {
+    CAS_TEST_GUARD();
     // First generate some dead letters
     cas::system::reset_dead_letter_stats();
 
@@ -97,6 +98,7 @@ TEST_CASE("Dead letter stats can be reset", "[10_dead_letters][stats]") {
 }
 
 TEST_CASE("Dead letter callback is invoked", "[10_dead_letters][callback]") {
+    CAS_CONFIG_GUARD();
     cas::system::reset_dead_letter_stats();
 
     std::atomic<int> callback_count{0};
@@ -141,6 +143,7 @@ TEST_CASE("Dead letter callback is invoked", "[10_dead_letters][callback]") {
 }
 
 TEST_CASE("Dead letter info contains correct message details", "[10_dead_letters][callback]") {
+    CAS_CONFIG_GUARD();
     cas::system::reset_dead_letter_stats();
 
     uint64_t captured_message_id = 0;

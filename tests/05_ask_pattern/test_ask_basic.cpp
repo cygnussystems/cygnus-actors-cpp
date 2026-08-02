@@ -39,6 +39,7 @@ protected:
 };
 
 TEST_CASE("Simple ask with integer return", "[05_ask_pattern][basic]") {
+    CAS_TEST_GUARD();
     auto calc = cas::system::create<calculator_actor>();
 
     cas::system::start();
@@ -53,6 +54,7 @@ TEST_CASE("Simple ask with integer return", "[05_ask_pattern][basic]") {
 }
 
 TEST_CASE("Multiple ask operations", "[05_ask_pattern][basic]") {
+    CAS_TEST_GUARD();
     auto calc = cas::system::create<calculator_actor>();
 
     cas::system::start();
@@ -73,6 +75,7 @@ TEST_CASE("Multiple ask operations", "[05_ask_pattern][basic]") {
 // NOTE: With dedicated ask thread pool, this test now works without deadlock!
 // Ask requests are processed by separate threads, so actors can call ask() safely.
 TEST_CASE("Ask from one actor to another", "[05_ask_pattern][basic]") {
+    CAS_TEST_GUARD();
     class requester_actor : public cas::actor {
     private:
         cas::actor_ref calc_ref;
@@ -113,6 +116,7 @@ TEST_CASE("Ask from one actor to another", "[05_ask_pattern][basic]") {
 }
 
 TEST_CASE("Ask blocks until result ready", "[05_ask_pattern][blocking]") {
+    CAS_TEST_GUARD();
     class slow_actor : public cas::actor {
     protected:
         void on_start() override {
@@ -144,6 +148,7 @@ TEST_CASE("Ask blocks until result ready", "[05_ask_pattern][blocking]") {
 }
 
 TEST_CASE("Ask with no handler throws exception", "[05_ask_pattern][error]") {
+    CAS_TEST_GUARD();
     struct unknown_op {};
 
     auto calc = cas::system::create<calculator_actor>();
@@ -161,6 +166,7 @@ TEST_CASE("Ask with no handler throws exception", "[05_ask_pattern][error]") {
 }
 
 TEST_CASE("Ask handler exception propagates to caller", "[05_ask_pattern][error]") {
+    CAS_TEST_GUARD();
     auto calc = cas::system::create<calculator_actor>();
 
     cas::system::start();

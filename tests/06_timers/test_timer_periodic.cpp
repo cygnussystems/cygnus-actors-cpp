@@ -54,6 +54,7 @@ namespace timer_periodic_test {
 }
 
 TEST_CASE("Periodic timer fires repeatedly", "[06_timers][periodic]") {
+    CAS_TEST_GUARD();
     auto actor = cas::system::create<timer_periodic_test::periodic_actor>();
 
     cas::system::start();
@@ -106,6 +107,7 @@ TEST_CASE("Periodic timer fires repeatedly", "[06_timers][periodic]") {
 }
 
 TEST_CASE("Periodic timer copies message for each firing", "[06_timers][periodic]") {
+    CAS_TEST_GUARD();
     auto actor = cas::system::create<timer_periodic_test::periodic_actor>();
 
     cas::system::start();
@@ -138,6 +140,7 @@ TEST_CASE("Periodic timer copies message for each firing", "[06_timers][periodic
 }
 
 TEST_CASE("Multiple periodic timers run independently", "[06_timers][periodic]") {
+    CAS_TEST_GUARD();
     struct fast_tick : public cas::message_base {};
     struct slow_tick : public cas::message_base {};
 
@@ -197,6 +200,7 @@ TEST_CASE("Multiple periodic timers run independently", "[06_timers][periodic]")
 }
 
 TEST_CASE("Cancelled periodic timer stops firing", "[06_timers][periodic]") {
+    CAS_TEST_GUARD();
     auto actor = cas::system::create<timer_periodic_test::periodic_actor>();
 
     cas::system::start();

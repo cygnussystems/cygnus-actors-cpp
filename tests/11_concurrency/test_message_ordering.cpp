@@ -44,6 +44,7 @@ namespace ordering_test {
 
 TEST_CASE("All messages from a single sender are delivered exactly once",
           "[11_concurrency][ordering]") {
+    CAS_TEST_GUARD();
     using namespace ordering_test;
 
     constexpr int kCount = 2000;
@@ -84,6 +85,7 @@ TEST_CASE("All messages from a single sender are delivered exactly once",
 
 TEST_CASE("Concurrent senders all get their messages delivered",
           "[11_concurrency][ordering]") {
+    CAS_TEST_GUARD();
     using namespace ordering_test;
 
     constexpr int kThreads = 4;

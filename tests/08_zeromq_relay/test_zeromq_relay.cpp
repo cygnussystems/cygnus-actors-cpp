@@ -43,6 +43,7 @@ TEST_CASE("ZeroMQ relay actor creation", "[08_zeromq_relay][basic]") {
 }
 
 TEST_CASE("ZeroMQ bind and connect", "[08_zeromq_relay][connection]") {
+    CAS_TEST_GUARD();
     cas::system::reset();
     cas::system::configure(cas::system_config{});
 
@@ -68,6 +69,7 @@ TEST_CASE("ZeroMQ bind and connect", "[08_zeromq_relay][connection]") {
 }
 
 TEST_CASE("ZeroMQ connect", "[08_zeromq_relay][connection]") {
+    CAS_TEST_GUARD();
     cas::system::reset();
     cas::system::configure(cas::system_config{});
 
@@ -93,6 +95,7 @@ TEST_CASE("ZeroMQ connect", "[08_zeromq_relay][connection]") {
 }
 
 TEST_CASE("ZeroMQ routing setup", "[08_zeromq_relay][routing]") {
+    CAS_TEST_GUARD();
     cas::system::reset();
     cas::system::configure(cas::system_config{});
 
@@ -129,6 +132,7 @@ TEST_CASE("ZeroMQ routing setup", "[08_zeromq_relay][routing]") {
 }
 
 TEST_CASE("ZeroMQ configuration", "[08_zeromq_relay][config]") {
+    CAS_TEST_GUARD();
     cas::system::reset();
     cas::system::configure(cas::system_config{});
 

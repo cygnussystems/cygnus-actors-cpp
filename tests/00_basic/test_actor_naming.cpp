@@ -3,6 +3,7 @@
 // Level 0: Test actor naming functionality
 
 TEST_CASE("Actor has auto-generated name by default", "[00_basic][naming]") {
+    CAS_TEST_GUARD();
     class simple_actor : public cas::actor {
     protected:
         void on_start() override {}
@@ -18,6 +19,7 @@ TEST_CASE("Actor has auto-generated name by default", "[00_basic][naming]") {
 }
 
 TEST_CASE("Actor can set name in on_start", "[00_basic][naming]") {
+    CAS_TEST_GUARD();
     class named_actor : public cas::actor {
     protected:
         void on_start() override {
@@ -36,6 +38,7 @@ TEST_CASE("Actor can set name in on_start", "[00_basic][naming]") {
 }
 
 TEST_CASE("Multiple actors can have different names", "[00_basic][naming]") {
+    CAS_TEST_GUARD();
     class named_actor : public cas::actor {
     private:
         std::string name_to_set_;
