@@ -110,6 +110,97 @@ TEST_CASE("Ask handlers are serialised with regular handlers", "[11_concurrency]
     TEST_CLEANUP();
 }
 
+TEST_CASE("Only one thread is inside an actor's handlers at a time",
+          "[11_concurrency][invariant1]") {
+    CAS_TEST_GUARD();
+    using namespace ask_serialization_test;
+
+    // Complements the 2N counter test above. That one detects a race only
+    // AFTER it has corrupted data; this one observes the mechanism directly by
+    // counting concurrent entries into the actor's handlers. It fails on the
+    // first overlap, whether or not any increment was actually lost.
+    //
+    // Note this duplicates some of the driving code above deliberately: the two
+    // tests assert different properties and must both stand on their own.
+    struct observed_actor : public cas::actor {
+        std::atomic<int> concurrent_entries{0};   // live count inside a handler
+        std::atomic<int> max_concurrent{0};       // high-water mark observed
+        std::atomic<int> total_dispatches{0};
+
+        void enter() {
+            int now = concurrent_entries.fetch_add(1) + 1;
+            int prev = max_concurrent.load();
+            while (now > prev &&
+                   !max_concurrent.compare_exchange_weak(prev, now)) {
+                // retry until the high-water mark reflects this entry
+            }
+            // Hold the window open briefly so a genuine overlap is observable
+            std::this_thread::sleep_for(std::chrono::microseconds(20));
+        }
+
+        void leave() {
+            concurrent_entries.fetch_sub(1);
+            total_dispatches.fetch_add(1);
+        }
+
+        void on_start() override {
+            set_name("observed_actor");
+            handler<increment_msg>([this](const increment_msg&) {
+                enter();
+                leave();
+            });
+            ask_handler<int, bump_op>(&observed_actor::on_bump);
+        }
+
+        int on_bump() {
+            enter();
+            leave();
+            return 0;
+        }
+    };
+
+    constexpr int kPerThread = 150;
+    constexpr int kTellThreads = 3;
+    constexpr int kAskThreads = 3;
+
+    auto a = cas::system::create<observed_actor>();
+    cas::system::start();
+    wait_ms(50);
+
+    auto ref = cas::actor_registry::get("observed_actor");
+    REQUIRE(ref.is_valid());
+
+    std::vector<std::thread> threads;
+    for (int t = 0; t < kTellThreads; ++t) {
+        threads.emplace_back([ref, n = kPerThread]() {
+            for (int i = 0; i < n; ++i) ref.tell(increment_msg{});
+        });
+    }
+    for (int t = 0; t < kAskThreads; ++t) {
+        threads.emplace_back([ref, n = kPerThread]() mutable {
+            for (int i = 0; i < n; ++i) {
+                try { ref.ask<int>(bump_op{}); } catch (const std::exception&) {}
+            }
+        });
+    }
+    for (auto& th : threads) th.join();
+
+    constexpr int kExpected = (kTellThreads + kAskThreads) * kPerThread;
+    auto& obj = a.get_checked<observed_actor>();
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    while (obj.total_dispatches.load() < kExpected &&
+           std::chrono::steady_clock::now() < deadline) {
+        wait_ms(10);
+    }
+
+    REQUIRE(obj.total_dispatches.load() == kExpected);
+
+    // The invariant: never more than one thread inside this actor's handlers.
+    REQUIRE(obj.max_concurrent.load() == 1);
+
+    TEST_CLEANUP();
+}
+
 TEST_CASE("Ask that would deadlock throws instead of hanging", "[11_concurrency][invariant1]") {
     CAS_TEST_GUARD();
     using namespace ask_serialization_test;

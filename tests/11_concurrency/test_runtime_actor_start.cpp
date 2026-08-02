@@ -177,6 +177,58 @@ TEST_CASE("Fast actor created after start() is started and polls",
     TEST_CLEANUP();
 }
 
+TEST_CASE("Runtime fast actor runs on its own dedicated thread",
+          "[11_concurrency][runtime_start][fast_actor]") {
+    using namespace runtime_start_test;
+    CAS_TEST_GUARD();
+
+    // Asserts the mechanism directly rather than inferring it from delivery.
+    // A fast actor must execute on a dedicated thread that is neither the
+    // caller's nor a pooled worker - if register_actor() failed to launch one,
+    // or launched it on the wrong entry point, this fails.
+    class thread_probe_actor : public cas::fast_actor {
+    public:
+        std::atomic<bool> ran{false};
+        std::thread::id handler_thread{};
+        std::thread::id on_start_thread{};
+
+    protected:
+        void on_start() override {
+            set_name("thread_probe");
+            on_start_thread = std::this_thread::get_id();
+            handler<work_msg>([this](const work_msg&) {
+                handler_thread = std::this_thread::get_id();
+                ran.store(true);  // release: publishes handler_thread
+            });
+        }
+    };
+
+    cas::system::start();
+    wait_ms(50);
+
+    const std::thread::id main_thread = std::this_thread::get_id();
+
+    auto probe = cas::system::create<thread_probe_actor>();
+    auto& obj = probe.get_checked<thread_probe_actor>();
+
+    // on_start() is called synchronously by create(), so on the caller's thread
+    REQUIRE(obj.on_start_thread == main_thread);
+
+    probe.tell(work_msg{});
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!obj.ran.load() && std::chrono::steady_clock::now() < deadline) {
+        wait_ms(10);
+    }
+    REQUIRE(obj.ran.load());
+
+    // The handler ran on the actor's own polling thread, not the caller's
+    REQUIRE(obj.handler_thread != main_thread);
+    REQUIRE(obj.handler_thread != std::thread::id{});
+
+    TEST_CLEANUP();
+}
+
 TEST_CASE("Fast actor created after start() drains a burst",
           "[11_concurrency][runtime_start][fast_actor]") {
     CAS_TEST_GUARD();

@@ -135,4 +135,22 @@ if(BUILD_TESTS)
     # Enable CTest integration
     enable_testing()
     add_test(NAME unit_tests COMMAND unit_tests)
+
+    # Test-isolation probe.
+    #
+    # This binary is EXPECTED TO FAIL - it contains one deliberately-failing
+    # test followed by healthy ones. It is deliberately NOT part of unit_tests,
+    # because a failing case there would fail the build.
+    #
+    # check_isolation.cmake runs it and asserts the failure count is exactly 1.
+    # More than that means a failing test corrupted the process-wide actor
+    # system and took the following tests down with it.
+    add_executable(isolation_probe tests/12_isolation/isolation_probe.cpp)
+    target_link_libraries(isolation_probe ${PROJECT_NAME} Catch2::Catch2)
+
+    add_test(NAME test_isolation
+        COMMAND ${CMAKE_COMMAND}
+            -DPROBE_EXE=$<TARGET_FILE:isolation_probe>
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/12_isolation/check_isolation.cmake
+    )
 endif()

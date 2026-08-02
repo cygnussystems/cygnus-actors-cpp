@@ -196,7 +196,19 @@ throwing would call `std::terminate`.
 **Reviewer question:** does every new `TEST_CASE` that calls `system::start()`
 declare a guard on its first line?
 
-Verified: injecting a failure into test 17 of 98 produces exactly one failure.
+This is checked automatically rather than by hand. `tests/12_isolation/` builds a
+second binary, `isolation_probe`, which **is expected to fail**: it contains one
+deliberately-failing test followed by four healthy ones. The CTest target
+`test_isolation` runs it and asserts the failure count is exactly 1. More than
+that means a failing test corrupted the singleton and took its successors with
+it.
+
+The healthy tests assert `is_running() == false` and `actor_count() == 0` on
+entry. Without those explicit preconditions the probe was insensitive — each
+cycle creates a fresh actor whose `set_name()` overwrites the registry entry, so
+a cycle could pass even with the system left running. Verified both ways:
+removing a guard from the probe makes `test_isolation` fail with a diagnostic
+naming the cause.
 
 ---
 
