@@ -344,25 +344,46 @@ protected:
 };
 ```
 
-**Important:** Ask calls from within actors are safe because Cygnus uses a dedicated thread pool for ask processing, preventing deadlocks.
+## How Ask Is Processed
 
-## Dedicated Thread Pool
+An ask request is placed on the target actor's **own ask queue** and executed by
+that actor's worker thread, ahead of its regular mailbox. The calling thread
+blocks on a future until the handler returns.
 
-Ask operations are processed by a dedicated thread pool, separate from regular message processing threads. This prevents deadlocks and ensures ask calls don't block regular message processing.
+This means an ask handler is serialised with the actor's regular handlers: they
+never run at the same time on the same actor, so both can touch member state
+without locks. That is INVARIANT 1 — see `doc/INVARIANTS.md`.
 
-**Configuration:**
+> **Historical note:** an earlier version processed asks on a dedicated thread
+> pool, dispatching directly into the target actor. That let an ask handler and a
+> regular handler run concurrently on one actor, which is a data race in any actor
+> that mixes them. `system_config::ask_thread_pool_size` still exists so old
+> configuration code compiles, but it is ignored.
+
+### Calling ask() from inside a handler
+
+Safe **only when the target actor is on a different worker thread**. Since the
+target's own thread must run the handler, asking an actor pinned to your own
+thread would block the very thread that has to service the request.
+
+That case is detected and throws `cas::ask_deadlock_error` immediately rather
+than hanging:
+
 ```cpp
-cas::system_config config;
-config.ask_thread_pool_size = 8;  // Default: 4
-
-cas::system::configure(config);
-cas::system::start();
+void on_request(const request& msg) {
+    try {
+        int result = other_actor.ask<int>(compute_op{}, 42);
+    } catch (const cas::ask_deadlock_error& e) {
+        // Target shares this actor's thread - use tell() with a reply instead
+    }
+}
 ```
 
-**Benefits:**
-- No deadlock when actor A asks actor B, and B asks A
-- Regular message processing not blocked by long ask operations
-- Concurrent ask operations processed in parallel
+Actor assignment to threads is round-robin and not something you control, so a
+handler that asks another actor **may throw depending on placement**. For
+actor-to-actor communication, prefer `tell()` with an explicit reply message —
+it is non-blocking and never has this problem. Reserve `ask()` for calls from
+outside the actor system (main thread, test code, request handlers).
 
 ## Performance Considerations
 
@@ -479,7 +500,8 @@ int calculate(int a, int b) {
 
 // ✗ BAD: Slow blocking operation
 std::string fetch_from_network(const std::string& url) {
-    // This blocks the ask thread pool!
+    // This occupies the target actor's worker thread for the whole call,
+    // stalling every other actor assigned to that thread.
     return http_get(url);  // Can take seconds
 }
 ```
@@ -519,7 +541,8 @@ for (int i = 0; i < 1000; ++i) {
 | Execution | Synchronous (blocks) | Asynchronous (returns immediately) |
 | Return value | Yes | No (use callbacks) |
 | Overhead | ~10-50 μs | ~1-10 μs |
-| Thread pool | Dedicated ask pool | Worker thread pool |
+| Runs on | Target actor's worker thread | Target actor's worker thread |
+| Queue | Actor's ask queue (priority) | Actor's mailbox |
 | Timeout support | Yes | No |
 | Use case | Need immediate result | Fire-and-forget |
 

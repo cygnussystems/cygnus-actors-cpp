@@ -37,9 +37,17 @@ void fast_actor::cpu_pause() {
 
 void fast_actor::run_dedicated_thread() {
     // Call on_start() for initialization
-    current_actor_context = this;
-    on_start();
-    current_actor_context = nullptr;
+    {
+        on_start_scope scope(this);
+        on_start();
+    }
+
+    run_dedicated_thread_started();
+}
+
+void fast_actor::run_dedicated_thread_started() {
+    // Entry point for actors whose on_start() has already been called by
+    // register_actor() (created after the system was already running).
 
     // Tight polling loop with configurable strategy
     while (get_state() == actor_state::running) {

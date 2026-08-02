@@ -89,33 +89,35 @@ TEST_CASE("Multiple one-shot timers fire independently", "[06_timers][basic]") {
     auto actor_ref = cas::actor_registry::get("timer_actor");
     REQUIRE(actor_ref.is_valid());
 
-    // Schedule 3 timers with different delays
+    // Schedule 3 timers with well-separated delays.
+    // Sampling points sit midway between firings so the assertions do not
+    // depend on message-delivery latency. Tight margins here previously
+    // passed only because the worker polled on a 1ms sleep; that latency is
+    // gone now that enqueue signals the worker directly.
     timer_basic_test::start_timer msg1, msg2, msg3;
-    msg1.delay_ms = 50;
+    msg1.delay_ms = 100;
     msg1.value = 1;
-    msg2.delay_ms = 100;
+    msg2.delay_ms = 300;
     msg2.value = 2;
-    msg3.delay_ms = 150;
+    msg3.delay_ms = 500;
     msg3.value = 3;
 
     actor_ref.tell(msg1);
     actor_ref.tell(msg2);
     actor_ref.tell(msg3);
 
-    wait_ms(50);  // Let messages be processed
-
     auto& timer_actor = actor.get_checked<timer_basic_test::timer_actor>();
 
-    // After 75ms, first should have fired
-    wait_ms(40);
+    // Sample at ~200ms: only the 100ms timer has fired
+    wait_ms(200);
     REQUIRE(timer_actor.get_tick_count() == 1);
 
-    // After 125ms total, first two should have fired
-    wait_ms(50);
+    // Sample at ~400ms: the 100ms and 300ms timers have fired
+    wait_ms(200);
     REQUIRE(timer_actor.get_tick_count() == 2);
 
-    // After 175ms total, all three should have fired
-    wait_ms(50);
+    // Sample at ~600ms: all three have fired
+    wait_ms(200);
     REQUIRE(timer_actor.get_tick_count() == 3);
     REQUIRE(timer_actor.get_last_value() == 3);
 

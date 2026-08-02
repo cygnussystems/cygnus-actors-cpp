@@ -5,11 +5,34 @@
 #include <future>
 #include <tuple>
 #include <typeindex>
+#include <stdexcept>
+#include <string>
 
 namespace cas {
 
 // Forward declaration
 class actor;
+
+// Thrown when ask() would block the very thread that must service the request.
+// Ask requests are processed on the target actor's own worker thread, so a
+// handler asking an actor that shares its thread would wait forever.
+// Fix: use tell() with an explicit reply message instead of ask().
+class ask_deadlock_error : public std::runtime_error {
+public:
+    explicit ask_deadlock_error(const std::string& what)
+        : std::runtime_error(what) {}
+};
+
+// Thrown when an operation is attempted from on_start() that is not permitted
+// during initialisation. on_start() is for initialising the actor itself:
+// set_name(), handler registration, member setup, and schedule_* timers.
+// tell() and system::create() are permitted. ask() is not - it blocks waiting
+// for a reply from a system that may not be processing messages yet.
+class on_start_violation : public std::logic_error {
+public:
+    explicit on_start_violation(const std::string& what)
+        : std::logic_error(what) {}
+};
 
 // Internal message type for ask pattern
 // Carries the operation tag, arguments, and a promise for the result

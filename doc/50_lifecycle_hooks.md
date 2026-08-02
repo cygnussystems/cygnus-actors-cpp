@@ -45,7 +45,13 @@ Actors have a well-defined lifecycle with three hooks that give you precise cont
 
 ### on_start()
 
-Called when `system::start()` is invoked, before any messages are processed.
+Called once per actor, before it processes any messages.
+
+- Actors created **before** `system::start()` are started by `start()`.
+- Actors created **after** the system is running are started by `create()`, before
+  it returns — so the actor is ready to receive messages immediately.
+
+Either way `on_start()` runs exactly once.
 
 **Signature:**
 ```cpp
@@ -53,13 +59,54 @@ protected:
     void on_start() override;
 ```
 
-**Purpose:**
+**Purpose:** `on_start()` is for initialising *this* actor.
+
 - Initialize actor state
 - Register message handlers
 - Lookup other actors in registry
 - Set actor name
 - Start timers
-- Send initial messages
+- Send initial messages with `tell()`
+
+**Permitted:**
+
+| Operation | Notes |
+|---|---|
+| `set_name()` | Also registers in the actor registry |
+| `handler<T>()`, `ask_handler<>()` | The main purpose of the hook |
+| Member initialisation | |
+| `schedule_once()`, `schedule_periodic()` | Timers fire once the system is running |
+| `tell()` / `operator<<` | Queued; delivered once workers start |
+| `system::create()` | Safe on both the startup and runtime paths |
+| `actor_registry::get()` | See the ordering caveat below |
+
+**Not permitted:**
+
+| Operation | Why | Result |
+|---|---|---|
+| `ask()` | Blocks waiting for a reply from a system that may not be processing messages yet — at startup no worker thread exists | Throws `cas::on_start_violation` |
+
+```cpp
+void on_start() override {
+    set_name("my_actor");
+    handler<work_msg>(&my_actor::on_work);
+
+    auto other = cas::actor_registry::get("other_actor");
+
+    other.tell(hello_msg{});           // ✓ fine - queued for delivery
+    // int r = other.ask<int>(op{});   // ✗ throws cas::on_start_violation
+}
+```
+
+If you need a value from another actor during startup, `tell()` a request and
+handle the reply in a normal message handler. That keeps initialisation
+non-blocking, which is what lets the whole system come up.
+
+> **Registry ordering:** `actor_registry::get()` only finds actors whose
+> `on_start()` has already run, since `set_name()` is what registers them. Actors
+> are started in creation order, so a lookup for an actor created *after* this one
+> will fail at startup. Prefer passing an `actor_ref` through the constructor when
+> the dependency is known, or do the lookup lazily in a handler.
 
 **Example:**
 ```cpp

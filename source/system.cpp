@@ -56,23 +56,45 @@ void system::start() {
         if (thread_count == 0) thread_count = 4;
     }
 
-    // Initialize per-thread actor lists
-    inst.m_actors_per_thread.resize(thread_count);
+    // Initialize per-thread actor lists. register_actor() may have already
+    // sized this using the same width; only grow, never shrink, so actors
+    // registered before start() are never discarded.
+    {
+        std::lock_guard<std::mutex> lock(inst.m_actors_mutex);
+        if (inst.m_actors_per_thread.size() < thread_count) {
+            inst.m_actors_per_thread.resize(thread_count);
+        } else {
+            thread_count = inst.m_actors_per_thread.size();
+        }
+    }
+
+    // Initialize per-worker wakeup signals (sized once; never resized while running)
+    inst.m_worker_signals.clear();
+    inst.m_worker_signals.reserve(thread_count);
+    for (size_t i = 0; i < thread_count; ++i) {
+        inst.m_worker_signals.push_back(std::make_unique<worker_signal>());
+    }
 
     // Start timer manager
     inst.m_timer_manager.start();
 
-    // Start all pooled actors (call on_start)
+    // Start all pooled actors (call on_start).
+    // INVARIANT 2: snapshot under the lock, release, then call on_start().
+    // on_start() is user code and may call system::create(), which re-enters
+    // register_actor() and takes m_actors_mutex - holding it here would
+    // self-deadlock. register_actor() defers on_start() for the same reason.
+    std::vector<std::shared_ptr<actor>> to_start;
     {
         std::lock_guard<std::mutex> lock(inst.m_actors_mutex);
         for (auto& thread_actors : inst.m_actors_per_thread) {
-            for (auto& actor_ptr : thread_actors) {
-                // Set actor context so messages sent from on_start have correct sender
-                current_actor_context = actor_ptr.get();
-                actor_ptr->on_start();
-                current_actor_context = nullptr;
-            }
+            to_start.insert(to_start.end(), thread_actors.begin(), thread_actors.end());
         }
+    }
+
+    for (auto& actor_ptr : to_start) {
+        // Sets sender context and marks the actor as initialising
+        on_start_scope scope(actor_ptr.get());
+        actor_ptr->on_start();
     }
 
     // Create thread pool with thread affinity
@@ -80,11 +102,8 @@ void system::start() {
         inst.m_thread_pool.emplace_back(&system::worker_thread, &inst, i);
     }
 
-    // Start ask thread pool (dedicated RPC threads)
-    size_t ask_thread_count = inst.m_config.ask_thread_pool_size;
-    for (size_t i = 0; i < ask_thread_count; ++i) {
-        inst.m_ask_thread_pool.emplace_back(&system::ask_worker_thread, &inst);
-    }
+    // Note: no ask thread pool. Ask requests are drained by the target actor's
+    // own worker thread so they serialise with regular handlers (INVARIANT 1).
 
     // Start all fast actors with dedicated threads
     {
@@ -196,8 +215,17 @@ void system::shutdown(const shutdown_config& config) {
         }
     }
 
-    // Phase 4: Signal worker threads to stop
+    // Phase 4: Signal worker threads to stop, then wake any that are parked
     inst.m_shutdown_requested = true;
+
+    for (auto& sig_ptr : inst.m_worker_signals) {
+        worker_signal& sig = *sig_ptr;
+        {
+            std::lock_guard<std::mutex> lock(sig.mutex);
+            sig.pending = true;
+        }
+        sig.cv.notify_all();
+    }
 }
 
 void system::wait_for_shutdown() {
@@ -216,14 +244,7 @@ void system::wait_for_shutdown() {
         }
     }
     inst.m_thread_pool.clear();
-
-    // Wait for all ask threads to finish
-    for (auto& thread : inst.m_ask_thread_pool) {
-        if (thread.joinable()) {
-            thread.join();
-        }
-    }
-    inst.m_ask_thread_pool.clear();
+    inst.m_worker_signals.clear();
 
     // Wait for all fast actor threads to finish
     // Fast actors call their own on_stop() in their dedicated threads
@@ -338,6 +359,12 @@ void system::register_actor(std::shared_ptr<actor> actor_ptr) {
     // Set queue threshold from system config
     actor_ptr->set_queue_threshold(inst.m_config.queue_threshold);
 
+    // Actors registered while the system is already running must be started
+    // here - system::start() has already run and will not revisit them.
+    // Deliberately deferred until after the registration locks are released:
+    // on_start() is user code and may call system::create() (INVARIANT 2).
+    const bool needs_start = inst.m_running.load();
+
     // Check if this is a fast actor
     fast_actor* fast_ptr = dynamic_cast<fast_actor*>(actor_ptr.get());
     if (fast_ptr) {
@@ -348,8 +375,20 @@ void system::register_actor(std::shared_ptr<actor> actor_ptr) {
         // Regular pooled actor - assign to thread pool
         std::lock_guard<std::mutex> lock(inst.m_actors_mutex);
 
+        // Resolve the pool width the same way start() will. Actors are usually
+        // created BEFORE start(), when m_actors_per_thread is still empty -
+        // treating that as a width of 1 would pin every pre-start actor to
+        // thread 0 and leave the rest of the pool idle.
+        size_t num_threads = inst.m_actors_per_thread.size();
+        if (num_threads == 0) {
+            num_threads = inst.m_config.thread_pool_size;
+            if (num_threads == 0) {
+                num_threads = std::thread::hardware_concurrency();
+                if (num_threads == 0) num_threads = 4;
+            }
+        }
+
         // Assign actor to a thread (round-robin)
-        size_t num_threads = inst.m_actors_per_thread.empty() ? 1 : inst.m_actors_per_thread.size();
         size_t thread_id = inst.m_next_thread_assignment.fetch_add(1) % num_threads;
 
         // Ensure we have enough thread vectors
@@ -360,6 +399,24 @@ void system::register_actor(std::shared_ptr<actor> actor_ptr) {
         // Set thread affinity and add to that thread's list
         actor_ptr->set_thread_affinity(thread_id);
         inst.m_actors_per_thread[thread_id].push_back(actor_ptr);
+    }
+
+    // Start the actor if the system is already running. No lock is held here.
+    if (needs_start) {
+        {
+            on_start_scope scope(actor_ptr.get());
+            actor_ptr->on_start();
+        }
+
+        if (fast_ptr) {
+            // A fast actor needs its dedicated polling thread launched; start()
+            // already ran and will not do it for this one.
+            std::lock_guard<std::mutex> lock(inst.m_fast_actors_mutex);
+            if (!fast_ptr->m_dedicated_thread.joinable()) {
+                fast_ptr->m_dedicated_thread =
+                    std::thread(&fast_actor::run_dedicated_thread_started, fast_ptr);
+            }
+        }
     }
 }
 
@@ -377,30 +434,47 @@ void system::worker_thread(size_t thread_id) {
     std::cout << "[WORKER-" << thread_id << "] Thread started\n" << std::flush;
 #endif
 
+    // Reused across iterations to avoid reallocating the snapshot each loop
+    std::vector<std::shared_ptr<actor>> my_actors;
+
     while (!m_shutdown_requested) {
         bool found_work = false;
 
-        // Process actors assigned to this thread
-        // Hold lock while iterating - actor registration is rare so contention is minimal
+        // INVARIANT 2: no lock is held while user code runs. Snapshot this
+        // thread's actor list under the lock, release, then process outside it.
+        // Holding m_actors_mutex across process_next_message() would serialise
+        // every worker on one mutex and self-deadlock any handler that calls
+        // system::create(). See doc/INVARIANTS.md.
         {
             std::lock_guard<std::mutex> lock(m_actors_mutex);
             if (thread_id < m_actors_per_thread.size()) {
-                for (auto& actor_ptr : m_actors_per_thread[thread_id]) {
-                    if (actor_ptr->has_messages()) {
-#ifdef CAS_DEBUG_LOGGING
-                        std::cout << "[WORKER-" << thread_id << "] Processing message\n" << std::flush;
-#endif
-                        actor_ptr->process_next_message();
-                        found_work = true;
-                    }
-                }
+                my_actors = m_actors_per_thread[thread_id];
+            } else {
+                my_actors.clear();
             }
         }
 
-        // If no work found, sleep briefly to avoid busy-waiting
-        // TODO: Use condition variable instead
+        for (auto& actor_ptr : my_actors) {
+            if (actor_ptr->has_messages()) {
+#ifdef CAS_DEBUG_LOGGING
+                std::cout << "[WORKER-" << thread_id << "] Processing message\n" << std::flush;
+#endif
+                actor_ptr->process_next_message();
+                found_work = true;
+            }
+        }
+
+        my_actors.clear();  // Drop shared_ptr refs promptly
+
+        // No work - block until enqueue_message() signals this thread.
+        // Timed wait bounds the worst case if a wakeup is missed or an actor
+        // is registered while we are parked.
         if (!found_work) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            worker_signal& sig = *m_worker_signals[thread_id];
+            std::unique_lock<std::mutex> lock(sig.mutex);
+            sig.cv.wait_for(lock, std::chrono::milliseconds(10),
+                            [&] { return sig.pending || m_shutdown_requested; });
+            sig.pending = false;
         }
     }
 
@@ -409,32 +483,21 @@ void system::worker_thread(size_t thread_id) {
 #endif
 }
 
-void system::ask_worker_thread() {
-    // Ask worker threads process ask requests from the global queue
-#ifdef CAS_DEBUG_LOGGING
-    std::cout << "[ASK-WORKER] Thread started\n" << std::flush;
-#endif
+void system::notify_worker(size_t thread_id) {
+    auto& inst = instance();
 
-    while (!m_shutdown_requested) {
-        ask_request_envelope envelope;
-
-        // Try to dequeue an ask request
-        if (m_global_ask_queue.try_dequeue(envelope)) {
-#ifdef CAS_DEBUG_LOGGING
-            std::cout << "[ASK-WORKER] Processing ask request\n" << std::flush;
-#endif
-            // Process the ask request on the target actor
-            // Note: We're calling dispatch directly, NOT through the regular message queue
-            envelope.target->dispatch_message(envelope.request.get());
-        } else {
-            // No work - sleep briefly
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
+    // m_worker_signals is sized in start() and not resized afterwards, so
+    // indexing is safe once running. Before start() there is no worker to wake.
+    if (thread_id >= inst.m_worker_signals.size()) {
+        return;
     }
 
-#ifdef CAS_DEBUG_LOGGING
-    std::cout << "[ASK-WORKER] Thread stopping\n" << std::flush;
-#endif
+    worker_signal& sig = *inst.m_worker_signals[thread_id];
+    {
+        std::lock_guard<std::mutex> lock(sig.mutex);
+        sig.pending = true;
+    }
+    sig.cv.notify_one();
 }
 
 timer_id system::schedule_timer(actor* target, std::unique_ptr<message_base> msg,
@@ -474,12 +537,39 @@ void system::cancel_actor_timers(actor* target) {
     target->m_active_timers.clear();
 }
 
-void system::enqueue_global_ask(actor* target, std::unique_ptr<message_base> request) {
+void system::report_queue_threshold(const std::string& actor_name,
+                                     size_t queue_size,
+                                     size_t threshold) {
     auto& inst = instance();
 
-    // Enqueue to global ask queue
-    ask_request_envelope envelope{target, std::move(request)};
-    inst.m_global_ask_queue.enqueue(std::move(envelope));
+    std::shared_ptr<queue_threshold_handler> handler;
+    {
+        std::lock_guard<std::mutex> lock(inst.m_queue_threshold_handler_mutex);
+        handler = inst.m_queue_threshold_handler;
+    }
+
+    if (handler && *handler) {
+        queue_threshold_info info(actor_name, queue_size, threshold);
+        (*handler)(info);
+    }
+}
+
+void system::set_queue_threshold_handler(queue_threshold_handler handler) {
+    auto& inst = instance();
+
+    std::lock_guard<std::mutex> lock(inst.m_queue_threshold_handler_mutex);
+    if (handler) {
+        inst.m_queue_threshold_handler = std::make_shared<queue_threshold_handler>(std::move(handler));
+    } else {
+        inst.m_queue_threshold_handler.reset();
+    }
+}
+
+void system::clear_queue_threshold_handler() {
+    auto& inst = instance();
+
+    std::lock_guard<std::mutex> lock(inst.m_queue_threshold_handler_mutex);
+    inst.m_queue_threshold_handler.reset();
 }
 
 bool system::stop_actor(actor_ref ref, const stop_config& config) {

@@ -22,6 +22,37 @@ public:
     /// 10000 blocks × 5 classes × avg 512 bytes ≈ 25MB max pool memory
     static constexpr size_t DEFAULT_MAX_BLOCKS_PER_CLASS = 10000;
 
+    /// Per-allocation header overhead added by message_base::operator new.
+    /// sizeof(size_t) rounded up to alignof(std::max_align_t) - 16 bytes on x64.
+    /// The size class is chosen from (HEADER_OVERHEAD + sizeof(YourMessage)),
+    /// NOT from sizeof(YourMessage) alone.
+    static constexpr size_t HEADER_OVERHEAD =
+        (sizeof(size_t) + alignof(std::max_align_t) - 1) &
+        ~(alignof(std::max_align_t) - 1);
+
+    /// Largest message that still fits in the given size class.
+    /// Use to size hot messages at compile time:
+    ///
+    ///     static_assert(sizeof(my_msg) <= cas::message_pool::max_payload_for_class(128),
+    ///                   "my_msg no longer fits the 128-byte class");
+    ///
+    /// Returns 0 if the header alone exceeds the class.
+    static constexpr size_t max_payload_for_class(size_t size_class) {
+        return size_class > HEADER_OVERHEAD ? size_class - HEADER_OVERHEAD : 0;
+    }
+
+    /// Size class a message of the given payload size will actually land in.
+    /// Returns 0 when the allocation exceeds MAX_POOLED_SIZE and goes to the heap.
+    static constexpr size_t size_class_for_payload(size_t payload_size) {
+        return (payload_size + HEADER_OVERHEAD) > MAX_POOLED_SIZE
+            ? 0
+            : ((payload_size + HEADER_OVERHEAD) <= 64   ? 64
+             : (payload_size + HEADER_OVERHEAD) <= 128  ? 128
+             : (payload_size + HEADER_OVERHEAD) <= 256  ? 256
+             : (payload_size + HEADER_OVERHEAD) <= 512  ? 512
+                                                        : 1024);
+    }
+
     /// Allocate memory from pool
     /// Falls back to heap for sizes > MAX_POOLED_SIZE
     static void* allocate(size_t size);

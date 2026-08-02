@@ -118,6 +118,13 @@ if(BUILD_TESTS)
         tests/09_fixed_types/test_fixed_string.cpp
         # Level 10: Dead letter handling
         tests/10_dead_letters/test_dead_letter_handling.cpp
+        # Level 11: Concurrency invariants (see doc/INVARIANTS.md)
+        tests/11_concurrency/test_ask_serialization.cpp
+        tests/11_concurrency/test_no_lock_during_handler.cpp
+        tests/11_concurrency/test_queue_threshold.cpp
+        tests/11_concurrency/test_message_ordering.cpp
+        tests/11_concurrency/test_runtime_actor_start.cpp
+        tests/11_concurrency/test_on_start_contract.cpp
     )
 
     target_link_libraries(unit_tests

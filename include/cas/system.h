@@ -54,12 +54,31 @@ struct dead_letter_info {
 // Dead letter handler callback type
 using dead_letter_handler = std::function<void(const dead_letter_info&)>;
 
+// Information about a queue threshold breach (passed to callback handler)
+struct queue_threshold_info {
+    std::string actor_name;  // Name of the actor whose queue breached
+    size_t queue_size;       // Approximate total queued messages at breach
+    size_t threshold;        // The configured threshold that was exceeded
+
+    queue_threshold_info(std::string name, size_t size, size_t limit)
+        : actor_name(std::move(name)), queue_size(size), threshold(limit) {}
+};
+
+// Queue threshold handler callback type
+// Called once per breach, from the thread that enqueued the message.
+// Keep the handler cheap and non-blocking - it runs on the send path.
+using queue_threshold_handler = std::function<void(const queue_threshold_info&)>;
+
 // Configuration for the actor system
 struct system_config {
     size_t thread_pool_size = 0;      // 0 = auto (use hardware concurrency)
-    size_t ask_thread_pool_size = 4;  // Dedicated threads for ask (RPC) requests
     size_t queue_threshold = 1000;    // Warn if total queue size exceeds this (0 = disabled)
     bool log_dead_letters = false;    // Log dropped messages to stderr (for debugging)
+
+    // DEPRECATED and ignored. Ask requests are processed on the target actor's
+    // own thread so they serialise with regular handlers; there is no separate
+    // ask thread pool. Retained so existing configuration code still compiles.
+    size_t ask_thread_pool_size = 0;
 };
 
 // Configuration for shutdown behavior
@@ -119,13 +138,14 @@ private:
     // Timer management
     timer_manager m_timer_manager;
 
-    // Ask (RPC) request handling
-    struct ask_request_envelope {
-        actor* target;  // Target actor
-        std::unique_ptr<message_base> request;  // The ask request message
+    // Per-worker wakeup. enqueue_message() signals the thread owning the target
+    // actor, replacing the previous 1ms polling sleep.
+    struct worker_signal {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool pending = false;
     };
-    moodycamel::ConcurrentQueue<ask_request_envelope> m_global_ask_queue;
-    std::vector<std::thread> m_ask_thread_pool;
+    std::vector<std::unique_ptr<worker_signal>> m_worker_signals;
 
     // Watch pattern - maps watched_actor -> set of watcher actors
     std::unordered_map<actor*, std::unordered_set<actor*>> m_watchers;
@@ -140,6 +160,10 @@ private:
     std::shared_ptr<dead_letter_handler> m_dead_letter_handler;
     std::mutex m_dead_letter_handler_mutex;
 
+    // Optional queue threshold callback handler
+    std::shared_ptr<queue_threshold_handler> m_queue_threshold_handler;
+    std::mutex m_queue_threshold_handler_mutex;
+
     // Singleton instance
     static system& instance();
 
@@ -148,9 +172,6 @@ private:
 
     // Worker thread function for thread pool
     void worker_thread(size_t thread_id);
-
-    // Ask worker thread function
-    void ask_worker_thread();
 
 public:
     // Non-copyable
@@ -168,6 +189,13 @@ public:
 
     // Create an actor and register it with the system
     // Returns an actor_ref for sending messages
+    //
+    // If the system is already running, the actor's on_start() is called before
+    // create() returns, so it is ready to receive messages immediately. If the
+    // system has not started yet, on_start() is called by start() instead.
+    // Either way on_start() runs exactly once.
+    //
+    // Safe to call from inside a message handler.
     template<typename ActorType, typename... Args>
     static actor_ref create(Args&&... args);
 
@@ -215,8 +243,13 @@ public:
     // Internal: Cancel all timers for an actor (called on actor stop)
     static void cancel_actor_timers(actor* target);
 
-    // Internal: Enqueue ask request to global queue (called by actor::enqueue_ask_message)
-    static void enqueue_global_ask(actor* target, std::unique_ptr<message_base> request);
+    // Internal: wake the worker thread owning this actor (called by enqueue_message)
+    static void notify_worker(size_t thread_id);
+
+    // Internal: report a queue threshold breach (called by actor::enqueue_message)
+    static void report_queue_threshold(const std::string& actor_name,
+                                       size_t queue_size,
+                                       size_t threshold);
 
     // Stop a single actor gracefully
     // Returns true if actor was found and stopped, false if not found or already stopped
@@ -251,6 +284,13 @@ public:
 
     // Clear the dead letter handler
     static void clear_dead_letter_handler();
+
+    // Set custom handler for queue threshold breaches
+    // Fires once per breach per actor. Pass nullptr or empty function to clear.
+    static void set_queue_threshold_handler(queue_threshold_handler handler);
+
+    // Clear the queue threshold handler
+    static void clear_queue_threshold_handler();
 
     // Internal: report a dead letter (called by actor::enqueue_message)
     static void report_dead_letter(const std::string& actor_name,

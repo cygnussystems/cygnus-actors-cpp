@@ -270,6 +270,12 @@ struct termination_msg : public cas::message_base {
 
 ### Complete Example
 
+> **Creating actors at runtime:** `system::create()` calls the new actor's
+> `on_start()` before returning whenever the system is already running, so the
+> actor is ready to receive messages immediately. When the system has not started
+> yet, `start()` calls it instead — either way `on_start()` runs exactly once.
+> Calling `create()` from inside a message handler is safe.
+
 ```cpp
 class supervisor : public cas::actor {
 private:

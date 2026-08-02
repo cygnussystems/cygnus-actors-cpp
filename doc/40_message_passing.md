@@ -55,6 +55,12 @@ struct my_message : public cas::message_base {
 };
 ```
 
+> **On hot paths**, prefer `cas::fixed_string<N>` over `std::string`. Messages are
+> allocated from a size-class pool, but `std::string` and `std::vector` members
+> allocate on the ordinary heap *outside* that pool. Sizing messages to fit a size
+> class also has to account for a per-allocation header. See
+> [140_message_pool.md](140_message_pool.md).
+
 ### Message Base Fields
 
 All messages automatically include:
@@ -474,9 +480,13 @@ Messages are delivered **at most once** - they may be lost if:
 actor.tell(msg);  // May be dropped if actor stopped
 ```
 
-### FIFO Order
+### Delivery, Not Ordering
 
-Messages from actor A to actor B are delivered in send order:
+Every message sent to a live actor is delivered **exactly once** — nothing is
+lost, nothing is duplicated.
+
+**There is no ordering guarantee between separate messages**, not even from a
+single sender:
 
 ```cpp
 // In actor A
@@ -484,8 +494,40 @@ target.tell(msg1);
 target.tell(msg2);
 target.tell(msg3);
 
-// Actor B receives: msg1, then msg2, then msg3 (guaranteed order)
+// Actor B receives all three, in an UNSPECIFIED order.
+// Do not write code that depends on msg1 arriving before msg2.
 ```
+
+The mailbox is a `moodycamel::ConcurrentQueue` enqueued without a `ProducerToken`,
+which does not promise FIFO order across producers.
+
+**If your logic is ordering-sensitive**, use one of:
+
+1. **Combine into one message.** If three facts must be processed together and in
+   order, they belong in one message, not three. This is the preferred fix — it is
+   better design regardless of what the queue guarantees.
+
+   ```cpp
+   struct batch_update : public cas::message_base {
+       std::vector<item> items;  // ordered within the message
+   };
+   ```
+
+2. **Carry an explicit sequence number** and reorder on the receiving side.
+
+   ```cpp
+   struct seq_update : public cas::message_base {
+       uint64_t sequence;
+       // receiver buffers out-of-order arrivals
+   };
+   ```
+
+3. **Use `ask()`** when you need a strict request/response handshake — it blocks
+   the caller until the handler has run, which imposes ordering by construction.
+
+> This section previously claimed delivery was in "guaranteed order". That was
+> incorrect and did not match the implementation. See `doc/INVARIANTS.md`
+> (INVARIANT 3) for what would have to change to make a real ordering guarantee.
 
 ### No Global Ordering
 

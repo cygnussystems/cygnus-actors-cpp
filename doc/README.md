@@ -31,6 +31,12 @@ Documentation files are numbered for easy ordering and insertion of new topics.
 ### Inter-Process Communication
 - **[130_zeromq_relay.md](130_zeromq_relay.md)** - ZeroMQ relay actor for inter-process communication
 
+### Performance
+- **[140_message_pool.md](140_message_pool.md)** - Pooled message allocation, header overhead, sizing messages to size classes
+
+### Framework Internals
+- **[INVARIANTS.md](INVARIANTS.md)** - Load-bearing threading invariants. **Read before changing the threading model** — each invariant names its enforcing code and the question a reviewer should ask.
+
 ## Quick Links
 
 ### Common Tasks
@@ -43,6 +49,8 @@ Documentation files are numbered for easy ordering and insertion of new topics.
 - [Make synchronous RPC calls](80_ask_pattern.md#quick-example)
 - [Handle actor termination](70_dynamic_removal.md#watch-pattern)
 - [Inter-process communication](130_zeromq_relay.md#quick-example)
+- [Size messages to fit the pool](140_message_pool.md#sizing-messages-correctly)
+- [Avoid heap allocation in messages](140_message_pool.md#members-that-allocate-outside-the-pool)
 
 ### API Reference
 - [System API](10_overview.md#core-concepts) - `cas::system`
@@ -90,7 +98,8 @@ Documentation files are numbered for easy ordering and insertion of new topics.
 - Pooled actors (default) - Thread pool with affinity
 - Fast actors - One dedicated thread per actor
 - Inline actors - Execute in caller's thread
-- Ask pattern - Dedicated RPC thread pool
+- Ask pattern - Runs on the target actor's own thread, serialised with its
+  regular handlers (see [INVARIANTS.md](INVARIANTS.md))
 
 ### Inter-Process Communication
 - **ZeroMQ relay actor** - ROUTER/DEALER patterns for cross-process messaging

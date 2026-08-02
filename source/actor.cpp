@@ -7,6 +7,7 @@
 #include "cas/actor_ref_impl.h"
 #include <iostream>
 #include <typeinfo>
+#include <cstdlib>
 
 // Platform-specific demangling
 #ifdef _MSC_VER
@@ -25,6 +26,10 @@ thread_local actor* current_actor_context = nullptr;
 
 actor* actor::get_current_actor() {
     return current_actor_context;
+}
+
+bool actor::is_initialising() const {
+    return m_in_on_start;
 }
 
 const std::string& actor::name() const {
@@ -135,20 +140,21 @@ void actor::enqueue_message(std::unique_ptr<message_base> msg) {
         size_t total = mailbox_size + ask_size;
 
         if (total > m_queue_threshold) {
-            // Send warning once per threshold breach
+            // Report once per threshold breach
             bool expected = false;
             if (m_threshold_warning_sent.compare_exchange_strong(expected, true)) {
-                // TODO: Send queue_threshold_warning message to system
-                // For now, just log it
 #ifdef CAS_DEBUG_LOGGING
                 std::cout << "[QUEUE WARNING] Actor " << name() << " exceeded threshold: "
                           << total << " > " << m_queue_threshold << "\n" << std::flush;
 #endif
+                // Deliver to the user's handler (works in release builds).
+                system::report_queue_threshold(name(), total, m_queue_threshold);
             }
         }
     }
 
-    // TODO: Notify worker thread that message is available
+    // Wake the worker thread owning this actor
+    system::notify_worker(m_assigned_thread_id);
 }
 
 void actor::enqueue_ask_message(std::unique_ptr<message_base> msg) {
@@ -160,14 +166,63 @@ void actor::enqueue_ask_message(std::unique_ptr<message_base> msg) {
         return;  // Drop message
     }
 
-    // Enqueue to global ask queue (processed by dedicated ask threads)
-    system::enqueue_global_ask(this, std::move(msg));
+    // Enqueue to this actor's own ask queue. Drained by process_next_message()
+    // on the owning thread, which serialises ask handlers with regular handlers
+    // (INVARIANT 1). The caller blocks on the request's future until then.
+    m_ask_queue.enqueue(std::move(msg));
 
-    // Note: We no longer track ask queue metrics locally since ask requests
-    // are handled by dedicated threads and don't go through actor's local queue
+    // Update ask queue high water mark
+    size_t ask_size = m_ask_queue.size_approx();
+    size_t current_hwm = m_ask_queue_high_water_mark.load();
+    while (ask_size > current_hwm &&
+           !m_ask_queue_high_water_mark.compare_exchange_weak(current_hwm, ask_size)) {
+        // Loop until we successfully update or find that someone else updated higher
+    }
+
+    // Wake the worker thread owning this actor - the caller is blocked on the
+    // request's future until that thread drains the ask queue.
+    system::notify_worker(m_assigned_thread_id);
 }
 
+namespace {
+
+#ifndef NDEBUG
+// RAII guard asserting that only one thread executes a given actor at a time.
+// Backstop for INVARIANT 1; compiled out entirely in release builds.
+class dispatch_guard {
+public:
+    explicit dispatch_guard(std::atomic<bool>& flag, const std::string& actor_name)
+        : m_flag(flag)
+    {
+        bool expected = false;
+        if (!m_flag.compare_exchange_strong(expected, true)) {
+            std::cerr << "[CAS FATAL] INVARIANT 1 VIOLATED: actor '" << actor_name
+                      << "' is being dispatched by two threads concurrently.\n"
+                      << "  An actor's handlers must run on one thread at a time.\n"
+                      << "  See doc/INVARIANTS.md.\n" << std::flush;
+            std::abort();
+        }
+    }
+
+    ~dispatch_guard() {
+        m_flag.store(false);
+    }
+
+    dispatch_guard(const dispatch_guard&) = delete;
+    dispatch_guard& operator=(const dispatch_guard&) = delete;
+
+private:
+    std::atomic<bool>& m_flag;
+};
+#endif
+
+} // namespace
+
 void actor::dispatch_message(message_base* msg) {
+#ifndef NDEBUG
+    dispatch_guard guard(m_in_dispatch, name());
+#endif
+
 #ifdef CAS_DEBUG_LOGGING
     std::cout << "[DISPATCH:" << m_name << "] Dispatching message, typeid: " << typeid(*msg).name() << "\n" << std::flush;
 
@@ -215,25 +270,27 @@ void actor::dispatch_message(message_base* msg) {
 void actor::process_next_message() {
     std::unique_ptr<message_base> msg;
 
-    // Try to dequeue from mailbox
-    // Note: Ask requests are now processed by dedicated ask threads,
-    // so regular workers only process fire-and-forget messages
-    if (m_mailbox.try_dequeue(msg)) {
+    // Ask queue first (RPC-like priority semantics), then the regular mailbox.
+    // Both are drained here, on the owning thread, so an ask handler can never
+    // run concurrently with a regular handler on the same actor (INVARIANT 1).
+    if (m_ask_queue.try_dequeue(msg) || m_mailbox.try_dequeue(msg)) {
         // Got a message - dispatch it
+        actor* prev_context = current_actor_context;
         current_actor_context = this;
         dispatch_message(msg.get());
-        current_actor_context = nullptr;
+        current_actor_context = prev_context;
     }
 }
 
 bool actor::has_messages() {
-    // Check mailbox only (ask requests handled by dedicated threads)
-    return m_mailbox.size_approx() > 0;
+    // Note: size_approx() is approximate under concurrent producers. Adequate
+    // for polling and metrics; shutdown drain additionally bounds by timeout.
+    return m_ask_queue.size_approx() > 0 || m_mailbox.size_approx() > 0;
 }
 
 size_t actor::queue_size() const {
-    // Return mailbox size only (ask requests handled by dedicated threads)
-    return m_mailbox.size_approx();
+    // Note: approximate - see has_messages().
+    return m_mailbox.size_approx() + m_ask_queue.size_approx();
 }
 
 actor_state actor::get_state() const {

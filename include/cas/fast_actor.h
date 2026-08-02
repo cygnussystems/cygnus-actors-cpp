@@ -39,6 +39,10 @@ private:
     // Tight polling loop for this actor
     void run_dedicated_thread();
 
+    /// Polling loop without the on_start() call - used when the actor was
+    /// created after system::start() and register_actor() already started it.
+    void run_dedicated_thread_started();
+
     // Cross-platform CPU pause instruction
     inline void cpu_pause();
 

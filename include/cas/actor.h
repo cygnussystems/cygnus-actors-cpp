@@ -25,6 +25,11 @@ struct message_base;
 struct ask_request_base;  // For friend declaration
 template<typename ReturnType, typename OpTag, typename... Args> struct ask_request;  // For friend declaration
 
+// Subclasses granted dispatch access (see friend declarations below)
+template<bool ThreadSafe> class inline_actor;
+class stateful_actor;
+class zeromq_relay_actor;
+
 // Actor lifecycle state
 enum class actor_state {
     running,   // Normal operation, accepting messages
@@ -40,6 +45,16 @@ class actor {
     // Allow ask requests to access handlers
     friend struct ask_request_base;
     template<typename ReturnType, typename OpTag, typename... Args> friend struct ask_request;
+
+    // Subclasses that override process_next_message() and therefore own the
+    // actor's execution turn themselves. Each must dispatch only from the
+    // actor's owning thread - see INVARIANT 1 in doc/INVARIANTS.md.
+    template<bool ThreadSafe> friend class inline_actor;
+    friend class stateful_actor;
+    friend class zeromq_relay_actor;
+
+    // Sets m_in_on_start for the duration of on_start()
+    friend class on_start_scope;
 
 private:
     std::string m_name;
@@ -58,8 +73,9 @@ private:
     moodycamel::ConcurrentQueue<std::unique_ptr<message_base>> m_mailbox;
 
     // Ask queue: priority request-response messages (ask)
-    // Processed before regular mailbox to provide RPC-like semantics
-    // Lock-free MPMC queue
+    // Processed before regular mailbox to provide RPC-like semantics.
+    // INVARIANT: drained only by process_next_message() on the owning thread,
+    // so ask handlers are serialised with regular handlers. See doc/INVARIANTS.md.
     moodycamel::ConcurrentQueue<std::unique_ptr<message_base>> m_ask_queue;
 
     // Message type -> handler function map
@@ -85,6 +101,24 @@ private:
 
     // Track if we've already warned about queue threshold to avoid spam
     std::atomic<bool> m_threshold_warning_sent{false};
+
+    // True while this actor's on_start() is executing. Used to reject ask()
+    // from initialisation, where no worker is guaranteed to be servicing the
+    // target yet. Only ever read/written by the thread running on_start().
+    bool m_in_on_start = false;
+
+#ifndef NDEBUG
+    // Debug-only guard: detects two threads executing this actor concurrently.
+    // Backstop for INVARIANT 1 - catches violations that slip past the
+    // compile-time encapsulation of dispatch_message().
+    std::atomic<bool> m_in_dispatch{false};
+#endif
+
+    // INVARIANT 1: exactly one thread may execute an actor's handlers at any
+    // instant. dispatch_message() is private so the set of callers is closed
+    // and greppable; every caller below must hold the actor's execution turn.
+    // Adding a friend here is a threading-model change - see doc/INVARIANTS.md.
+    void dispatch_message(message_base* msg);
 
 protected:
     // Lifecycle hooks - override these
@@ -194,6 +228,10 @@ public:
     // Get current actor being processed (thread-local)
     static actor* get_current_actor();
 
+    // True while this actor's on_start() is running. Operations that would
+    // block on the message system are rejected during initialisation.
+    bool is_initialising() const;
+
     // Get unique instance ID (assigned during actor creation)
     size_t instance_id() const;
 
@@ -218,10 +256,8 @@ public:
     // Internal: enqueue ask message (called by actor_ref::ask)
     virtual void enqueue_ask_message(std::unique_ptr<message_base> msg);
 
-    // Internal: dispatch message to correct handler
-    void dispatch_message(message_base* msg);
-
     // Internal: process next message (checks ask queue first, then mailbox)
+    // Runs on the actor's owning thread only - this is the actor's execution turn.
     virtual void process_next_message();
 
     // Internal: check if actor has any messages (ask queue or mailbox)
@@ -244,6 +280,32 @@ public:
 
 // Thread-local storage for current actor being processed (defined in actor.cpp)
 extern thread_local actor* current_actor_context;
+
+// Internal: RAII helper that sets the actor context and marks the actor as
+// initialising for the duration of on_start(). Used by system::start(),
+// system::register_actor() and fast_actor's thread entry so the on_start()
+// contract is enforced identically on every path.
+class on_start_scope {
+public:
+    explicit on_start_scope(actor* self)
+        : m_self(self), m_prev(current_actor_context)
+    {
+        current_actor_context = self;
+        self->m_in_on_start = true;
+    }
+
+    ~on_start_scope() {
+        m_self->m_in_on_start = false;
+        current_actor_context = m_prev;
+    }
+
+    on_start_scope(const on_start_scope&) = delete;
+    on_start_scope& operator=(const on_start_scope&) = delete;
+
+private:
+    actor* m_self;
+    actor* m_prev;
+};
 
 } // namespace cas
 
