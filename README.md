@@ -6,7 +6,9 @@ Most actor frameworks force you to choose: either raw performance with complex A
 
 ### Why Cygnus?
 
-- **Blazing Fast**: Lock-free message queues, zero-allocation message pooling, sub-200ns latency
+- **Fast**: Lock-free message queues, pooled message allocation. 4.6-5.5 M
+  msg/sec on a Turbo-disabled laptop, ~5.9 M on a desktop CPU
+  ([benchmarks](#benchmarks), with the ranges - run it yourself)
 - **Intuitive API**: Define actors in ~10 lines. No boilerplate, no macros, no inheritance hierarchies
 - **Easy Learning Curve**: If you know C++ lambdas and inheritance, you already know 80% of Cygnus
 - **Production Ready**: Timer scheduling, RPC-style ask pattern, actor supervision, dead letter handling
@@ -38,6 +40,17 @@ class greeter : public cas::actor {
 - [Troubleshooting](#troubleshooting)
 - [Benchmarks](#benchmarks)
 - [API Reference](#api-reference)
+
+**Beyond this page:**
+
+- **[Tutorials](tutorials/)** - fourteen runnable, self-checking programs, in
+  teaching order. Every one is compiled and executed by `ctest`, so unlike
+  prose they cannot silently go stale. Start at `tutorials 1`.
+- **[Full documentation](doc/)** - reference chapters on messaging, lifecycle,
+  the registry, ask, timers, dynamic removal, advanced actor types and the
+  message pool.
+- **[Threading invariants](doc/INVARIANTS.md)** - read before changing the
+  threading model.
 
 ## Installation
 
@@ -433,23 +446,31 @@ actor_ref.tell(msg);  // Uses pool automatically
 
 ### Fixed-Capacity Strings
 
-For truly zero-allocation messages, use `cas::fixed_string<N>`:
+For messages that never touch the heap, use `cas::fixed_string<N>`:
 
 ```cpp
-// BAD for HFT: std::string allocates on heap
+// std::string may allocate, and the message is not self-contained
 struct slow_message : cas::message_base {
-    std::string symbol;      // Heap allocation!
-    std::string client_id;   // Heap allocation!
+    std::string symbol;      // heap once it exceeds the SSO buffer
+    std::string client_id;   // heap once it exceeds the SSO buffer
 };
 
 // GOOD for HFT: fixed_string is inline
 struct fast_message : cas::message_base {
-    cas::fixed_string<8> symbol;      // Inline, no allocation
-    cas::fixed_string<16> client_id;  // Inline, no allocation
+    cas::fixed_string<8> symbol;      // Inline, never allocates
+    cas::fixed_string<16> client_id;  // Inline, never allocates
     int64_t quantity;
     int64_t price;
 };
 ```
+
+**Be honest about when this wins.** Both major standard libraries keep short
+strings inline (the small-string optimisation - roughly 15 characters), so for
+values that short `std::string` does not allocate either, and the
+[benchmarks](#benchmarks) show the two within noise of each other. `fixed_string`
+earns its place when values are longer than the SSO buffer, when you need a
+message whose size is fixed and known at compile time, or when you want the
+guarantee rather than a heuristic that depends on your standard library.
 
 `fixed_string<N>` API:
 ```cpp
@@ -800,13 +821,33 @@ protected:
 
 ## Benchmarks
 
-Measured on Windows (MSVC 2022, Release build, single producer/consumer):
+Release build, single producer/consumer, 1M messages per case. Figures are the
+average of five runs, with the observed range in brackets.
 
-| Test | Throughput | Avg Latency |
-|------|------------|-------------|
-| Minimal message | 5.9 M msg/sec | ~170 ns |
-| `std::string` fields | 4.3 M msg/sec | ~234 ns |
-| `fixed_string` fields | 4.6 M msg/sec | ~216 ns |
+Measured on an **AMD Ryzen 5 PRO 5650U** (mobile, 6 cores, **Turbo Boost
+disabled**) — deliberately modest hardware, so read these as a conservative
+floor:
+
+| Test | MSVC 2022 (Windows) | GCC 13 (WSL Ubuntu) |
+|------|---------------------|---------------------|
+| Minimal message | 4.6 M msg/sec [4.55–4.61] | 5.5 M msg/sec [4.88–5.93] |
+| `std::string` fields | 3.3 M msg/sec [3.06–3.39] | 3.6 M msg/sec [2.48–5.07] |
+| `fixed_string` fields | 3.7 M msg/sec [3.55–3.78] | 3.2 M msg/sec [2.50–3.59] |
+
+An earlier run on a desktop CPU reached ~5.9 M msg/sec (~170 ns) for the minimal
+case, so the numbers above are not a ceiling — expect meaningfully better on
+desktop or server parts with boost clocks enabled.
+
+Two things worth reading off this table rather than glossing over:
+
+- **`fixed_string` beats `std::string` on MSVC, but not on GCC.** The benchmark
+  uses short strings, which libstdc++ keeps inline via the small-string
+  optimisation - so `std::string` never reaches the heap and the comparison
+  measures copying, not allocation. `fixed_string` wins where it is supposed to:
+  longer values, and messages whose size you want fixed and predictable.
+- **The GCC ranges are wide** (`std::string` varied 2.48–5.07 across five runs).
+  This is a thermally constrained laptop part. Measure on your own hardware
+  before drawing conclusions about either compiler.
 
 Run `./build/benchmark` to measure on your system.
 
