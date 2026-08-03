@@ -6,6 +6,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Project options
 option(BUILD_TESTS "Build unit tests" ON)
 option(BUILD_EXAMPLES "Build examples" ON)
+option(BUILD_TUTORIALS "Build the runnable tutorials" ON)
 option(ENABLE_ZEROMQ "Enable ZeroMQ relay actor" ON)
 
 # Source files
@@ -79,6 +80,14 @@ if(BUILD_EXAMPLES)
     target_link_libraries(size_check ${PROJECT_NAME})
 endif()
 
+# CTest integration.
+#
+# Hoisted out of the BUILD_TESTS block because the tutorials register tests
+# too: enable_testing() has to run before any add_test(), including theirs.
+if(BUILD_TESTS OR BUILD_TUTORIALS)
+    enable_testing()
+endif()
+
 # Unit tests - reorganized for granular debugging
 if(BUILD_TESTS)
     include(FetchContent)
@@ -142,8 +151,6 @@ if(BUILD_TESTS)
         Catch2::Catch2
     )
 
-    # Enable CTest integration
-    enable_testing()
     add_test(NAME unit_tests COMMAND unit_tests)
 
     # Test-isolation probe.
@@ -163,4 +170,9 @@ if(BUILD_TESTS)
             -DPROBE_EXE=$<TARGET_FILE:isolation_probe>
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/12_isolation/check_isolation.cmake
     )
+endif()
+
+# Runnable tutorials (see tutorials/README.md)
+if(BUILD_TUTORIALS)
+    add_subdirectory(tutorials)
 endif()
