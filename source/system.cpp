@@ -506,9 +506,29 @@ timer_id system::schedule_timer(actor* target, std::unique_ptr<message_base> msg
                                 std::chrono::milliseconds interval) {
     auto& inst = instance();
 
-    // Create callback that delivers message to target actor
-    auto callback = [target](timer_id, std::unique_ptr<message_base> fired_msg) {
-        target->enqueue_message(std::move(fired_msg));
+    // Create callback that delivers the message to the target actor.
+    //
+    // Captures a weak_ptr, NOT the raw target pointer. Cancellation cannot
+    // stop a callback that is already in flight: the timer thread copies the
+    // callback out under the timer mutex, releases the mutex, and only then
+    // invokes it (see timer_manager::timer_thread_func). If the actor is
+    // stopped and destroyed inside that window - which stop_actor() can do,
+    // since it does not wait for an extracted callback to finish - a raw
+    // pointer here would be dangling by the time it is dereferenced.
+    //
+    // Locking the weak_ptr turns that race into a no-op: either the actor is
+    // still alive and the shared_ptr keeps it alive across the delivery, or
+    // it is gone and the timer message is dropped, which is the correct
+    // outcome for a timer belonging to a dead actor.
+    std::weak_ptr<actor> weak_target = target->m_self_ref;
+
+    auto callback = [weak_target](timer_id, std::unique_ptr<message_base> fired_msg) {
+        if (auto alive = weak_target.lock()) {
+            alive->enqueue_message(std::move(fired_msg));
+        }
+        // else: the actor was destroyed between the callback being extracted
+        // and invoked. Dropping the message is correct - there is nobody left
+        // to deliver it to.
     };
 
     // Delegate to timer_manager

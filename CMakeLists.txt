@@ -127,6 +127,7 @@ if(BUILD_TESTS)
         tests/06_timers/test_timer_basic.cpp
         tests/06_timers/test_timer_periodic.cpp
         tests/06_timers/test_timer_lifecycle.cpp
+        tests/06_timers/test_timer_actor_lifetime.cpp
         # Standalone timer manager tests (no actor system dependency)
         tests/test_timer_manager_standalone.cpp
         # Level 7: Dynamic actor removal
