@@ -439,7 +439,11 @@ handler<cas::msg::zeromq_error>([this](const auto& msg) {
 
 ZeroMQ relay requires:
 - **cppzmq** - ZeroMQ C++ binding (vcpkg: `cppzmq`)
-- **nlohmann-json** - Optional, for JSON payloads (vcpkg: `nlohmann-json`)
+
+The relay treats payloads as opaque bytes and has no JSON dependency of its
+own. The JSON examples above use **nlohmann-json** (vcpkg: `nlohmann-json`);
+add it to your own application if you want them - the framework does not link
+it for you.
 
 Enable in CMake:
 ```cmake

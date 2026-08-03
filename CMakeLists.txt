@@ -46,10 +46,15 @@ find_package(Threads REQUIRED)
 target_link_libraries(${PROJECT_NAME} PUBLIC Threads::Threads)
 
 # ZeroMQ relay actor dependencies (optional)
+#
+# nlohmann_json is deliberately NOT required here. The relay treats payloads as
+# opaque bytes and never includes it - JSON only appears in the documented
+# examples of what callers may put in a payload (doc/130_zeromq_relay.md).
+# Requiring it forced every consumer to install a package the library does not
+# use; applications that want JSON should depend on it themselves.
 if(ENABLE_ZEROMQ)
     find_package(cppzmq CONFIG REQUIRED)
-    find_package(nlohmann_json CONFIG REQUIRED)
-    target_link_libraries(${PROJECT_NAME} PUBLIC cppzmq nlohmann_json::nlohmann_json)
+    target_link_libraries(${PROJECT_NAME} PUBLIC cppzmq)
     target_compile_definitions(${PROJECT_NAME} PUBLIC CAS_ENABLE_ZEROMQ)
 endif()
 
