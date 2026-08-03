@@ -76,11 +76,6 @@ private:
         }
     };
 
-    // Thread. jthread owns the stop state and joins on destruction, so the
-    // shutdown flag, the manual join and the destructor's stop() call that
-    // this class used to need are all gone.
-    std::jthread m_timer_thread;
-
     // Synchronization.
     // condition_variable_any (not condition_variable) so waits can take the
     // stop_token and be interrupted the moment stop is requested.
@@ -99,8 +94,31 @@ private:
     // ID generation
     std::atomic<timer_id> m_next_timer_id{1};
 
+    // Lifecycle observation.
+    //
+    // is_running() must not inspect m_timer_thread: start() assigns to that
+    // object and stop() joins it, and concurrent mutation/inspection of the
+    // jthread itself is a data race even though its stop state is internally
+    // thread-safe. This flag gives observers a race-free read, mirroring the
+    // atomic the pre-C++20 implementation had. The stop_token remains the
+    // mechanism that actually stops the worker.
+    std::atomic<bool> m_running{false};
+
     // Callback storage (one callback per timer, indexed by timer_id)
     std::unordered_map<timer_id, timer_callback> m_callbacks;
+
+    // Thread. jthread owns the stop state and joins in its own destructor.
+    //
+    // DECLARATION ORDER IS LOAD-BEARING: this must stay the LAST member.
+    // Members are destroyed in reverse declaration order, so declaring it last
+    // means it is destroyed FIRST - requesting stop and joining the worker
+    // while the mutex, condition variable, queue and maps it touches are all
+    // still alive. Move it above them and ~timer_manager() tears down the
+    // worker's state out from under a running thread.
+    //
+    // ~timer_manager() also calls stop() explicitly, so correctness does not
+    // rest on this ordering alone; the two together are deliberate.
+    std::jthread m_timer_thread;
 };
 
 } // namespace cas

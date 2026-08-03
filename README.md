@@ -43,7 +43,7 @@ class greeter : public cas::actor {
 
 ### Requirements
 - C++20 compiler (MSVC 2019 16.11+, GCC 13+, Clang 16+)
-- CMake 3.14+
+- CMake 3.15+
 
 ### Building
 

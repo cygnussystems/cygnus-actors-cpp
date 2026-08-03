@@ -129,11 +129,12 @@ See [Overview - Naming Conventions](10_overview.md#naming-conventions) for detai
 
 ## Platform Support
 
-- **Windows**: MSVC 2017+, Visual Studio 2022 recommended
-- **Linux**: GCC 7+, Clang 5+
-- **macOS**: Clang 5+ (Xcode 9.3+)
+- **Windows**: MSVC 2019 16.11+, Visual Studio 2022 recommended
+- **Linux**: GCC 13+, Clang 16+
+- **macOS**: Clang 16+
 
-Requires C++20 or later.
+Requires C++20. These are the minimum versions providing the concepts,
+`operator<=>`, `std::jthread` and stop-token support the public headers use.
 
 ## Building
 

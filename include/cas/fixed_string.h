@@ -92,6 +92,9 @@ public:
     /// Assign from C string
     constexpr void assign(const char* str) {
         if (str == nullptr) {
+            // clear() (not assign(str, 0)): passing a null pointer to
+            // char_traits::copy is undefined even for a zero-length copy.
+            // clear() does the constant-evaluated full-buffer fill itself.
             clear();
             return;
         }
@@ -165,6 +168,18 @@ public:
 
     // Modifiers
     constexpr void clear() noexcept {
+        if (std::is_constant_evaluated()) {
+            // Constant evaluation cannot read an uninitialised array element,
+            // and copying a fixed_string reads all of m_data - so the whole
+            // buffer has to be written, not just the terminator. Without this,
+            // fixed_string<N>(nullptr) is not a usable constant expression.
+            // Skipped at runtime, where a single store is enough.
+            for (size_t i = 0; i <= Capacity; ++i) {
+                m_data[i] = '\0';
+            }
+            m_size = 0;
+            return;
+        }
         m_size = 0;
         m_data[0] = '\0';
     }

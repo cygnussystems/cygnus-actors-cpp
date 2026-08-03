@@ -40,13 +40,28 @@ class zeromq_relay_actor;
 // generic handlers written as [](const auto& msg) are used in the framework
 // itself (see source/zeromq_relay_actor.cpp) and must keep working.
 //
-// Note this does NOT constrain MessageType to derive from message_base.
-// actor.h only forward-declares message_base (message_base.h includes
-// actor_ref.h, which would be circular), so the relationship cannot be
-// checked here. It is enforced in practice by enqueue_message() taking a
-// unique_ptr<message_base>.
+// Note this accepts a by-value parameter too: [](my_msg m) satisfies it and
+// silently copies each message on dispatch. That is deliberate - taking a
+// message by value is legitimate, and rejecting it would turn a performance
+// preference into a compile error.
 template<typename Callable, typename MessageType>
 concept message_handler_for = std::invocable<Callable, const MessageType&>;
+
+// Constrains the message type a handler can be registered for.
+//
+// Only types that can actually reach a mailbox are accepted: messages arrive
+// as unique_ptr<message_base>, so a handler registered for an unrelated type
+// could never be invoked. Without this, handler<int>(...) compiles and then
+// sits silently unreachable.
+//
+// message_base is complete here despite only being forward-declared above:
+// actor.h includes timer.h, which includes message_base.h.
+//
+// derived_from<M, message_base> is satisfied when M *is* message_base, which
+// is required - tests/01_simple/test_handler_registration.cpp registers a
+// handler for message_base itself. Do not tighten this to a proper-base check.
+template<typename MessageType>
+concept message_type = std::derived_from<MessageType, message_base>;
 
 // Actor lifecycle state
 enum class actor_state {
@@ -158,7 +173,7 @@ protected:
     // Register a handler using a member function pointer
     // Usage: handler<message::ping>(&my_actor::on_ping);
     template<typename MessageType, typename ActorType>
-        requires std::derived_from<ActorType, actor>
+        requires message_type<MessageType> && std::derived_from<ActorType, actor>
     void handler(void (ActorType::*method)(const MessageType&)) {
 #ifdef CAS_DEBUG_LOGGING
         std::cout << "[HANDLER REG] Registering member function handler for: " << typeid(MessageType).name() << "\n" << std::flush;
@@ -172,7 +187,7 @@ protected:
     // Register a handler using a lambda or function object
     // Usage: handler<message::ping>([this](const message::ping& msg) { ... });
     template<typename MessageType, typename Callable>
-        requires message_handler_for<Callable, MessageType>
+        requires message_type<MessageType> && message_handler_for<Callable, MessageType>
     void handler(Callable&& callable) {
 #ifdef CAS_DEBUG_LOGGING
         std::cout << "[HANDLER REG] Registering lambda handler for: " << typeid(MessageType).name() << "\n" << std::flush;

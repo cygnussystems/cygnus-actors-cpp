@@ -4,9 +4,10 @@ This guide will help you build your first actor-based application using the Cygn
 
 ## Prerequisites
 
-- C++20 compatible compiler (MSVC 2019 16.11+, GCC 13+, Clang 16+)
-  - MSVC 2017 or later (Windows)
-  - GCC 7+ or Clang 5+ (Linux/Mac)
+- C++20 compatible compiler
+  - Windows: MSVC 2019 16.11+ (Visual Studio 2022 recommended)
+  - Linux: GCC 13+ or Clang 16+
+  - macOS: Clang 16+
 - CMake 3.15 or later
 - Windows: Visual Studio 2022 (for MSVC toolchain)
 

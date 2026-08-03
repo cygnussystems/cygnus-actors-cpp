@@ -218,3 +218,112 @@ TEST_CASE("Timer manager handles multiple concurrent timers", "[timer_manager][s
 
     mgr.stop();
 }
+
+// Destruction without an explicit stop().
+//
+// The manager must tear itself down safely when it goes out of scope while the
+// worker is still running. This is not just a convenience path: the destructor
+// has to join the worker while the mutex, condition variable and containers it
+// touches are all still alive. Every other test in this file calls stop()
+// first, so without these cases that path is never exercised.
+//
+// A failure here is a crash, a hang, or a sanitizer report rather than a failed
+// assertion - reaching the end of each scope is the result being checked.
+
+TEST_CASE("Timer manager destructs while idle", "[timer_manager][standalone][teardown]") {
+    {
+        cas::timer_manager mgr;
+        mgr.start();
+        REQUIRE(mgr.is_running());
+        // Destroyed with the worker parked in the empty-queue wait.
+    }
+    SUCCEED("destroyed while idle without stop()");
+}
+
+TEST_CASE("Timer manager destructs with a pending one-shot timer", "[timer_manager][standalone][teardown]") {
+    {
+        cas::timer_manager mgr;
+        mgr.start();
+
+        auto msg = std::make_unique<test_tick>();
+        auto copier = []() -> std::unique_ptr<cas::message_base> {
+            return std::make_unique<test_tick>();
+        };
+        // Far enough out that it is still pending at destruction: the worker is
+        // in the timed wait, not the empty-queue wait.
+        mgr.schedule(std::move(msg), std::move(copier),
+                     std::chrono::milliseconds(10000), std::chrono::milliseconds(0),
+                     [](auto, auto) {});
+
+        REQUIRE(mgr.active_count() == 1);
+    }
+    SUCCEED("destroyed with a pending timer without stop()");
+}
+
+TEST_CASE("Timer manager destructs with an active periodic timer", "[timer_manager][standalone][teardown]") {
+    std::atomic<int> fires{0};
+    {
+        cas::timer_manager mgr;
+        mgr.start();
+
+        auto msg = std::make_unique<test_tick>();
+        auto copier = []() -> std::unique_ptr<cas::message_base> {
+            return std::make_unique<test_tick>();
+        };
+        mgr.schedule(std::move(msg), std::move(copier),
+                     std::chrono::milliseconds(5), std::chrono::milliseconds(5),
+                     [&fires](auto, auto) { fires++; });
+
+        // Let it cycle a few times so destruction lands mid-rescheduling.
+        wait_ms(40);
+        REQUIRE(fires > 0);
+    }
+    SUCCEED("destroyed with a periodic timer without stop()");
+}
+
+TEST_CASE("Timer manager destructs while a callback is running", "[timer_manager][standalone][teardown]") {
+    std::atomic<bool> in_callback{false};
+    {
+        cas::timer_manager mgr;
+        mgr.start();
+
+        auto msg = std::make_unique<test_tick>();
+        auto copier = []() -> std::unique_ptr<cas::message_base> {
+            return std::make_unique<test_tick>();
+        };
+        // The callback sleeps, so the destructor runs while the worker is
+        // inside user code with the timer mutex released.
+        mgr.schedule(std::move(msg), std::move(copier),
+                     std::chrono::milliseconds(10), std::chrono::milliseconds(0),
+                     [&in_callback](auto, auto) {
+                         in_callback = true;
+                         std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                     });
+
+        // Wait until the callback has actually started before leaving scope.
+        for (int i = 0; i < 200 && !in_callback; ++i) {
+            wait_ms(1);
+        }
+        REQUIRE(in_callback);
+    }
+    SUCCEED("destroyed mid-callback without stop()");
+}
+
+TEST_CASE("Timer manager is_running reflects lifecycle", "[timer_manager][standalone][teardown]") {
+    cas::timer_manager mgr;
+    REQUIRE(!mgr.is_running());
+
+    mgr.start();
+    REQUIRE(mgr.is_running());
+
+    // start() on an already-running manager is a no-op, not a restart.
+    mgr.start();
+    REQUIRE(mgr.is_running());
+
+    mgr.stop();
+    REQUIRE(!mgr.is_running());
+
+    // stop() must be idempotent - the destructor calls it again.
+    mgr.stop();
+    REQUIRE(!mgr.is_running());
+}

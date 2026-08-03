@@ -26,6 +26,30 @@ static_assert(cas::fixed_string<32>("apple") < cas::fixed_string<16>("world"));
 // Truncation is silent and happens at compile time too.
 static_assert(cas::fixed_string<4>("abcdefgh") == "abcd");
 
+// Construction from a null pointer must also be usable in a constant
+// expression. This takes clear() rather than the normal assign() path, so it
+// needs its own full-buffer initialisation during constant evaluation - a
+// partially initialised object is not a valid constant.
+constexpr cas::fixed_string<8> null_constructed(nullptr);
+static_assert(null_constructed.empty());
+static_assert(null_constructed == "");
+
+// Same for clear() reached after the buffer already held content, and for
+// assignment from a null pointer.
+constexpr cas::fixed_string<8> cleared_after_use = []() {
+    cas::fixed_string<8> s("AAPL");
+    s.clear();
+    return s;
+}();
+static_assert(cleared_after_use.empty());
+
+constexpr cas::fixed_string<8> null_assigned = []() {
+    cas::fixed_string<8> s("AAPL");
+    s = static_cast<const char*>(nullptr);
+    return s;
+}();
+static_assert(null_assigned.empty());
+
 } // namespace
 
 TEST_CASE("fixed_string basic operations", "[09_fixed_types][fixed_string]") {

@@ -4,14 +4,23 @@ namespace cas {
 
 timer_manager::timer_manager() = default;
 
-// jthread requests stop and joins in its own destructor, so no explicit
-// teardown is needed here.
-timer_manager::~timer_manager() = default;
+// Joins the worker before any member it uses is destroyed.
+//
+// jthread does request stop and join on its own, but relying on that alone is
+// not enough here: it only happens once ~timer_manager()'s body has run and
+// member destruction reaches m_timer_thread. Calling stop() here joins the
+// worker while the mutex, condition variable and containers are guaranteed
+// alive, instead of depending solely on member declaration order.
+timer_manager::~timer_manager() {
+    stop();
+}
 
 void timer_manager::start() {
     if (m_timer_thread.joinable()) {
         return;  // Already running
     }
+
+    m_running.store(true, std::memory_order_release);
 
     m_timer_thread = std::jthread([this](std::stop_token stop) {
         timer_thread_func(std::move(stop));
@@ -19,6 +28,11 @@ void timer_manager::start() {
 }
 
 void timer_manager::stop() {
+    // Publish "not running" before the join, matching the old atomic-flag
+    // timing: observers see false as soon as shutdown begins rather than only
+    // once the worker has fully exited.
+    m_running.store(false, std::memory_order_release);
+
     // request_stop() interrupts any condition_variable_any wait registered
     // with the token, so no separate notify is needed to wake the thread.
     m_timer_thread.request_stop();
@@ -39,7 +53,9 @@ void timer_manager::stop() {
 }
 
 bool timer_manager::is_running() const {
-    return m_timer_thread.joinable() && !m_timer_thread.get_stop_token().stop_requested();
+    // Reads the atomic rather than m_timer_thread: see m_running's declaration
+    // for why inspecting the jthread here would race start()/stop().
+    return m_running.load(std::memory_order_acquire);
 }
 
 timer_id timer_manager::schedule(
