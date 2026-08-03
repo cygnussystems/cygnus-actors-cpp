@@ -52,8 +52,10 @@ class greeter : public cas::actor {
 git clone https://github.com/cygnussystems/cygnus-actors-cpp.git
 cd cygnus-actors-cpp
 
-# Configure and build
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+# Configure and build.
+# ZeroMQ support is ON by default and needs cppzmq installed; turn it off if
+# you do not have it, otherwise configuration fails looking for the package.
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_ZEROMQ=OFF
 cmake --build build
 
 # Run tests
@@ -63,6 +65,13 @@ cmake --build build
 ./build/benchmark
 ```
 
+On Windows, run these from a Developer Command Prompt (or after `vcvars64.bat`)
+so the MSVC toolchain and Windows SDK are on PATH. Configuring outside one
+fails while testing the compiler, typically `cannot open file 'kernel32.lib'`.
+
+To build *with* the ZeroMQ relay, install cppzmq first (vcpkg: `cppzmq`) and
+drop `-DENABLE_ZEROMQ=OFF`, pointing CMake at the vcpkg toolchain file.
+
 ### Integration
 
 Add to your CMakeLists.txt:
@@ -71,7 +80,10 @@ add_subdirectory(cygnus-actors-cpp)
 target_link_libraries(your_target CygnusActorFramework)
 ```
 
-Or simply include the headers and source files in your project.
+Linking the target is the supported route: it propagates the C++20 requirement
+to your build. If you instead add the headers and sources to your project
+directly, compile them as C++20 - the public headers use concepts,
+`operator<=>` and `std::jthread`.
 
 ## Quick Start
 
@@ -832,7 +844,10 @@ virtual void on_shutdown();  // Called during shutdown (can send messages)
 virtual void on_stop();      // Called after shutdown (no messages)
 
 // Handler registration (call in on_start)
+// T must derive from cas::message_base; a type that cannot reach a mailbox
+// is rejected at the registration call, not silently left unreachable.
 template<typename T> void handler(void (Derived::*method)(const T&));
+template<typename T, typename Callable> void handler(Callable&& callable);
 template<typename R, typename Tag, typename... Args>
 void ask_handler(R (Derived::*method)(Args...));
 

@@ -20,18 +20,23 @@ This guide will help you build your first actor-based application using the Cygn
 cd C:\path\to\CYGNUS_ACTOR_FRAMEWORK
 .\claude\build.bat
 
-# Or manually
+# Or manually. vcvarsall.bat is required: without it CMake cannot find the
+# Windows SDK and the compiler test fails on 'kernel32.lib'.
 call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat" x64
-cmake -B build -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release
+cmake -B build -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release -DENABLE_ZEROMQ=OFF
 cmake --build build
 ```
 
 ### Linux/Mac
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_ZEROMQ=OFF
 cmake --build build
 ```
+
+`ENABLE_ZEROMQ` defaults to ON and requires cppzmq; configuration fails looking
+for the package if it is not installed. Omit the flag once you have it (see
+[ZeroMQ Relay](130_zeromq_relay.md)).
 
 ## Your First Actor Application
 

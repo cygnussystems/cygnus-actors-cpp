@@ -139,8 +139,9 @@ Requires C++20. These are the minimum versions providing the concepts,
 ## Building
 
 ```bash
-# Configure
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+# Configure. ENABLE_ZEROMQ defaults to ON and needs cppzmq installed;
+# drop the flag once you have it.
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_ZEROMQ=OFF
 
 # Build
 cmake --build build
