@@ -10,6 +10,17 @@ set(TUTORIAL_SOURCES
     01_hello_actor.cpp
     02_message_passing.cpp
     03_actor_to_actor.cpp
+    04_lifecycle_hooks.cpp
+    05_actor_registry.cpp
+    06_ask_pattern.cpp
+    07_timers.cpp
+    08_dynamic_removal.cpp
+    09_watch_pattern.cpp
+    10_dead_letters.cpp
+    11_fixed_string.cpp
+    12_message_pool.cpp
+    13_fast_actor.cpp
+    14_inline_actor.cpp
 )
 
 add_executable(tutorials ${TUTORIAL_SOURCES})
@@ -32,6 +43,17 @@ set(TUTORIAL_NAMES
     hello_actor
     message_passing
     actor_to_actor
+    lifecycle_hooks
+    actor_registry
+    ask_pattern
+    timers
+    dynamic_removal
+    watch_pattern
+    dead_letters
+    fixed_string
+    message_pool
+    fast_actor
+    inline_actor
 )
 
 set(TUTORIAL_INDEX 1)

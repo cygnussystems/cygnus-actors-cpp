@@ -38,13 +38,45 @@ the examples cannot quietly go stale.
 
 ## Order
 
+**Core model — read these in order.**
+
 | # | Tutorial | Teaches |
 |---|----------|---------|
 | 1 | `hello_actor` | Messages, actors, handlers, system lifecycle |
 | 2 | `message_passing` | Multiple message types, actor state, unhandled messages |
 | 3 | `actor_to_actor` | Actors messaging each other, replying via `msg.sender` |
+| 4 | `lifecycle_hooks` | `on_start` / `on_shutdown` / `on_stop`, message draining |
+
+**Everyday patterns.**
+
+| # | Tutorial | Teaches |
+|---|----------|---------|
+| 5 | `actor_registry` | Finding actors by name instead of holding a reference |
+| 6 | `ask_pattern` | Request/response with a return value, timeouts, deadlock rules |
+| 7 | `timers` | One-shot and periodic timers, cancellation |
+| 8 | `dynamic_removal` | Stopping one actor while the system runs; drain vs discard |
+| 9 | `watch_pattern` | Being notified when a watched actor terminates |
+| 10 | `dead_letters` | Seeing messages that could not be delivered |
+
+**Performance and specialised actors.**
+
+| # | Tutorial | Teaches |
+|---|----------|---------|
+| 11 | `fixed_string` | Inline strings, for messages that do not allocate |
+| 12 | `message_pool` | How messages are allocated; keeping them on the fast path |
+| 13 | `fast_actor` | A dedicated thread, for latency-critical work |
+| 14 | `inline_actor` | Synchronous dispatch in the sender's thread |
 
 Each assumes the ones before it and does not repeat their explanations.
+
+## Not covered
+
+**`stateful_actor`** — its tests are disabled (`CMakeLists.txt:111`, ABI
+sensitivity), so it is not currently verified and teaching it would be
+premature.
+
+**The ZeroMQ relay** — needs `cppzmq`, which the default build does not
+enable. See [doc/130_zeromq_relay.md](../doc/130_zeromq_relay.md).
 
 ## Conventions
 

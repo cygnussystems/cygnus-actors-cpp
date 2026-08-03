@@ -38,6 +38,17 @@ struct tutorial_entry {
 bool run_hello_actor();       // 1
 bool run_message_passing();   // 2
 bool run_actor_to_actor();    // 3
+bool run_lifecycle_hooks();   // 4
+bool run_actor_registry();    // 5
+bool run_ask_pattern();       // 6
+bool run_timers();            // 7
+bool run_dynamic_removal();   // 8
+bool run_watch_pattern();     // 9
+bool run_dead_letters();      // 10
+bool run_fixed_string();      // 11
+bool run_message_pool();      // 12
+bool run_fast_actor();        // 13
+bool run_inline_actor();      // 14
 
 // The registry. Defined in main.cpp.
 extern const tutorial_entry g_tutorials[];
