@@ -2,6 +2,10 @@
 
 Actors have a well-defined lifecycle with three hooks that give you precise control over initialization, shutdown preparation, and final cleanup.
 
+> **Runnable version:** `tutorials/04_lifecycle_hooks.cpp` — run `tutorials 4`.
+> It is compiled and executed by `ctest`, and shows the hook order and message
+> draining as observable output.
+
 ## Lifecycle Overview
 
 ```

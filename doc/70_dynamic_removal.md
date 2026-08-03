@@ -9,6 +9,11 @@ Starting with version 0.2.0, Cygnus supports stopping individual actors at runti
 
 ## Quick Example
 
+> **Runnable versions:** `tutorials/08_dynamic_removal.cpp` (`tutorials 8`)
+> for stopping an actor, drain vs discard, and stale references;
+> `tutorials/09_watch_pattern.cpp` (`tutorials 9`) for the watch pattern.
+> Both are compiled and executed by `ctest`.
+
 ```cpp
 // Create actors
 auto worker1 = cas::system::create<worker_actor>();

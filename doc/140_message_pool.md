@@ -8,6 +8,10 @@ message automatically — including those created by `std::make_unique` and by
 This document describes what the pool actually does, because it is easy to assume
 more than it provides.
 
+> **Runnable version:** `tutorials/12_message_pool.cpp` — run `tutorials 12`.
+> It prints real header overhead, size-class assignment and pool statistics
+> for the machine you are on, rather than quoting figures.
+
 ---
 
 ## What the pool is — and is not

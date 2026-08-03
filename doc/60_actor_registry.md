@@ -4,6 +4,10 @@ The actor registry provides DNS-like name-based actor lookup, allowing actors to
 
 ## Quick Example
 
+> **Runnable version:** `tutorials/05_actor_registry.cpp` — run `tutorials 5`.
+> It is compiled and executed by `ctest`, and also covers what a lookup of an
+> unregistered name returns.
+
 ```cpp
 class worker : public cas::actor {
 protected:

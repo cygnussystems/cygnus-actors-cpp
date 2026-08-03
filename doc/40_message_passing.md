@@ -4,6 +4,13 @@ Message passing is the core communication mechanism in Cygnus. Actors send immut
 
 ## Quick Example
 
+> **Runnable version:** `tutorials/02_message_passing.cpp` and
+> `tutorials/03_actor_to_actor.cpp` — build the project and run
+> `tutorials 2` and `tutorials 3`. Those two are compiled and executed by
+> `ctest`, so they are known to work against the current code. The example
+> below is written for readability and elides definitions such as
+> `process()`.
+
 ```cpp
 // Define messages
 struct work_request : public cas::message_base {

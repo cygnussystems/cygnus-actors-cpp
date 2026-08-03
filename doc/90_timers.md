@@ -4,6 +4,10 @@ Timers allow actors to schedule messages for delayed or periodic delivery. This 
 
 ## Quick Example
 
+> **Runnable version:** `tutorials/07_timers.cpp` — run `tutorials 7`.
+> It is compiled and executed by `ctest`, and also shows cancelling a
+> periodic timer from inside its own handler.
+
 ```cpp
 struct tick : public cas::message_base {
     int count;

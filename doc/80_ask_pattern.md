@@ -4,6 +4,10 @@ The ask pattern provides synchronous request-response messaging, similar to remo
 
 ## Quick Example
 
+> **Runnable version:** `tutorials/06_ask_pattern.cpp` — run `tutorials 6`.
+> It is compiled and executed by `ctest`, and also demonstrates timeouts,
+> exceptions crossing the actor boundary, and the deadlock check firing.
+
 ```cpp
 struct calculate_op {};  // Operation tag
 
