@@ -10,6 +10,8 @@
 #include <iostream>
 #include <chrono>
 #include <set>
+#include <concepts>
+#include <type_traits>
 #include "timer.h"
 #include "external/concurrentqueue.h"
 
@@ -29,6 +31,22 @@ template<typename ReturnType, typename OpTag, typename... Args> struct ask_reque
 template<bool ThreadSafe> class inline_actor;
 class stateful_actor;
 class zeromq_relay_actor;
+
+// Constrains the callable passed to actor::handler(). Catches a mismatched
+// lambda signature at the registration call site, instead of deep inside the
+// std::function instantiation it would otherwise be stored in.
+//
+// Deliberately expressed as invocability rather than an exact parameter match:
+// generic handlers written as [](const auto& msg) are used in the framework
+// itself (see source/zeromq_relay_actor.cpp) and must keep working.
+//
+// Note this does NOT constrain MessageType to derive from message_base.
+// actor.h only forward-declares message_base (message_base.h includes
+// actor_ref.h, which would be circular), so the relationship cannot be
+// checked here. It is enforced in practice by enqueue_message() taking a
+// unique_ptr<message_base>.
+template<typename Callable, typename MessageType>
+concept message_handler_for = std::invocable<Callable, const MessageType&>;
 
 // Actor lifecycle state
 enum class actor_state {
@@ -140,6 +158,7 @@ protected:
     // Register a handler using a member function pointer
     // Usage: handler<message::ping>(&my_actor::on_ping);
     template<typename MessageType, typename ActorType>
+        requires std::derived_from<ActorType, actor>
     void handler(void (ActorType::*method)(const MessageType&)) {
 #ifdef CAS_DEBUG_LOGGING
         std::cout << "[HANDLER REG] Registering member function handler for: " << typeid(MessageType).name() << "\n" << std::flush;
@@ -153,6 +172,7 @@ protected:
     // Register a handler using a lambda or function object
     // Usage: handler<message::ping>([this](const message::ping& msg) { ... });
     template<typename MessageType, typename Callable>
+        requires message_handler_for<Callable, MessageType>
     void handler(Callable&& callable) {
 #ifdef CAS_DEBUG_LOGGING
         std::cout << "[HANDLER REG] Registering lambda handler for: " << typeid(MessageType).name() << "\n" << std::flush;
@@ -165,7 +185,13 @@ protected:
 
     // Register an ask handler (RPC-style function call)
     // Usage: ask_handler<double, profit_op>(&my_actor::calculate_profit);
+    //
+    // The derived_from check reports a method belonging to an unrelated class
+    // at this call site. Without it the mismatch surfaces from inside the
+    // lambda below, where the actor has already been cast through void* and
+    // std::apply, and the diagnostic is close to unreadable.
     template<typename ReturnType, typename OpTag, typename ActorType, typename... Args>
+        requires std::derived_from<ActorType, actor>
     void ask_handler(ReturnType (ActorType::*method)(Args...)) {
         m_ask_handlers[typeid(OpTag)] = [this, method](void* args_ptr) -> void* {
             // Unpack arguments from tuple

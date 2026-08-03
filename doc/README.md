@@ -1,6 +1,6 @@
 # Cygnus Actor Framework Documentation
 
-Complete documentation for the Cygnus Actor Framework - a modern C++17 actor framework for high-performance concurrent applications.
+Complete documentation for the Cygnus Actor Framework - a modern C++20 actor framework for high-performance concurrent applications.
 
 ## Documentation Index
 
@@ -133,7 +133,7 @@ See [Overview - Naming Conventions](10_overview.md#naming-conventions) for detai
 - **Linux**: GCC 7+, Clang 5+
 - **macOS**: Clang 5+ (Xcode 9.3+)
 
-Requires C++17 or later.
+Requires C++20 or later.
 
 ## Building
 

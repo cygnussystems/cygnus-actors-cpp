@@ -1,6 +1,6 @@
 # Cygnus Actor Framework
 
-A modern C++17 actor framework built for **speed without sacrificing simplicity**.
+A modern C++20 actor framework built for **speed without sacrificing simplicity**.
 
 Most actor frameworks force you to choose: either raw performance with complex APIs, or clean syntax with overhead. Cygnus was designed to deliver both - **5+ million messages/sec** with an API that feels natural to C++ developers and can be learned in an afternoon.
 
@@ -42,7 +42,7 @@ class greeter : public cas::actor {
 ## Installation
 
 ### Requirements
-- C++17 compiler (MSVC 2017+, GCC 7+, Clang 5+)
+- C++20 compiler (MSVC 2019 16.11+, GCC 13+, Clang 16+)
 - CMake 3.14+
 
 ### Building
@@ -463,13 +463,22 @@ str.append(" world");
 str += "!";
 
 // Comparison (works with string_view, string, char*)
+// Either operand order, and against any capacity.
 if (str == "hello") { }
-if (str < other_str) { }
+if ("hello" == str) { }
+if (str < other_str) { }             // other_str may be any fixed_string<N>
+
+// Usable as a key in unordered containers. Hashes consistently with
+// std::string_view, so equal contents always hash equally.
+std::unordered_map<cas::fixed_string<8>, order> by_symbol;
 
 // Conversion
 std::string s = str.str();           // Copy to std::string
 std::string_view sv = str.view();    // View (no copy)
 std::string_view sv2 = str;          // Implicit conversion
+
+// Compile-time construction and comparison
+static_assert(cas::fixed_string<8>("AAPL") == "AAPL");
 ```
 
 **Note**: `fixed_string` silently truncates if content exceeds capacity (no exceptions for performance).

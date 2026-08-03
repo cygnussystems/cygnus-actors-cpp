@@ -2,7 +2,7 @@
 
 ## What is Cygnus?
 
-Cygnus is a modern C++17 actor framework designed for high-performance concurrent applications. It provides a message-passing model that eliminates shared mutable state and makes concurrent programming safer and more intuitive.
+Cygnus is a modern C++20 actor framework designed for high-performance concurrent applications. It provides a message-passing model that eliminates shared mutable state and makes concurrent programming safer and more intuitive.
 
 ## Key Features
 

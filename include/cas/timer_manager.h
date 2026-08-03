@@ -2,6 +2,7 @@
 #define CAS_TIMER_MANAGER_H
 
 #include <thread>
+#include <stop_token>
 #include <mutex>
 #include <condition_variable>
 #include <queue>
@@ -64,8 +65,8 @@ public:
     size_t active_count() const;
 
 private:
-    /// Timer thread main loop
-    void timer_thread_func();
+    /// Timer thread main loop. Runs until the stop token is signalled.
+    void timer_thread_func(std::stop_token stop);
 
     /// Comparator for priority queue (min-heap by fire time)
     struct timer_comparator {
@@ -75,15 +76,16 @@ private:
         }
     };
 
-    // State
-    std::atomic<bool> m_running{false};
+    // Thread. jthread owns the stop state and joins on destruction, so the
+    // shutdown flag, the manual join and the destructor's stop() call that
+    // this class used to need are all gone.
+    std::jthread m_timer_thread;
 
-    // Thread
-    std::thread m_timer_thread;
-
-    // Synchronization
+    // Synchronization.
+    // condition_variable_any (not condition_variable) so waits can take the
+    // stop_token and be interrupted the moment stop is requested.
     mutable std::mutex m_mutex;
-    std::condition_variable m_cv;
+    std::condition_variable_any m_cv;
 
     // Timer storage
     std::priority_queue<

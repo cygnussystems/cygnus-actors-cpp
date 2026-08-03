@@ -5,8 +5,16 @@
 #include <string>
 #include <string_view>
 #include <algorithm>
+#include <compare>
 #include <stdexcept>
 #include <ostream>
+#include <type_traits>
+#include <functional>   // std::hash
+#include <version>      // __cpp_lib_format
+
+#if defined(__cpp_lib_format)
+#include <format>
+#endif
 
 namespace cas {
 
@@ -30,61 +38,83 @@ public:
     using const_iterator = const char*;
 
     /// Default constructor - empty string
+    ///
+    /// Only the null terminator is written at runtime. Constant evaluation
+    /// cannot read an uninitialised array element, so the whole buffer is
+    /// zeroed in that case only - zeroing unconditionally would add a
+    /// Capacity-byte write to every message construction on the hot path.
     constexpr fixed_string() noexcept : m_size(0) {
-        m_data[0] = '\0';
+        if (std::is_constant_evaluated()) {
+            for (size_t i = 0; i <= Capacity; ++i) {
+                m_data[i] = '\0';
+            }
+        } else {
+            m_data[0] = '\0';
+        }
     }
 
     /// Construct from C string
-    fixed_string(const char* str) {
+    constexpr fixed_string(const char* str) {
         assign(str);
     }
 
     /// Construct from std::string
-    fixed_string(const std::string& str) {
+    constexpr fixed_string(const std::string& str) {
         assign(str.data(), str.size());
     }
 
     /// Construct from std::string_view
-    fixed_string(std::string_view sv) {
+    constexpr fixed_string(std::string_view sv) {
         assign(sv.data(), sv.size());
     }
 
     /// Construct from char array with explicit size
-    fixed_string(const char* str, size_t len) {
+    constexpr fixed_string(const char* str, size_t len) {
         assign(str, len);
     }
 
     // Assignment
-    fixed_string& operator=(const char* str) {
+    constexpr fixed_string& operator=(const char* str) {
         assign(str);
         return *this;
     }
 
-    fixed_string& operator=(const std::string& str) {
+    constexpr fixed_string& operator=(const std::string& str) {
         assign(str.data(), str.size());
         return *this;
     }
 
-    fixed_string& operator=(std::string_view sv) {
+    constexpr fixed_string& operator=(std::string_view sv) {
         assign(sv.data(), sv.size());
         return *this;
     }
 
     /// Assign from C string
-    void assign(const char* str) {
+    constexpr void assign(const char* str) {
         if (str == nullptr) {
             clear();
             return;
         }
-        assign(str, std::strlen(str));
+        assign(str, std::char_traits<char>::length(str));
     }
 
     /// Assign from buffer with length
-    void assign(const char* str, size_t len) {
+    constexpr void assign(const char* str, size_t len) {
         if (len > Capacity) {
             len = Capacity;  // Truncate silently for performance (no exceptions in hot path)
         }
-        std::memcpy(m_data, str, len);
+        if (std::is_constant_evaluated()) {
+            // Constant evaluation cannot read an uninitialised array element,
+            // and copying a fixed_string reads all of m_data - so during
+            // constant evaluation the tail past m_size has to be written too.
+            // At runtime this is skipped: only len+1 bytes are touched.
+            for (size_t i = 0; i <= Capacity; ++i) {
+                m_data[i] = (i < len) ? str[i] : '\0';
+            }
+            m_size = len;
+            return;
+        }
+        std::char_traits<char>::copy(m_data, str, len);
         m_size = len;
         m_data[m_size] = '\0';
     }
@@ -92,116 +122,135 @@ public:
     // Capacity
     constexpr size_t capacity() const noexcept { return Capacity; }
     constexpr size_t max_size() const noexcept { return Capacity; }
-    size_t size() const noexcept { return m_size; }
-    size_t length() const noexcept { return m_size; }
-    bool empty() const noexcept { return m_size == 0; }
+    constexpr size_t size() const noexcept { return m_size; }
+    constexpr size_t length() const noexcept { return m_size; }
+    constexpr bool empty() const noexcept { return m_size == 0; }
 
     // Element access
-    char& operator[](size_t pos) noexcept { return m_data[pos]; }
-    const char& operator[](size_t pos) const noexcept { return m_data[pos]; }
+    constexpr char& operator[](size_t pos) noexcept { return m_data[pos]; }
+    constexpr const char& operator[](size_t pos) const noexcept { return m_data[pos]; }
 
-    char& at(size_t pos) {
+    constexpr char& at(size_t pos) {
         if (pos >= m_size) throw std::out_of_range("fixed_string::at");
         return m_data[pos];
     }
 
-    const char& at(size_t pos) const {
+    constexpr const char& at(size_t pos) const {
         if (pos >= m_size) throw std::out_of_range("fixed_string::at");
         return m_data[pos];
     }
 
-    char& front() noexcept { return m_data[0]; }
-    const char& front() const noexcept { return m_data[0]; }
-    char& back() noexcept { return m_data[m_size - 1]; }
-    const char& back() const noexcept { return m_data[m_size - 1]; }
+    constexpr char& front() noexcept { return m_data[0]; }
+    constexpr const char& front() const noexcept { return m_data[0]; }
+    constexpr char& back() noexcept { return m_data[m_size - 1]; }
+    constexpr const char& back() const noexcept { return m_data[m_size - 1]; }
 
     // Data access
-    char* data() noexcept { return m_data; }
-    const char* data() const noexcept { return m_data; }
-    const char* c_str() const noexcept { return m_data; }
+    constexpr char* data() noexcept { return m_data; }
+    constexpr const char* data() const noexcept { return m_data; }
+    constexpr const char* c_str() const noexcept { return m_data; }
 
     // Conversion
     std::string str() const { return std::string(m_data, m_size); }
-    std::string_view view() const noexcept { return std::string_view(m_data, m_size); }
-    operator std::string_view() const noexcept { return view(); }
+    constexpr std::string_view view() const noexcept { return std::string_view(m_data, m_size); }
+    constexpr operator std::string_view() const noexcept { return view(); }
 
     // Iterators
-    iterator begin() noexcept { return m_data; }
-    const_iterator begin() const noexcept { return m_data; }
-    const_iterator cbegin() const noexcept { return m_data; }
-    iterator end() noexcept { return m_data + m_size; }
-    const_iterator end() const noexcept { return m_data + m_size; }
-    const_iterator cend() const noexcept { return m_data + m_size; }
+    constexpr iterator begin() noexcept { return m_data; }
+    constexpr const_iterator begin() const noexcept { return m_data; }
+    constexpr const_iterator cbegin() const noexcept { return m_data; }
+    constexpr iterator end() noexcept { return m_data + m_size; }
+    constexpr const_iterator end() const noexcept { return m_data + m_size; }
+    constexpr const_iterator cend() const noexcept { return m_data + m_size; }
 
     // Modifiers
-    void clear() noexcept {
+    constexpr void clear() noexcept {
         m_size = 0;
         m_data[0] = '\0';
     }
 
-    void push_back(char c) {
+    constexpr void push_back(char c) {
         if (m_size < Capacity) {
             m_data[m_size++] = c;
             m_data[m_size] = '\0';
         }
     }
 
-    void pop_back() noexcept {
+    constexpr void pop_back() noexcept {
         if (m_size > 0) {
             m_data[--m_size] = '\0';
         }
     }
 
-    fixed_string& append(const char* str, size_t len) {
+    constexpr fixed_string& append(const char* str, size_t len) {
         size_t to_copy = std::min(len, Capacity - m_size);
-        std::memcpy(m_data + m_size, str, to_copy);
+        std::char_traits<char>::copy(m_data + m_size, str, to_copy);
         m_size += to_copy;
         m_data[m_size] = '\0';
         return *this;
     }
 
-    fixed_string& append(const char* str) {
-        return append(str, std::strlen(str));
+    constexpr fixed_string& append(const char* str) {
+        return append(str, std::char_traits<char>::length(str));
     }
 
-    fixed_string& append(std::string_view sv) {
+    constexpr fixed_string& append(std::string_view sv) {
         return append(sv.data(), sv.size());
     }
 
-    fixed_string& operator+=(char c) {
+    constexpr fixed_string& operator+=(char c) {
         push_back(c);
         return *this;
     }
 
-    fixed_string& operator+=(const char* str) {
+    constexpr fixed_string& operator+=(const char* str) {
         return append(str);
     }
 
-    fixed_string& operator+=(std::string_view sv) {
+    constexpr fixed_string& operator+=(std::string_view sv) {
         return append(sv);
     }
 
     // Comparison
-    int compare(std::string_view other) const noexcept {
+    constexpr int compare(std::string_view other) const noexcept {
         return view().compare(other);
     }
 
-    bool operator==(std::string_view other) const noexcept { return view() == other; }
-    bool operator!=(std::string_view other) const noexcept { return view() != other; }
-    bool operator<(std::string_view other) const noexcept { return view() < other; }
-    bool operator<=(std::string_view other) const noexcept { return view() <= other; }
-    bool operator>(std::string_view other) const noexcept { return view() > other; }
-    bool operator>=(std::string_view other) const noexcept { return view() >= other; }
+    // Comparisons are hidden friends so that both argument orders work
+    // (`fs == "x"` and `"x" == fs`). C++20 synthesises !=, <, <=, > and >=
+    // from the two operators below, so only these need defining.
+    //
+    // Do NOT collapse these to a single string_view overload and let the
+    // implicit operator std::string_view() handle fixed_string operands: for
+    // two different capacities the normal candidate and the C++20 reversed
+    // candidate are each better on one argument and worse on the other, which
+    // is ambiguous (MSVC C2666). The fixed_string overloads below are exact
+    // matches on both arguments, so they outrank that pair and resolve it.
+    //
+    // Never default these. Defaulted comparisons compare m_data element by
+    // element across the whole Capacity+1 array, including the uninitialised
+    // bytes past m_size that assign() never writes, so equal strings could
+    // compare unequal.
+    friend constexpr bool operator==(const fixed_string& lhs, std::string_view rhs) noexcept {
+        return lhs.view() == rhs;
+    }
 
-    // Compare with another fixed_string
+    friend constexpr std::strong_ordering operator<=>(const fixed_string& lhs,
+                                                      std::string_view rhs) noexcept {
+        return lhs.view() <=> rhs;
+    }
+
+    // Compare with another fixed_string of any capacity (including this one)
     template<size_t OtherCap>
-    bool operator==(const fixed_string<OtherCap>& other) const noexcept {
-        return view() == other.view();
+    friend constexpr bool operator==(const fixed_string& lhs,
+                                     const fixed_string<OtherCap>& rhs) noexcept {
+        return lhs.view() == rhs.view();
     }
 
     template<size_t OtherCap>
-    bool operator!=(const fixed_string<OtherCap>& other) const noexcept {
-        return view() != other.view();
+    friend constexpr std::strong_ordering operator<=>(const fixed_string& lhs,
+                                                      const fixed_string<OtherCap>& rhs) noexcept {
+        return lhs.view() <=> rhs.view();
     }
 
 private:
@@ -227,5 +276,39 @@ std::string operator+(std::string_view lhs, const fixed_string<N>& rhs) {
 }
 
 } // namespace cas
+
+namespace std {
+
+/// Hash support, so fixed_string can be a key in unordered containers.
+/// Delegates to hash<string_view> so that a fixed_string and a string_view
+/// with the same contents hash equally - which matches the heterogeneous
+/// operator== above and is what transparent lookup needs.
+template<size_t N>
+struct hash<cas::fixed_string<N>> {
+    size_t operator()(const cas::fixed_string<N>& s) const noexcept {
+        return hash<string_view>{}(s.view());
+    }
+};
+
+} // namespace std
+
+// std::format support. Guarded because <format> is unavailable on older
+// standard libraries that otherwise handle the C++20 used here (notably
+// libstdc++ before GCC 13).
+#if defined(__cpp_lib_format)
+
+namespace std {
+
+template<size_t N>
+struct formatter<cas::fixed_string<N>> : formatter<string_view> {
+    template<typename FormatContext>
+    auto format(const cas::fixed_string<N>& s, FormatContext& ctx) const {
+        return formatter<string_view>::format(s.view(), ctx);
+    }
+};
+
+} // namespace std
+
+#endif // __cpp_lib_format
 
 #endif // CAS_FIXED_STRING_H

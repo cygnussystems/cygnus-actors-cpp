@@ -1,8 +1,6 @@
 cmake_minimum_required(VERSION 3.15)
 project(CygnusActorFramework VERSION 0.2.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Project options
@@ -29,6 +27,13 @@ endif()
 
 # Create library
 add_library(${PROJECT_NAME} STATIC ${SOURCES})
+
+# C++20 is a PUBLIC requirement: the public headers use concepts, operator<=>
+# and std::jthread, so consumers must compile as C++20 too. Propagating this
+# through the usage requirements (rather than setting CMAKE_CXX_STANDARD) means
+# it also flows through the install/export interface.
+# Minimum toolchains: GCC 13+, MSVC 19.29+ (VS 2019 16.11), Clang 16+.
+target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_20)
 
 target_include_directories(${PROJECT_NAME}
     PUBLIC

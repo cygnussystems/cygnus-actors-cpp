@@ -1,6 +1,7 @@
 # CMake build directories
 cmake-build-*/
 build/
+build-*/
 out/
 
 # CMake cache and files

@@ -4,30 +4,25 @@ namespace cas {
 
 timer_manager::timer_manager() = default;
 
-timer_manager::~timer_manager() {
-    if (m_running) {
-        stop();
-    }
-}
+// jthread requests stop and joins in its own destructor, so no explicit
+// teardown is needed here.
+timer_manager::~timer_manager() = default;
 
 void timer_manager::start() {
-    if (m_running) {
+    if (m_timer_thread.joinable()) {
         return;  // Already running
     }
 
-    m_running = true;
-    m_timer_thread = std::thread(&timer_manager::timer_thread_func, this);
+    m_timer_thread = std::jthread([this](std::stop_token stop) {
+        timer_thread_func(std::move(stop));
+    });
 }
 
 void timer_manager::stop() {
-    // Set running to false while holding mutex, then notify
-    {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        m_running = false;
-        m_cv.notify_all();
-    }
+    // request_stop() interrupts any condition_variable_any wait registered
+    // with the token, so no separate notify is needed to wake the thread.
+    m_timer_thread.request_stop();
 
-    // Wait for thread to finish
     if (m_timer_thread.joinable()) {
         m_timer_thread.join();
     }
@@ -44,7 +39,7 @@ void timer_manager::stop() {
 }
 
 bool timer_manager::is_running() const {
-    return m_running.load();
+    return m_timer_thread.joinable() && !m_timer_thread.get_stop_token().stop_requested();
 }
 
 timer_id timer_manager::schedule(
@@ -85,19 +80,27 @@ timer_id timer_manager::schedule(
 }
 
 void timer_manager::cancel(timer_id id) {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
 
-    // Find timer in lookup map
-    auto it = m_timer_lookup.find(id);
-    if (it != m_timer_lookup.end()) {
-        // Mark as cancelled (timer thread will skip it)
-        it->second->cancelled = true;
-        // Remove from lookup map
-        m_timer_lookup.erase(it);
+        // Find timer in lookup map
+        auto it = m_timer_lookup.find(id);
+        if (it != m_timer_lookup.end()) {
+            // Mark as cancelled (timer thread will skip it)
+            it->second->cancelled = true;
+            // Remove from lookup map
+            m_timer_lookup.erase(it);
+        }
+
+        // Also remove callback
+        m_callbacks.erase(id);
     }
 
-    // Also remove callback
-    m_callbacks.erase(id);
+    // Wake the timer thread. A cancelled timer stays at the head of the queue
+    // with its original fire time, so without this the thread sleeps until
+    // that time before noticing - and if the cancelled timer was the only one,
+    // a caller waiting on active_count() to drop sees no progress until then.
+    m_cv.notify_one();
 }
 
 size_t timer_manager::active_count() const {
@@ -105,73 +108,90 @@ size_t timer_manager::active_count() const {
     return m_timer_lookup.size();
 }
 
-void timer_manager::timer_thread_func() {
-    while (m_running.load()) {
-        std::unique_lock<std::mutex> lock(m_mutex);
+void timer_manager::timer_thread_func(std::stop_token stop) {
+    std::unique_lock<std::mutex> lock(m_mutex);
 
-        // Wait until we have a timer or shutdown
-        m_cv.wait(lock, [this]() {
-            return !m_timer_queue.empty() || !m_running.load();
-        });
-
-        // Check if we're shutting down
-        if (!m_running.load()) {
+    while (!stop.stop_requested()) {
+        // Wait for a timer to exist. The stop_token overload returns false
+        // only when stop was requested, so a stop during the wait exits the
+        // loop immediately rather than waiting for a notify.
+        if (!m_cv.wait(lock, stop, [this]() { return !m_timer_queue.empty(); })) {
             break;
         }
 
-        // Get next timer (don't pop yet)
         auto next_timer = m_timer_queue.top();
 
-        // Check if it's time to fire
-        auto now = std::chrono::steady_clock::now();
-        if (now >= next_timer->next_fire_time) {
-            // Pop from queue
+        // Drop cancelled timers as soon as they reach the head, without
+        // waiting for their fire time. Cancellation leaves the timer in the
+        // queue (a priority_queue cannot remove from the middle), so this is
+        // where it actually leaves.
+        if (next_timer->cancelled) {
             m_timer_queue.pop();
-
-            // Skip if cancelled
-            if (!next_timer->cancelled) {
-                timer_id id = next_timer->id;
-
-                // Get callback
-                auto callback_it = m_callbacks.find(id);
-                if (callback_it != m_callbacks.end()) {
-                    timer_callback callback = callback_it->second;
-
-                    // For periodic timers, reschedule
-                    if (next_timer->interval.count() > 0) {
-                        // Copy the message for this firing
-                        auto msg_copy = next_timer->copy_message();
-
-                        // Update fire time for next occurrence
-                        next_timer->next_fire_time += next_timer->interval;
-
-                        // Push back into queue for next firing
-                        m_timer_queue.push(next_timer);
-
-                        // Fire callback (release lock first to avoid deadlock)
-                        lock.unlock();
-                        callback(id, std::move(msg_copy));
-                        lock.lock();
-                    } else {
-                        // One-shot timer - move the message
-                        auto msg = std::move(next_timer->message);
-
-                        // Remove from lookup and callbacks
-                        m_timer_lookup.erase(id);
-                        m_callbacks.erase(id);
-
-                        // Fire callback (release lock first to avoid deadlock)
-                        lock.unlock();
-                        callback(id, std::move(msg));
-                        lock.lock();
-                    }
-                }
-            }
-        } else {
-            // Not ready yet - wait until fire time
-            auto wait_duration = next_timer->next_fire_time - now;
-            m_cv.wait_for(lock, wait_duration);
+            continue;
         }
+
+        auto now = std::chrono::steady_clock::now();
+
+        if (now < next_timer->next_fire_time) {
+            // Not ready yet. Wait until its fire time, but wake early if a
+            // sooner timer is scheduled or stop is requested.
+            //
+            // The predicate re-checks the queue head rather than assuming it
+            // is still next_timer: schedule() may insert an earlier timer
+            // while this wait is in progress. Previously this was a bare
+            // wait_for whose result was discarded, so neither an earlier
+            // timer nor a shutdown was observed until the full duration had
+            // elapsed.
+            const auto deadline = next_timer->next_fire_time;
+            m_cv.wait_until(lock, stop, deadline, [this, deadline]() {
+                if (m_timer_queue.empty()) {
+                    return true;
+                }
+                const auto& head = m_timer_queue.top();
+                // A cancelled head must wake the wait: it keeps its original
+                // fire time, so waiting for that time would stall until a
+                // deadline that no longer needs to be honoured.
+                return head->cancelled || head->next_fire_time < deadline;
+            });
+            continue;  // Re-evaluate from the top: the head may have changed
+        }
+
+        // Fire time reached - take it off the queue
+        m_timer_queue.pop();
+
+        if (next_timer->cancelled) {
+            continue;
+        }
+
+        const timer_id id = next_timer->id;
+
+        auto callback_it = m_callbacks.find(id);
+        if (callback_it == m_callbacks.end()) {
+            continue;
+        }
+        timer_callback callback = callback_it->second;
+
+        const bool is_periodic = next_timer->interval.count() > 0;
+        std::unique_ptr<message_base> msg;
+
+        if (is_periodic) {
+            msg = next_timer->copy_message();
+            next_timer->next_fire_time += next_timer->interval;
+            m_timer_queue.push(next_timer);
+        } else {
+            msg = std::move(next_timer->message);
+            m_timer_lookup.erase(id);
+            m_callbacks.erase(id);
+        }
+
+        // Fire outside the lock: the callback enqueues to an actor and must
+        // not run with m_mutex held. Everything this iteration needs was
+        // copied out above, so nothing reads shared state after the unlock -
+        // the queue head in particular is re-read from the top of the loop
+        // rather than assumed to be unchanged.
+        lock.unlock();
+        callback(id, std::move(msg));
+        lock.lock();
     }
 }
 
