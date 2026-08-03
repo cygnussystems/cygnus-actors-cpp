@@ -551,4 +551,5 @@ t3.join();
 
 - [Best Practices](120_best_practices.md) - Design patterns and guidelines
 - [Advanced Actors](100_advanced_actors.md) - Fast, inline, and stateful actors
-- [Configuration](110_configuration.md) - System configuration options
+- System configuration - `system_config`, `shutdown_config` and `stop_config`
+  are declared with comments in `include/cas/system.h`

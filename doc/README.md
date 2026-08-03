@@ -9,12 +9,17 @@ Documentation files are numbered for easy ordering and insertion of new topics.
 ### Getting Started
 - **[10_overview.md](10_overview.md)** - Framework overview, architecture, and core concepts
 - **[20_getting_started.md](20_getting_started.md)** - Quick start guide with complete examples
+- **[../tutorials/](../tutorials/)** - Fourteen runnable, self-checking programs,
+  ordered from a first actor to fast and inline actors. Every one is built and
+  run by `ctest`, so unlike the prose here it cannot silently go stale.
 
 ### Core Features
-- **30_creating_actors.md** - Actor creation patterns and best practices *(coming soon)*
+- **30_creating_actors.md** - *(not written)*. Actor creation is covered in
+  [20_getting_started.md](20_getting_started.md) and the patterns in
+  [120_best_practices.md](120_best_practices.md).
 - **[40_message_passing.md](40_message_passing.md)** - Message definition, handlers, and sending patterns
 - **[50_lifecycle_hooks.md](50_lifecycle_hooks.md)** - on_start(), on_shutdown(), on_stop() usage
-- **60_actor_registry.md** - Name-based actor lookup and discovery *(coming soon)*
+- **[60_actor_registry.md](60_actor_registry.md)** - Name-based actor lookup and discovery
 
 ### Dynamic Management
 - **[70_dynamic_removal.md](70_dynamic_removal.md)** - Stop actors at runtime, watch pattern, lifecycle management
@@ -22,11 +27,16 @@ Documentation files are numbered for easy ordering and insertion of new topics.
 ### Advanced Features
 - **[80_ask_pattern.md](80_ask_pattern.md)** - RPC-style synchronous messaging with timeouts
 - **[90_timers.md](90_timers.md)** - One-shot and periodic timers
-- **100_advanced_actors.md** - Fast actors, inline actors, stateful actors *(coming soon)*
+- **[100_advanced_actors.md](100_advanced_actors.md)** - Fast actors, inline actors, stateful actors.
+  Note `stateful_actor`'s tests are currently disabled (`CMakeLists.txt:111`),
+  so unlike the rest of the framework it is not covered by the suite.
 
 ### Configuration & Best Practices
-- **110_configuration.md** - System configuration options *(coming soon)*
-- **120_best_practices.md** - Design patterns, anti-patterns, performance tips *(coming soon)*
+- **110_configuration.md** - *(not written)*. `system_config`, `shutdown_config`
+  and `stop_config` are declared with comments in `include/cas/system.h`;
+  shutdown and stop options are also covered in
+  [70_dynamic_removal.md](70_dynamic_removal.md).
+- **[120_best_practices.md](120_best_practices.md)** - Design patterns, anti-patterns, performance tips
 
 ### Inter-Process Communication
 - **[130_zeromq_relay.md](130_zeromq_relay.md)** - ZeroMQ relay actor for inter-process communication

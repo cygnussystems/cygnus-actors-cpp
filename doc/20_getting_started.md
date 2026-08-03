@@ -366,7 +366,7 @@ void on_request(const request& msg) {
 
 ## Next Steps
 
-- [Creating Actors](30_creating_actors.md) - Advanced actor creation patterns
+- [Tutorials](../tutorials/) - Fourteen runnable programs, in order
 - [Message Passing](40_message_passing.md) - Message handling in depth
 - [Lifecycle Hooks](50_lifecycle_hooks.md) - Master actor lifecycle
 - [Actor Registry](60_actor_registry.md) - Name-based lookup
