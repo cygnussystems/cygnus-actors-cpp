@@ -95,9 +95,15 @@ enum class stop_mode {
 
 // Configuration for stopping individual actors
 struct stop_config {
-    stop_mode mode = stop_mode::drain;               // How to handle pending messages
-    std::chrono::milliseconds drain_timeout{1000};   // Max time to wait for drain
-    bool wait_for_stop{true};                        // Synchronous (block) vs async (return immediately)
+    // drain: keep processing queued messages until the queue is empty or
+    //        drain_timeout expires, then stop.
+    // discard: drop queued messages (counted as dead letters) and stop.
+    stop_mode mode = stop_mode::drain;
+    std::chrono::milliseconds drain_timeout{1000};   // Drain budget, from the stop_actor() call
+    // true: stop_actor() returns after on_stop() has run.
+    // false: stop_actor() returns once the stop is requested.
+    // Either way the actor stops accepting messages immediately.
+    bool wait_for_stop{true};
     bool notify_watchers{true};                      // Send termination_msg to watchers
 };
 
@@ -117,6 +123,12 @@ private:
     std::vector<std::thread> m_thread_pool;
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_shutdown_requested{false};
+
+    // True while worker and fast-actor threads may be executing actors: set in
+    // start() before they are launched, cleared in wait_for_shutdown() after
+    // they are all joined. When false, no thread but the caller can be
+    // executing an actor, so stop_actor() completes a stop itself.
+    std::atomic<bool> m_workers_active{false};
 
     // Fast actors with dedicated threads
     std::vector<std::shared_ptr<actor>> m_fast_actors;
@@ -172,6 +184,12 @@ private:
 
     // Worker thread function for thread pool
     void worker_thread(size_t thread_id);
+
+    // Stop protocol helpers (see stop_actor())
+    static void run_stop_to_completion(actor* target);
+    static void complete_pending_stops();
+    static void reap_stopped_fast_actors();
+    static bool is_executor_of(actor* target);
 
 public:
     // Non-copyable
@@ -251,8 +269,23 @@ public:
                                        size_t queue_size,
                                        size_t threshold);
 
-    // Stop a single actor gracefully
-    // Returns true if actor was found and stopped, false if not found or already stopped
+    // Stop a single actor.
+    //
+    // Returns true if this call initiated the stop; false if the ref is
+    // invalid or the actor is already stopping or stopped (including by
+    // system shutdown). The actor stops accepting messages before this
+    // returns, so is_running() is false immediately.
+    //
+    // The stop itself - cancelling timers, draining or discarding the queue,
+    // on_shutdown(), on_stop(), notifying watchers - runs on the actor's own
+    // thread, serialised with its handlers (INVARIANT 1). No handler runs
+    // after on_stop().
+    //
+    // With wait_for_stop, the call blocks until on_stop() has returned. It
+    // does not block - the stop completes asynchronously - when waiting
+    // would deadlock: when called from the target actor itself, from the
+    // worker thread that executes it, from a fast actor's own thread, or
+    // after system shutdown has been requested.
     static bool stop_actor(actor_ref ref, const stop_config& config = stop_config{});
 
     // Stop actor by name (convenience)
@@ -270,6 +303,11 @@ public:
 
     // Internal: notify watchers when actor stops
     static void notify_watchers_internal(actor* stopped_actor);
+
+    // Internal: advance a stop requested by stop_actor(). Called only by the
+    // thread executing the actor (see actor::service_stop_request()). Returns
+    // false while still draining, true once complete.
+    static bool service_stop(actor* target);
 
     // Dead letter handling
     // Get statistics for dropped messages (always-on, negligible overhead)

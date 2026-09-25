@@ -235,7 +235,14 @@ void actor::dispatch_message(message_base* msg) {
 
     // Check for system shutdown message first
     if (typeid(*msg) == typeid(system_shutdown)) {
-        // System shutdown - call on_shutdown() and set state
+        // System shutdown owns this actor's on_shutdown() only if no
+        // stop_actor() has claimed it. If one has, that stop runs the hooks
+        // (on this thread) and the shutdown message is simply consumed -
+        // otherwise on_shutdown() would run twice.
+        stop_phase expected = stop_phase::none;
+        if (!m_stop_phase.compare_exchange_strong(expected, stop_phase::system_shutdown)) {
+            return;
+        }
         on_shutdown();
         set_state(actor_state::stopping);
         return;
@@ -299,6 +306,36 @@ actor_state actor::get_state() const {
 
 void actor::set_state(actor_state new_state) {
     m_state.store(new_state);
+    // system::stop_actor() blocks in m_state.wait() until the actor is stopped
+    m_state.notify_all();
+}
+
+actor::stop_phase actor::current_stop_phase() const {
+    return m_stop_phase.load(std::memory_order_acquire);
+}
+
+void actor::report_rejected(const message_base* msg, bool was_ask) {
+    system::report_dead_letter(name(), msg, m_state.load(), was_ask);
+}
+
+bool actor::service_stop_request() {
+    return system::service_stop(this);
+}
+
+void actor::discard_pending_messages() {
+    std::unique_ptr<message_base> msg;
+    while (m_ask_queue.try_dequeue(msg)) {
+        // Destroying the request breaks its promise: a blocked ask() caller
+        // gets std::future_error (broken_promise) rather than hanging.
+        report_rejected(msg.get(), true);
+    }
+    while (m_mailbox.try_dequeue(msg)) {
+        // A pending system_shutdown is framework control traffic, not a
+        // message anyone sent this actor - not a dead letter.
+        if (typeid(*msg) != typeid(system_shutdown)) {
+            report_rejected(msg.get(), false);
+        }
+    }
 }
 
 size_t actor::mailbox_high_water_mark() const {

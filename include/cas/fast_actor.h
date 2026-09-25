@@ -30,6 +30,10 @@ private:
     // Each fast actor gets its own dedicated thread
     std::thread m_dedicated_thread;
 
+    // Whoever wins this exchange joins m_dedicated_thread. Stops the reaper
+    // (system::reap_stopped_fast_actors) and wait_for_shutdown() both joining.
+    std::atomic<bool> m_join_claimed{false};
+
     // Polling strategy when no messages available
     polling_strategy m_polling_strategy{polling_strategy::yield};
 

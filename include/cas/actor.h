@@ -13,6 +13,7 @@
 #include <concepts>
 #include <type_traits>
 #include <tuple>
+#include <thread>
 #include "timer.h"
 #include "external/concurrentqueue.h"
 
@@ -90,6 +91,18 @@ class actor {
     // Sets m_in_on_start for the duration of on_start()
     friend class on_start_scope;
 
+protected:
+    // Internal: who owns this actor's on_shutdown()/on_stop().
+    // Exactly one of system::stop_actor() and system shutdown may claim an
+    // actor, by CAS from none; the loser leaves the hooks alone. See
+    // system::stop_actor() and actor::dispatch_message().
+    enum class stop_phase : uint8_t {
+        none,             // running normally
+        claiming,         // stop_actor() won the claim and is recording its config
+        requested,        // stop_actor() requested a stop; owning thread completes it
+        system_shutdown   // system_shutdown was dispatched; system shutdown owns the hooks
+    };
+
 private:
     std::string m_name;
     std::weak_ptr<actor> m_self_ref;  // Weak reference to self for creating actor_ref
@@ -156,6 +169,24 @@ private:
     // target yet. Only ever read/written by the thread running on_start().
     bool m_in_on_start = false;
 
+    // Stop protocol (system::stop_actor()). INVARIANT 1: the stop - timer
+    // cancellation, discard or drain, on_shutdown(), on_stop() - is performed
+    // by the thread that executes this actor, never by the caller.
+    //
+    // The m_stop_* config fields are written only by the stop_actor() call
+    // that moved m_stop_phase from none to claiming, and are published by its
+    // release store of stop_phase::requested; readers load the phase with
+    // acquire first.
+    std::atomic<stop_phase> m_stop_phase{stop_phase::none};
+    bool m_stop_discard = false;
+    bool m_stop_notify_watchers = true;
+    std::chrono::steady_clock::time_point m_stop_drain_deadline{};
+
+    // Thread performing the stop. Normally the owning thread; the caller of
+    // stop_actor() or wait_for_shutdown() when no executor thread is running.
+    // Claimed by CAS so two fallback paths cannot both complete one stop.
+    std::atomic<std::thread::id> m_stop_executor{};
+
 #ifndef NDEBUG
     // Debug-only guard: detects two threads executing this actor concurrently.
     // Backstop for INVARIANT 1 - catches violations that slip past the
@@ -184,6 +215,14 @@ protected:
     virtual void on_unhandled_message(message_base* /*msg*/) {
         // Default: ignore (could log warning in debug mode)
     }
+
+    // Internal: current stop ownership (acquire load). Used by subclasses that
+    // run their own execution loop (fast_actor) to notice a requested stop.
+    stop_phase current_stop_phase() const;
+
+    // Internal: count a message this actor will never deliver as a dead letter.
+    // For subclasses that override enqueue_message().
+    void report_rejected(const message_base* msg, bool was_ask);
 
     // Acto-style handler registration API for messages
     // Register a handler using a member function pointer
@@ -331,6 +370,18 @@ public:
 
     // Internal: check if actor has any messages (ask queue or mailbox)
     virtual bool has_messages();
+
+    // Internal: advance a requested stop (see system::stop_actor()). Must be
+    // called only by the thread that executes this actor, or by a thread that
+    // knows no executor is running. Returns true once the stop is complete
+    // (or completed elsewhere); false while draining, in which case the
+    // caller should process a message and call again.
+    // Overridden by actors that serialise execution themselves (inline_actor).
+    virtual bool service_stop_request();
+
+    // Internal: drop every queued message, counting each as a dead letter.
+    // Used by stop_mode::discard on the owning thread.
+    virtual void discard_pending_messages();
 
     // Internal: get total number of queued messages (for shutdown monitoring)
     virtual size_t queue_size() const;

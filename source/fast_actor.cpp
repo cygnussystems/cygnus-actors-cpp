@@ -50,7 +50,23 @@ void fast_actor::run_dedicated_thread_started() {
     // register_actor() (created after the system was already running).
 
     // Tight polling loop with configurable strategy
-    while (get_state() == actor_state::running) {
+    while (true) {
+        const stop_phase phase = current_stop_phase();
+
+        if (phase == stop_phase::requested) {
+            // stop_actor(): the stop - including on_shutdown() and on_stop() -
+            // is carried out here, on this thread (INVARIANT 1).
+            if (service_stop_request()) {
+                return;  // Complete; on_stop() has run. Thread is joined by the system.
+            }
+            process_next_message();  // Still draining
+            continue;
+        }
+
+        if (phase == stop_phase::system_shutdown) {
+            break;  // system_shutdown dispatched on this thread: drain and stop below
+        }
+
         if (has_messages()) {
             current_actor_context = this;
             process_next_message();

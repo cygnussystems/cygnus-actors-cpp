@@ -37,6 +37,11 @@ public:
     // Unregister an actor
     static void unregister_actor(const std::string& name);
 
+    // Unregister the name only if it still refers to this actor. Used when an
+    // actor stops: its name may already have been taken by a replacement,
+    // whose registration must survive.
+    static void unregister_actor(const std::string& name, const actor* expected);
+
     // Look up an actor by name
     // Returns empty actor_ref if not found
     static actor_ref get(const std::string& name);

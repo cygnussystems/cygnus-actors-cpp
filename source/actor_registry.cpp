@@ -22,6 +22,15 @@ void actor_registry::unregister_actor(const std::string& name) {
     inst.m_actors.erase(name);
 }
 
+void actor_registry::unregister_actor(const std::string& name, const actor* expected) {
+    auto& inst = instance();
+    std::lock_guard<std::mutex> lock(inst.m_mutex);
+    auto it = inst.m_actors.find(name);
+    if (it != inst.m_actors.end() && it->second.get() == expected) {
+        inst.m_actors.erase(it);
+    }
+}
+
 actor_ref actor_registry::get(const std::string& name) {
     auto& inst = instance();
     std::lock_guard<std::mutex> lock(inst.m_mutex);

@@ -7,8 +7,20 @@
 #include "cas/actor_ref_impl.h"
 #include <iostream>
 #include <stdexcept>
+#include <algorithm>
+#include <limits>
 
 namespace cas {
+
+namespace {
+
+// Index of the pool worker running on this thread, or npos on any other
+// thread. Lets stop_actor() recognise that it is running on the very thread
+// that must execute the stop, where blocking would deadlock.
+constexpr size_t not_a_worker = std::numeric_limits<size_t>::max();
+thread_local size_t t_worker_thread_id = not_a_worker;
+
+} // namespace
 
 system::system() {
     // Default configuration - will be set properly in init/configure
@@ -97,6 +109,9 @@ void system::start() {
         actor_ptr->on_start();
     }
 
+    // From here on, actors may be executing on threads other than the caller's
+    inst.m_workers_active.store(true, std::memory_order_release);
+
     // Create thread pool with thread affinity
     for (size_t i = 0; i < thread_count; ++i) {
         inst.m_thread_pool.emplace_back(&system::worker_thread, &inst, i);
@@ -131,6 +146,9 @@ void system::shutdown(const shutdown_config& config) {
         std::lock_guard<std::mutex> lock(inst.m_actors_mutex);
         for (auto& thread_actors : inst.m_actors_per_thread) {
             for (auto& actor_ptr : thread_actors) {
+                // An actor mid-stop_actor() is already stopping; sending it
+                // system_shutdown would only register a spurious dead letter.
+                if (actor_ptr->get_state() != actor_state::running) continue;
                 auto shutdown_msg = std::make_unique<system_shutdown>();
                 actor_ptr->enqueue_message(std::move(shutdown_msg));
             }
@@ -140,6 +158,7 @@ void system::shutdown(const shutdown_config& config) {
     {
         std::lock_guard<std::mutex> lock(inst.m_fast_actors_mutex);
         for (auto& actor_ptr : inst.m_fast_actors) {
+            if (actor_ptr->get_state() != actor_state::running) continue;
             auto shutdown_msg = std::make_unique<system_shutdown>();
             actor_ptr->enqueue_message(std::move(shutdown_msg));
         }
@@ -246,16 +265,32 @@ void system::wait_for_shutdown() {
     inst.m_thread_pool.clear();
     inst.m_worker_signals.clear();
 
-    // Wait for all fast actor threads to finish
-    // Fast actors call their own on_stop() in their dedicated threads
+    // Wait for all fast actor threads to finish.
+    // Fast actors call their own on_stop() in their dedicated threads.
+    // Joined OUTSIDE m_fast_actors_mutex: a fast actor's on_stop() may call
+    // back into the system (e.g. actor_count()), which takes that mutex.
+    std::vector<std::shared_ptr<actor>> fast_snapshot;
     {
         std::lock_guard<std::mutex> lock(inst.m_fast_actors_mutex);
-        for (auto& actor_ptr : inst.m_fast_actors) {
-            fast_actor* fast_ptr = static_cast<fast_actor*>(actor_ptr.get());
-            if (fast_ptr->m_dedicated_thread.joinable()) {
-                fast_ptr->m_dedicated_thread.join();
-            }
-            // Mark as stopped (on_stop already called in run_dedicated_thread)
+        fast_snapshot = inst.m_fast_actors;
+    }
+    for (auto& actor_ptr : fast_snapshot) {
+        fast_actor* fast_ptr = static_cast<fast_actor*>(actor_ptr.get());
+        if (!fast_ptr->m_join_claimed.exchange(true) &&
+            fast_ptr->m_dedicated_thread.joinable()) {
+            fast_ptr->m_dedicated_thread.join();
+        }
+    }
+
+    // Every executor thread is gone. Stops that were requested but not
+    // carried out (workers exit once shutdown is requested) are completed
+    // here, on this thread, which is now the only one touching actors.
+    inst.m_workers_active.store(false, std::memory_order_release);
+    complete_pending_stops();
+
+    for (auto& actor_ptr : fast_snapshot) {
+        // on_stop() already ran on the dedicated thread (or in the stop above)
+        if (actor_ptr->get_state() != actor_state::stopped) {
             actor_ptr->set_state(actor_state::stopped);
         }
     }
@@ -321,6 +356,10 @@ bool system::is_running() {
 
 size_t system::actor_count() {
     auto& inst = instance();
+
+    // Fast actors stopped asynchronously stay listed until their thread is
+    // joined; do that now so they are not counted.
+    reap_stopped_fast_actors();
 
     size_t total = 0;
 
@@ -434,6 +473,8 @@ void system::worker_thread(size_t thread_id) {
     std::cout << "[WORKER-" << thread_id << "] Thread started\n" << std::flush;
 #endif
 
+    t_worker_thread_id = thread_id;
+
     // Reused across iterations to avoid reallocating the snapshot each loop
     std::vector<std::shared_ptr<actor>> my_actors;
 
@@ -455,6 +496,19 @@ void system::worker_thread(size_t thread_id) {
         }
 
         for (auto& actor_ptr : my_actors) {
+            // A stop requested by stop_actor() is carried out here, on the
+            // owning thread, interleaved with draining (INVARIANT 1).
+            if (actor_ptr->m_stop_phase.load(std::memory_order_acquire) ==
+                actor::stop_phase::requested) {
+                if (actor_ptr->get_state() != actor_state::stopped) {
+                    if (!actor_ptr->service_stop_request()) {
+                        actor_ptr->process_next_message();  // still draining
+                    }
+                    found_work = true;
+                }
+                continue;
+            }
+
             if (actor_ptr->has_messages()) {
 #ifdef CAS_DEBUG_LOGGING
                 std::cout << "[WORKER-" << thread_id << "] Processing message\n" << std::flush;
@@ -595,87 +649,147 @@ void system::clear_queue_threshold_handler() {
 bool system::stop_actor(actor_ref ref, const stop_config& config) {
     auto& inst = instance();
 
-    // Step 1: Validate actor_ref and get raw pointer
-    actor* actor_ptr = ref.get<actor>();
-    if (!actor_ptr) {
+    // Hold a reference for the duration: the stop removes the system's own
+    // shared_ptr, and an async caller may drop theirs as soon as we return.
+    std::shared_ptr<actor> keep_alive = ref.get_actor();
+    actor* target = keep_alive.get();
+    if (!target) {
         return false;  // Invalid reference
     }
 
-    // Step 2: Check current state - if already stopping/stopped, return false
-    actor_state expected = actor_state::running;
-    if (!actor_ptr->m_state.compare_exchange_strong(expected, actor_state::stopping)) {
-        return false;  // Already stopping or stopped (another thread got here first)
+    // Claim the stop. Only one stop_actor() may claim an actor, and never one
+    // that system shutdown has claimed (see actor::dispatch_message()).
+    if (target->get_state() != actor_state::running) {
+        return false;
+    }
+    auto expected_phase = actor::stop_phase::none;
+    if (!target->m_stop_phase.compare_exchange_strong(expected_phase,
+                                                      actor::stop_phase::claiming)) {
+        return false;  // Another stop_actor() or system shutdown got here first
     }
 
-    // Step 3: Cancel all timers for this actor
-    cancel_actor_timers(actor_ptr);
+    // Record the request. Published to the executing thread by the release
+    // store of stop_phase::requested below.
+    target->m_stop_discard = (config.mode == stop_mode::discard);
+    target->m_stop_notify_watchers = config.notify_watchers;
+    target->m_stop_drain_deadline = std::chrono::steady_clock::now() + config.drain_timeout;
 
-    // Step 4: Handle message draining based on config.mode
-    if (config.mode == stop_mode::drain && config.wait_for_stop) {
-        // Wait for queues to empty with timeout
-        auto start_time = std::chrono::steady_clock::now();
-        auto deadline = start_time + config.drain_timeout;
-
-        while (std::chrono::steady_clock::now() < deadline) {
-            if (!actor_ptr->has_messages()) {
-                break;  // Queue drained successfully
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-    }
-    // If discard mode or async, skip draining
-
-    // Step 5: Call on_shutdown() hook (actor can send final messages)
-    // Set thread-local context so actor knows it's the current actor
-    actor* prev_context = current_actor_context;
-    current_actor_context = actor_ptr;
-    actor_ptr->on_shutdown();
-    current_actor_context = prev_context;
-
-    // Step 6: Call on_stop() hook (final cleanup, no messaging)
-    current_actor_context = actor_ptr;
-    actor_ptr->on_stop();
-    current_actor_context = prev_context;
-
-    // Step 7: Notify watchers if configured
-    if (config.notify_watchers) {
-        notify_watchers_internal(actor_ptr);
+    // Stop accepting messages now: from here, tell() and ask() to this actor
+    // are dead letters, so the drain below terminates.
+    actor_state expected_state = actor_state::running;
+    if (!target->m_state.compare_exchange_strong(expected_state, actor_state::stopping)) {
+        // Stopped by wait_for_shutdown() in the meantime
+        target->m_stop_phase.store(actor::stop_phase::none, std::memory_order_release);
+        return false;
     }
 
-    // Step 8: Remove from thread's actor list
-    // Determine if this is a fast_actor or pooled actor
-    fast_actor* fast_ptr = dynamic_cast<fast_actor*>(actor_ptr);
+    target->m_stop_phase.store(actor::stop_phase::requested, std::memory_order_release);
 
-    if (fast_ptr) {
-        // Fast actor - remove from m_fast_actors and join thread
-        std::lock_guard<std::mutex> lock(inst.m_fast_actors_mutex);
+    fast_actor* fast_ptr = dynamic_cast<fast_actor*>(target);
 
-        // Join dedicated thread if needed
-        if (fast_ptr->m_dedicated_thread.joinable()) {
-            // Thread should exit naturally when it sees state == stopping
-            fast_ptr->m_dedicated_thread.join();
-        }
-
-        // Remove from vector
-        auto it = std::find_if(inst.m_fast_actors.begin(), inst.m_fast_actors.end(),
-                               [actor_ptr](const std::shared_ptr<actor>& ptr) {
-                                   return ptr.get() == actor_ptr;
-                               });
-        if (it != inst.m_fast_actors.end()) {
-            inst.m_fast_actors.erase(it);
-        }
+    if (!inst.m_workers_active.load(std::memory_order_acquire)) {
+        // No worker or fast-actor thread is running (before start(), or after
+        // wait_for_shutdown()), so nothing else can be executing this actor.
+        // The caller's thread is its executor; complete the stop here.
+        run_stop_to_completion(target);
     } else {
-        // Pooled actor - remove from m_actors_per_thread
-        std::lock_guard<std::mutex> lock(inst.m_actors_mutex);
+        if (!fast_ptr) {
+            // Wake the owning worker (fast actors poll on their own).
+            notify_worker(target->m_assigned_thread_id);
+        }
 
-        size_t thread_id = actor_ptr->m_assigned_thread_id;
+        // Block until on_stop() has returned - unless this thread is the one
+        // that has to perform the stop, or the executors may already have
+        // exited for shutdown. In those cases the stop completes
+        // asynchronously: on the owning thread once the current handler
+        // returns, or in wait_for_shutdown().
+        const bool can_wait = config.wait_for_stop &&
+                              !inst.m_shutdown_requested.load() &&
+                              !is_executor_of(target);
+        if (can_wait) {
+            actor_state observed = target->m_state.load(std::memory_order_acquire);
+            while (observed != actor_state::stopped) {
+                target->m_state.wait(observed, std::memory_order_acquire);
+                observed = target->m_state.load(std::memory_order_acquire);
+            }
+        }
+    }
+
+    if (fast_ptr && target->get_state() == actor_state::stopped) {
+        reap_stopped_fast_actors();
+    }
+
+    return true;
+}
+
+bool system::service_stop(actor* target) {
+    auto& inst = instance();
+
+    // Claim the executor role on first entry. The owning thread calls this
+    // repeatedly while draining; a fallback path (stop_actor() with no
+    // executor running, or wait_for_shutdown()) may race another fallback,
+    // and exactly one of them may complete the stop.
+    const std::thread::id self = std::this_thread::get_id();
+    std::thread::id executor = target->m_stop_executor.load();
+    if (executor != self) {
+        if (executor != std::thread::id{} ||
+            !target->m_stop_executor.compare_exchange_strong(executor, self)) {
+            return true;  // Another thread is completing (or completed) this stop
+        }
+
+        // First entry: nothing is delivered to this actor from here on.
+        cancel_actor_timers(target);
+        if (target->m_stop_discard) {
+            target->discard_pending_messages();
+        }
+    }
+
+    if (target->get_state() == actor_state::stopped) {
+        return true;
+    }
+
+    // Drain: keep going while there is work and budget left. The caller
+    // processes one message and calls again.
+    if (!target->m_stop_discard && target->has_messages() &&
+        std::chrono::steady_clock::now() < target->m_stop_drain_deadline) {
+        return false;
+    }
+
+    // Final hooks, on this - the executing - thread.
+    actor* prev_context = current_actor_context;
+    current_actor_context = target;
+    target->on_shutdown();
+    target->on_stop();
+    current_actor_context = prev_context;
+
+    // on_shutdown() may have scheduled timers; the actor is gone, cancel them.
+    cancel_actor_timers(target);
+
+    // Unregister BEFORE notifying watchers: a supervisor typically reacts to
+    // termination_msg by creating a replacement under the same name, and
+    // that registration must not be removed by this one. The conditional
+    // form also leaves alone a name another actor took in the meantime.
+    const std::string& actor_name = target->name();
+    if (!actor_name.empty()) {
+        actor_registry::unregister_actor(actor_name, target);
+    }
+
+    if (target->m_stop_notify_watchers) {
+        notify_watchers_internal(target);
+    }
+
+    // Remove pooled actors from their worker's list. Fast actors stay listed
+    // until their thread is joined (reap_stopped_fast_actors()): this may be
+    // running on that very thread, and the list's shared_ptr keeps the
+    // std::thread alive until it can be joined.
+    if (!dynamic_cast<fast_actor*>(target)) {
+        std::lock_guard<std::mutex> lock(inst.m_actors_mutex);
+        size_t thread_id = target->m_assigned_thread_id;
         if (thread_id < inst.m_actors_per_thread.size()) {
             auto& thread_actors = inst.m_actors_per_thread[thread_id];
-
-            // Remove from vector
             auto it = std::find_if(thread_actors.begin(), thread_actors.end(),
-                                   [actor_ptr](const std::shared_ptr<actor>& ptr) {
-                                       return ptr.get() == actor_ptr;
+                                   [target](const std::shared_ptr<actor>& ptr) {
+                                       return ptr.get() == target;
                                    });
             if (it != thread_actors.end()) {
                 thread_actors.erase(it);
@@ -683,19 +797,87 @@ bool system::stop_actor(actor_ref ref, const stop_config& config) {
         }
     }
 
-    // Step 9: Unregister from actor_registry (if registered)
-    std::string actor_name = actor_ptr->name();
-    if (!actor_name.empty()) {
-        actor_registry::unregister_actor(actor_name);
+    // Wakes a stop_actor() blocked in m_state.wait()
+    target->set_state(actor_state::stopped);
+    return true;
+}
+
+void system::run_stop_to_completion(actor* target) {
+    while (!target->service_stop_request()) {
+        target->process_next_message();
+    }
+}
+
+void system::complete_pending_stops() {
+    auto& inst = instance();
+
+    std::vector<std::shared_ptr<actor>> candidates;
+    {
+        std::lock_guard<std::mutex> lock(inst.m_actors_mutex);
+        for (auto& thread_actors : inst.m_actors_per_thread) {
+            candidates.insert(candidates.end(), thread_actors.begin(), thread_actors.end());
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(inst.m_fast_actors_mutex);
+        candidates.insert(candidates.end(), inst.m_fast_actors.begin(), inst.m_fast_actors.end());
     }
 
-    // Step 10: Set state to stopped
-    actor_ptr->set_state(actor_state::stopped);
+    for (auto& actor_ptr : candidates) {
+        if (actor_ptr->m_stop_phase.load(std::memory_order_acquire) == actor::stop_phase::requested &&
+            actor_ptr->get_state() != actor_state::stopped) {
+            run_stop_to_completion(actor_ptr.get());
+        }
+    }
 
-    // Step 11: Release shared_ptr happens automatically when we return
-    // (the shared_ptr in the vector was removed, but caller may still hold a reference)
+    reap_stopped_fast_actors();
+}
 
-    return true;  // Success
+void system::reap_stopped_fast_actors() {
+    auto& inst = instance();
+
+    // Take fast actors whose stop_actor() has completed out of the list under
+    // the lock, then join their threads outside it: the thread may still be
+    // unwinding from on_stop(), which is allowed to call back into the system.
+    std::vector<std::shared_ptr<actor>> reaped;
+    {
+        std::lock_guard<std::mutex> lock(inst.m_fast_actors_mutex);
+        auto split = std::stable_partition(
+            inst.m_fast_actors.begin(), inst.m_fast_actors.end(),
+            [](const std::shared_ptr<actor>& ptr) {
+                const bool stopped_by_stop_actor =
+                    ptr->m_stop_phase.load(std::memory_order_acquire) == actor::stop_phase::requested &&
+                    ptr->get_state() == actor_state::stopped;
+                // Never reap (and so join) the calling thread's own actor
+                const bool is_this_thread =
+                    static_cast<fast_actor*>(ptr.get())->m_dedicated_thread.get_id() ==
+                    std::this_thread::get_id();
+                return !stopped_by_stop_actor || is_this_thread;  // true = keep
+            });
+        reaped.assign(std::make_move_iterator(split),
+                      std::make_move_iterator(inst.m_fast_actors.end()));
+        inst.m_fast_actors.erase(split, inst.m_fast_actors.end());
+    }
+
+    for (auto& actor_ptr : reaped) {
+        fast_actor* fast_ptr = static_cast<fast_actor*>(actor_ptr.get());
+        if (!fast_ptr->m_join_claimed.exchange(true) &&
+            fast_ptr->m_dedicated_thread.joinable()) {
+            fast_ptr->m_dedicated_thread.join();
+        }
+    }
+}
+
+bool system::is_executor_of(actor* target) {
+    // Self-stop from a handler (also covers an inline actor stopping itself)
+    if (current_actor_context == target) {
+        return true;
+    }
+    if (auto* fast_ptr = dynamic_cast<fast_actor*>(target)) {
+        return fast_ptr->m_dedicated_thread.get_id() == std::this_thread::get_id();
+    }
+    // Pooled and inline actors are serviced by their assigned worker
+    return t_worker_thread_id == target->m_assigned_thread_id;
 }
 
 bool system::stop_actor(const std::string& name, const stop_config& config) {

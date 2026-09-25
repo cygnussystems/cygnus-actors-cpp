@@ -122,9 +122,10 @@ cas::system::stop_actor(actor, config);
 ```
 
 **Behavior:**
-- All queued messages are processed
-- Waits up to `drain_timeout` for queue to empty
-- Actor's `on_shutdown()` and `on_stop()` called after draining
+- The actor stops accepting new messages immediately (they become dead letters)
+- Messages already queued keep being processed, on the actor's own thread,
+  until the queue is empty or `drain_timeout` (measured from the call) expires
+- Then `on_shutdown()` and `on_stop()` run, on the actor's own thread
 - Safe for actors with important pending work
 
 #### Discard Mode
@@ -139,8 +140,9 @@ cas::system::stop_actor(actor, config);
 ```
 
 **Behavior:**
-- Pending messages are discarded
-- Lifecycle hooks called immediately
+- Queued messages are dropped without being handled, and counted as dead
+  letters (pending `ask()` callers get `std::future_error`, broken promise)
+- A handler already running finishes first; then the hooks run
 - Faster shutdown
 - Use when pending messages can be safely ignored
 
@@ -176,7 +178,8 @@ cas::stop_config config;
 config.wait_for_stop = false;
 
 bool initiated = cas::system::stop_actor(actor, config);
-// Returns immediately, actor stops in background
+// Returns once the stop is requested; is_running() is already false.
+// Draining/discarding and on_shutdown()/on_stop() happen on the actor's thread.
 
 // Check later if stopped
 std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -190,19 +193,42 @@ if (!actor.is_running()) {
 - Stopping multiple actors concurrently
 - Performance-critical code paths
 
+#### When `stop_actor()` does not block
+
+Waiting would deadlock if the calling thread is the one that has to carry out
+the stop, so in these cases the call returns without waiting (as if
+`wait_for_stop = false`) and the stop completes as soon as the current handler
+returns:
+
+- an actor stopping itself from its own handler
+- a handler stopping an actor that runs on the same worker thread
+- a fast actor's own thread
+- after `system::shutdown()` has been requested (the stop is then completed by
+  `wait_for_shutdown()`)
+
+Before `start()` or after `wait_for_shutdown()` no actor thread is running, and
+`stop_actor()` performs the whole stop on the calling thread.
+
 ## Lifecycle During Removal
 
-When `stop_actor()` is called, the following sequence occurs:
+When `stop_actor()` is called, the calling thread only does step 1; everything
+else runs on the thread that executes the actor (its pool worker, or a fast
+actor's dedicated thread), serialised with its handlers. No handler runs
+concurrently with, or after, `on_stop()`.
 
-1. **State Transition** - Actor state changed from `running` to `stopping` (atomic)
+1. **State Transition** - `running` to `stopping` (atomic); new messages are dead letters
 2. **Timer Cancellation** - All active timers for this actor are cancelled
-3. **Message Draining** - If drain mode, wait for queue to empty (up to timeout)
+3. **Discard or Drain** - discard: drop the queue; drain: process it until empty or `drain_timeout`
 4. **on_shutdown() Hook** - Actor can send final messages, save state
-5. **on_stop() Hook** - Final cleanup, no message sending allowed
-6. **Watcher Notification** - Watchers tell `termination_msg` (if enabled)
-7. **Thread Removal** - Actor removed from worker thread or dedicated thread joined
-8. **Registry Cleanup** - Actor unregistered from registry (if named)
-9. **State Final** - Actor state set to `stopped`
+5. **on_stop() Hook** - Final cleanup
+6. **Registry Cleanup** - Name unregistered, unless a replacement has already taken it
+7. **Watcher Notification** - Watchers receive `termination_msg` (if enabled)
+8. **Thread Removal** - Removed from its worker; a fast actor's thread is joined
+9. **State Final** - Actor state set to `stopped`; a blocking `stop_actor()` returns
+
+The registry is cleaned up before watchers are notified, so a supervisor that
+restarts the actor under the same name from its `termination_msg` handler
+keeps its new registration.
 
 **Example with lifecycle hooks:**
 

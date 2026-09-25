@@ -71,13 +71,21 @@ TEST_CASE("Stopping an actor with timers firing does not use freed memory",
         {
             auto owner = cas::system::create<timer_owner>();
 
+            const int ticks_before = g_ticks.load();
+
             arm a;
             a.interval_ms = 1;
             owner.tell(a);
 
             // Let the timer actually start firing before pulling the actor
-            // out from under it.
-            wait_ms(5);
+            // out from under it: wait (bounded) for its first tick. A fixed
+            // sleep is not enough on Windows, where short sleeps and timed
+            // waits round up to the ~15ms scheduler tick - and since
+            // stop_actor() now rejects messages the moment it is called,
+            // ticks landing after the stop no longer count.
+            for (int waited = 0; waited < 200 && g_ticks.load() == ticks_before; ++waited) {
+                wait_ms(1);
+            }
 
             cas::system::stop_actor(owner);
         }  // last shared_ptr released here - the actor is destroyed

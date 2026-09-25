@@ -794,19 +794,6 @@ protected:
 
 ## Troubleshooting
 
-### Known Issue: calling back into the system from a fast actor's `on_stop()`
-
-`system::stop_actor()` holds an internal mutex while joining a `fast_actor`'s
-dedicated thread. If user code on that thread — `on_stop()`, or a handler
-still being drained — calls back into the system in a way that needs the same
-mutex (creating another fast actor, or `system::actor_count()`), the two
-deadlock: `stop_actor()` waits for the thread, the thread waits for the mutex.
-
-Until this is fixed, do not call back into the actor system from a
-`fast_actor`'s `on_stop()`. Ordinary pooled actors are unaffected, as is
-whole-system `shutdown()`. Tracked in [CHANGELOG.md](CHANGELOG.md) under
-Known issues.
-
 ### Messages Not Being Received
 
 1. **Actor not started**: Ensure `cas::system::start()` is called
@@ -882,8 +869,8 @@ static void shutdown();
 static void wait_for_shutdown();
 
 // Stop a specific actor
-static void stop_actor(actor_ref ref);
-static void stop_actor(const std::string& name);
+static bool stop_actor(actor_ref ref, const stop_config& config = {});
+static bool stop_actor(const std::string& name, const stop_config& config = {});
 
 // Watch for actor termination
 static void watch(actor_ref watcher, actor_ref target);

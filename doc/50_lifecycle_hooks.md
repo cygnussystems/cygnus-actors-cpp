@@ -329,12 +329,15 @@ cas::system::wait_for_shutdown(); // 4. All on_stop() called
 
 When `system::stop_actor()` is called:
 
-1. **Actor state set to `stopping`**
+1. **Actor state set to `stopping`** (on the calling thread; new messages are dead letters)
 2. **Timers cancelled**
-3. **Message draining** (if configured)
+3. **Message draining or discarding** (per `stop_config::mode`)
 4. **`on_shutdown()` called**
 5. **`on_stop()` called**
 6. **Actor removed from system**
+
+Steps 2-6 run on the actor's own thread, never concurrently with one of its
+handlers. See [Dynamic Removal](70_dynamic_removal.md#lifecycle-during-removal).
 
 ```cpp
 cas::system::stop_actor(actor_ref);

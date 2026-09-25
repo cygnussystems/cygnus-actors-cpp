@@ -8,6 +8,35 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`stop_actor()` ran `on_shutdown()`/`on_stop()` concurrently with the
+  actor's handlers.** The hooks ran on the caller's thread while the actor's
+  worker could still be dispatching - the drain only waited until the last
+  message was *dequeued*, and discard or async stops did not wait at all - so
+  hooks raced handlers (an INVARIANT 1 violation the debug `dispatch_guard`
+  could not see) and handlers could run after `on_stop()`. The stop now runs
+  on the actor's own thread: `stop_actor()` flips the actor to `stopping` and
+  the owning worker (or a fast actor's dedicated thread) cancels timers,
+  drains or discards, runs the hooks, and marks it `stopped`. Consequences:
+  - `stop_mode::discard` now actually drops queued messages (counted as dead
+    letters); previously they were still processed.
+  - `wait_for_stop = false` now returns without waiting; previously the whole
+    stop ran synchronously and only the drain was skipped.
+  - A fast actor's `on_stop()` runs once; it used to run twice, from the
+    caller and from its own thread.
+  - An actor can stop itself, or be stopped from its own worker thread,
+    without deadlock: the call then completes asynchronously.
+  - Fast-actor threads are joined outside every internal lock, fixing the
+    `m_fast_actors_mutex` deadlock listed under 1.0.0's known issues.
+  - An `inline_actor` rejects messages once stopping, and its stop is
+    serialised with its synchronous dispatch; it also restores the previous
+    sender context after a dispatch instead of clearing it, so a handler that
+    tells an inline actor keeps its own identity as `sender` afterwards.
+- **A stopping actor could unregister its replacement.** Its name was
+  unregistered after watchers were notified, so a supervisor that restarted
+  it under the same name from `termination_msg` lost the new registration.
+  The name is now unregistered first, and only if it still refers to the
+  stopping actor (new `actor_registry::unregister_actor(name, expected)`).
+
 - **`ask()` could pass garbage arguments to the handler.** The request stored
   its arguments as `std::tuple` of the *caller's* deduced types (references
   for lvalues) and the handler read them back as a tuple of *its* parameter
