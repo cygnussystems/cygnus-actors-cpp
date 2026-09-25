@@ -12,6 +12,7 @@
 #include <set>
 #include <concepts>
 #include <type_traits>
+#include <tuple>
 #include "timer.h"
 #include "external/concurrentqueue.h"
 
@@ -114,9 +115,24 @@ private:
     // Message type -> handler function map
     std::unordered_map<std::type_index, std::function<void(message_base*)>> m_handlers;
 
-    // Ask operation type -> handler function map
-    // Maps operation tag type to a handler that processes args and returns result
-    std::unordered_map<std::type_index, std::function<void*(void*)>> m_ask_handlers;
+    // A registered ask handler plus the exact types it was registered with.
+    //
+    // The caller and the handler meet only through void*: ask_request stores
+    // the arguments as std::tuple<std::decay_t<CallerArgs>...> and the handler
+    // reads them as std::tuple<std::decay_t<HandlerParams>...>. Nothing at
+    // compile time ties the two together - they are linked only by OpTag - so
+    // ask_request::process() compares these type_index values before invoking
+    // and rejects a mismatch with ask_type_error. Without that check, an
+    // lvalue or an implicitly-converting argument was read through the wrong
+    // type and the handler silently received garbage.
+    struct ask_handler_entry {
+        std::type_index args_type;    // typeid(std::tuple<std::decay_t<Params>...>)
+        std::type_index result_type;  // typeid(ReturnType)
+        std::function<void*(void*)> invoke;
+    };
+
+    // Ask operation tag type -> handler
+    std::unordered_map<std::type_index, ask_handler_entry> m_ask_handlers;
 
     // Unique instance ID (assigned by system during registration)
     // Placed at end with explicit alignment to minimize layout impact
@@ -205,12 +221,20 @@ protected:
     // at this call site. Without it the mismatch surfaces from inside the
     // lambda below, where the actor has already been cast through void* and
     // std::apply, and the diagnostic is close to unreadable.
+    //
+    // Callers must pass arguments whose decayed types match the method's
+    // decayed parameter types exactly, and ask<R>() must name this ReturnType.
+    // Lvalues are fine (they are copied); implicit conversions are not - a
+    // mismatch is rejected at runtime with ask_type_error. See ask_handler_entry.
     template<typename ReturnType, typename OpTag, typename ActorType, typename... Args>
         requires std::derived_from<ActorType, actor>
     void ask_handler(ReturnType (ActorType::*method)(Args...)) {
-        m_ask_handlers[typeid(OpTag)] = [this, method](void* args_ptr) -> void* {
-            // Unpack arguments from tuple
-            auto* args = static_cast<std::tuple<Args...>*>(args_ptr);
+        using args_tuple = std::tuple<std::decay_t<Args>...>;
+
+        auto invoke = [this, method](void* args_ptr) -> void* {
+            // Safe only because ask_request::process() has already verified
+            // that args_ptr points at exactly an args_tuple.
+            auto* args = static_cast<args_tuple*>(args_ptr);
 
             // Call member function with unpacked args
             if constexpr (std::is_void_v<ReturnType>) {
@@ -225,6 +249,10 @@ protected:
                 return new ReturnType(std::move(result));
             }
         };
+
+        m_ask_handlers.insert_or_assign(
+            std::type_index(typeid(OpTag)),
+            ask_handler_entry{typeid(args_tuple), typeid(ReturnType), std::move(invoke)});
     }
 
     // Timer API: Schedule messages to be sent in the future

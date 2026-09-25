@@ -4,6 +4,25 @@ All notable changes to the Cygnus Actor Framework are documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **`ask()` could pass garbage arguments to the handler.** The request stored
+  its arguments as `std::tuple` of the *caller's* deduced types (references
+  for lvalues) and the handler read them back as a tuple of *its* parameter
+  types, with nothing checking the two agreed. Passing a variable
+  (`ask<int>(add_op{}, a, b)`), or a value needing conversion (`10` to a
+  `double` parameter), silently produced wrong results; a mismatched
+  `ask<R>()` return type reinterpreted the result the same way. Arguments are
+  now stored as decayed copies (so lvalues work, and cannot dangle when an
+  ask-with-timeout caller returns before the handler runs), and argument and
+  return types are checked against the registered handler before it is
+  invoked. A mismatch throws the new `cas::ask_type_error` to the caller.
+  Calls that previously worked are unaffected; calls that relied on implicit
+  conversion now throw instead of returning wrong values — pass the exact
+  parameter types.
+
 ## [1.0.0] - 2026-08-04
 
 First stable release. The API is now considered settled; breaking changes

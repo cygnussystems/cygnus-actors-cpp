@@ -92,7 +92,7 @@ ReturnType actor_ref::ask(OpTag op, Args&&... args) {
     detail_check_ask_deadlock(m_actor_ptr.get());
 
     // Create ask request with promise/future
-    auto request = std::make_unique<ask_request<ReturnType, OpTag, Args...>>(
+    auto request = std::make_unique<ask_request<ReturnType, OpTag, std::decay_t<Args>...>>(
         op, std::forward<Args>(args)...
     );
 
@@ -126,7 +126,7 @@ std::optional<ReturnType> actor_ref::ask(OpTag op, std::chrono::milliseconds tim
     detail_check_ask_deadlock(m_actor_ptr.get());
 
     // Create ask request with promise/future
-    auto request = std::make_unique<ask_request<ReturnType, OpTag, Args...>>(
+    auto request = std::make_unique<ask_request<ReturnType, OpTag, std::decay_t<Args>...>>(
         op, std::forward<Args>(args)...
     );
 

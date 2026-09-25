@@ -123,6 +123,7 @@ if(BUILD_TESTS)
         # Level 5: Ask pattern (RPC-style)
         tests/05_ask_pattern/test_ask_basic.cpp
         tests/05_ask_pattern/test_ask_timeout.cpp
+        tests/05_ask_pattern/test_ask_argument_types.cpp
         # Level 6: Timers
         tests/06_timers/test_timer_basic.cpp
         tests/06_timers/test_timer_periodic.cpp

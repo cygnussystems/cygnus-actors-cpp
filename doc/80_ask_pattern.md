@@ -53,13 +53,14 @@ ask_handler<ReturnType, OperationTag>(&ActorClass::method);
 ```cpp
 struct add_op {};
 struct multiply_op {};
+struct multiply_double_op {};  // one handler per tag - a second registration replaces the first
 
 class calculator : public cas::actor {
 protected:
     void on_start() override {
         ask_handler<int, add_op>(&calculator::add);
         ask_handler<int, multiply_op>(&calculator::multiply);
-        ask_handler<double, multiply_op>(&calculator::multiply_double);
+        ask_handler<double, multiply_double_op>(&calculator::multiply_double);
     }
 
     int add(int a, int b) {
@@ -83,9 +84,16 @@ ReturnType result = actor_ref.ask<ReturnType>(operation_tag, args...);
 ```
 
 **Parameters:**
-- `ReturnType` - Expected return type (must match handler)
+- `ReturnType` - Expected return type (must match the handler's exactly)
 - `operation_tag` - Instance of operation tag struct
-- `args...` - Arguments forwarded to handler method
+- `args...` - Arguments copied into the request and passed to the handler method
+
+**Argument types must match exactly.** Each argument is copied, and its decayed
+type must equal the decayed type of the corresponding handler parameter. There is
+no implicit conversion: pass `10.0`, not `10`, to a `double` parameter, and
+`std::string{"x"}`, not `"x"`, to a `std::string` parameter. Lvalues and
+`const T&` parameters are fine. A mismatch in argument types, arity or
+`ReturnType` throws `cas::ask_type_error` to the caller, naming both types.
 
 **Example:**
 ```cpp
@@ -95,7 +103,7 @@ cas::system::start();
 // Call different operations
 int sum = calc.ask<int>(add_op{}, 10, 5);
 int product = calc.ask<int>(multiply_op{}, 10, 5);
-double product_d = calc.ask<double>(multiply_op{}, 3.14, 2.0);
+double product_d = calc.ask<double>(multiply_double_op{}, 3.14, 2.0);
 
 std::cout << "Sum: " << sum << std::endl;           // 15
 std::cout << "Product: " << product << std::endl;    // 50
@@ -283,6 +291,23 @@ try {
     std::cerr << "Error: " << e.what() << std::endl;
     // "No ask handler registered for operation"
 }
+```
+
+### Type Mismatch
+
+If the arguments or `ReturnType` do not match the registered handler exactly,
+`ask()` throws `cas::ask_type_error` (a `std::logic_error`) instead of calling
+the handler. With a timeout this is still an exception, not `std::nullopt`:
+
+```cpp
+// handler: double half(double x)
+try {
+    double h = actor.ask<double>(half_op{}, 10);   // int, not double
+} catch (const cas::ask_type_error& e) {
+    // "ask() argument type mismatch for operation ... caller passed
+    //  std::tuple<int>, handler takes std::tuple<double> ..."
+}
+double h = actor.ask<double>(half_op{}, 10.0);     // OK
 ```
 
 ### Handler Exceptions

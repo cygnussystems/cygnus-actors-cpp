@@ -34,6 +34,18 @@ public:
         : std::logic_error(what) {}
 };
 
+// Thrown (to the ask() caller) when the call does not match the registered
+// ask_handler: the decayed argument types differ from the handler's decayed
+// parameter types, or ask<R>() names a different return type than the one
+// registered. Arguments are not converted - pass exactly the parameter types,
+// e.g. 10.0 rather than 10 for a double parameter, std::string{"x"} rather
+// than "x" for a std::string parameter.
+class ask_type_error : public std::logic_error {
+public:
+    explicit ask_type_error(const std::string& what)
+        : std::logic_error(what) {}
+};
+
 // Internal message type for ask pattern
 // Carries the operation tag, arguments, and a promise for the result
 // This is only included in .cpp files, never in public headers
@@ -48,15 +60,24 @@ struct ask_request_base : public message_base {
     virtual void process(actor* target) = 0;
 };
 
-// Templated ask request for specific operation and args
+// Templated ask request for specific operation and args.
+// Args are always decayed value types (actor_ref::ask instantiates this with
+// std::decay_t of the caller's arguments): the request owns copies, so an
+// lvalue argument cannot dangle if an ask-with-timeout caller returns before
+// the handler runs, and the stored tuple type is comparable with the
+// handler's registered args_type.
 template<typename ReturnType, typename OpTag, typename... Args>
 struct ask_request : public ask_request_base {
-    std::tuple<Args...> args;  // Captured arguments
+    static_assert((std::is_same_v<Args, std::decay_t<Args>> && ...),
+                  "ask_request arguments must be decayed value types");
+
+    std::tuple<Args...> args;  // Captured arguments (owned copies)
     std::promise<ReturnType> promise;  // Promise for result
 
-    ask_request(OpTag /*op*/, Args&&... a)
+    template<typename... CallerArgs>
+    explicit ask_request(OpTag /*op*/, CallerArgs&&... a)
         : ask_request_base(typeid(OpTag))
-        , args(std::forward<Args>(a)...)
+        , args(std::forward<CallerArgs>(a)...)
     {}
 
     void process(actor* target) override;  // Implemented below after actor is fully defined
@@ -87,9 +108,29 @@ void ask_request<ReturnType, OpTag, Args...>::process(actor* target) {
         return;
     }
 
+    // The handler will static_cast &args to its own tuple type and the result
+    // back to ReturnType. Both casts are only valid if the types registered by
+    // ask_handler match this request exactly - verify before invoking.
+    const auto& entry = it->second;
+    if (entry.result_type != std::type_index(typeid(ReturnType))) {
+        promise.set_exception(std::make_exception_ptr(ask_type_error(
+            std::string("ask() return type mismatch for operation ") + typeid(OpTag).name() +
+            ": caller asked for " + typeid(ReturnType).name() +
+            ", handler returns " + entry.result_type.name())));
+        return;
+    }
+    if (entry.args_type != std::type_index(typeid(std::tuple<Args...>))) {
+        promise.set_exception(std::make_exception_ptr(ask_type_error(
+            std::string("ask() argument type mismatch for operation ") + typeid(OpTag).name() +
+            ": caller passed " + typeid(std::tuple<Args...>).name() +
+            ", handler takes " + entry.args_type.name() +
+            ". Arguments are not converted; pass exactly the parameter types.")));
+        return;
+    }
+
     // Call handler with args
     try {
-        void* result_ptr = it->second(&args);
+        void* result_ptr = entry.invoke(&args);
 
         if constexpr (std::is_void_v<ReturnType>) {
             promise.set_value();

@@ -40,6 +40,10 @@ public:
 
     // RPC-style ask: Call a function on the actor and block for result
     // Usage: auto result = actor_ref.ask<double>(profit_op{}, 42, 5);
+    //
+    // Arguments are copied, and their decayed types must match the handler's
+    // decayed parameter types exactly (no implicit conversion); ReturnType must
+    // match the handler's. A mismatch throws ask_type_error.
     template<typename ReturnType, typename OpTag, typename... Args>
     ReturnType ask(OpTag op, Args&&... args);
 
