@@ -22,6 +22,7 @@ set(TUTORIAL_SOURCES
     13_fast_actor.cpp
     14_inline_actor.cpp
     15_trading_manager.cpp
+    16_stateful_actor.cpp
 )
 
 add_executable(tutorials ${TUTORIAL_SOURCES})
@@ -56,6 +57,7 @@ set(TUTORIAL_NAMES
     fast_actor
     inline_actor
     trading_manager
+    stateful_actor
 )
 
 set(TUTORIAL_INDEX 1)

@@ -463,6 +463,10 @@ actor.tell(calculate_msg);       // Not as good (result lost in copy)
 
 Stateful actors selectively process messages based on current state, deferring incompatible messages.
 
+> **Runnable version:** `tutorials/16_stateful_actor.cpp` — run `tutorials 16`.
+> An exchange session that holds orders until it is logged in, on both
+> `stateful_actor` and `stateful_fast_actor`.
+
 ### When to Use Stateful Actors
 
 **Use stateful actors when:**

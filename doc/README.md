@@ -123,7 +123,7 @@ Documentation files are numbered for easy ordering and insertion of new topics.
 ## Examples
 
 All documentation includes complete, runnable examples. Additional examples can be found in:
-- `tutorials/` - 15 self-checking programs, built and run by `ctest` (the most reliable examples)
+- `tutorials/` - 16 self-checking programs, built and run by `ctest` (the most reliable examples)
 - `tests/00_basic/` - Basic usage patterns
 - `tests/02_interactions/` - Actor communication
 - `tests/05_call/` - RPC-style messaging

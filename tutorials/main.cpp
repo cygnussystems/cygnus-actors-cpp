@@ -63,6 +63,9 @@ const tutorial_entry g_tutorials[] = {
     {15, "trading_manager",
      "Launching and retiring actors at runtime: a manager, its trading systems and their streams.",
      run_trading_manager},
+    {16, "stateful_actor",
+     "Selective receive: an exchange session that holds orders until it is logged in.",
+     run_stateful_actor},
 };
 
 const int g_tutorial_count =

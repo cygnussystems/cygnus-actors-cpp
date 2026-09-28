@@ -72,14 +72,11 @@ the examples cannot quietly go stale.
 | # | Tutorial | Teaches |
 |---|----------|---------|
 | 15 | `trading_manager` | A manager that creates actors at runtime (a trading system plus one stream per subscriber), watches them, and retires everything that belonged to a trading system when it completes or fails |
+| 16 | `stateful_actor` | Selective receive: an exchange session that holds orders, in order, until it is logged in; `stateful_fast_actor` |
 
 Each assumes the ones before it and does not repeat their explanations.
 
 ## Not covered
-
-**`stateful_actor` / `stateful_fast_actor`** (selective receive) — not yet a
-tutorial. See [doc/100_advanced_actors.md](../doc/100_advanced_actors.md#stateful-actors);
-`tests/04_advanced/test_stateful_actor.cpp` exercises both classes.
 
 **The ZeroMQ relay** — needs `cppzmq`, which the default build does not
 enable. See [doc/130_zeromq_relay.md](../doc/130_zeromq_relay.md).

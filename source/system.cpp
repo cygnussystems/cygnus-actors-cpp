@@ -865,6 +865,10 @@ bool system::service_stop(actor* target) {
     // check just as the stop completed was silently lost. Anything still queued
     // - left over after a drain timeout, or pushed during the stop - is a dead
     // letter. (A pending system_shutdown is control traffic, not a message.)
+    // First let the actor type drop what only it knows about - a stateful
+    // actor's held messages - so every dead letter is reported before the
+    // actor is marked stopped and a waiting stop_actor() returns.
+    target->discard_pending_messages();
     target->m_mailbox.close([target](message_base& msg, bool is_call) {
         if (msg.cas_framework_kind() != message_base::framework_kind::shutdown) {
             report_dead_letter(target->name(), &msg, actor_state::stopping, is_call);
