@@ -147,6 +147,8 @@ if(BUILD_TESTS)
         tests/11_concurrency/test_message_ordering.cpp
         tests/11_concurrency/test_runtime_actor_start.cpp
         tests/11_concurrency/test_on_start_contract.cpp
+        # Level 13: Message pool correctness (see doc/140_message_pool.md)
+        tests/13_message_pool/test_message_pool.cpp
     )
 
     target_link_libraries(unit_tests

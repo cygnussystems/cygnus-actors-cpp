@@ -9,7 +9,7 @@
 namespace cas {
 
 /// Lock-free memory pool for message allocation
-/// Uses size-class buckets with atomic free-lists for O(1) alloc/dealloc
+/// Uses size-class buckets with lock-free free lists for O(1) alloc/dealloc
 /// Eliminates heap allocation overhead for high-frequency messaging
 class message_pool {
 public:
@@ -22,13 +22,21 @@ public:
     /// 10000 blocks × 5 classes × avg 512 bytes ≈ 25MB max pool memory
     static constexpr size_t DEFAULT_MAX_BLOCKS_PER_CLASS = 10000;
 
+    /// Alignment of every pooled message: the alignment plain operator new
+    /// guarantees (__STDCPP_DEFAULT_NEW_ALIGNMENT__, 16 on x64). Types that
+    /// need more are over-aligned and bypass the pool (see message_base).
+    ///
+    /// Deliberately not alignof(std::max_align_t): that is 8 on MSVC, which
+    /// placed every pooled message 8 bytes off a 16-byte boundary even though
+    /// the language treats alignas(16) types as not over-aligned.
+    static constexpr size_t POOLED_ALIGNMENT = __STDCPP_DEFAULT_NEW_ALIGNMENT__;
+
     /// Per-allocation header overhead added by message_base::operator new.
-    /// sizeof(size_t) rounded up to alignof(std::max_align_t) - 16 bytes on x64.
+    /// sizeof(size_t) rounded up to POOLED_ALIGNMENT - 16 bytes on x64.
     /// The size class is chosen from (HEADER_OVERHEAD + sizeof(YourMessage)),
     /// NOT from sizeof(YourMessage) alone.
     static constexpr size_t HEADER_OVERHEAD =
-        (sizeof(size_t) + alignof(std::max_align_t) - 1) &
-        ~(alignof(std::max_align_t) - 1);
+        (sizeof(size_t) + POOLED_ALIGNMENT - 1) & ~(POOLED_ALIGNMENT - 1);
 
     /// Largest message that still fits in the given size class.
     /// Use to size hot messages at compile time:
@@ -82,37 +90,10 @@ public:
     static stats get_stats();
     static void reset_stats();
 
-private:
-    /// Free list node - stored in the free block itself
-    struct free_node {
-        free_node* next;
-    };
-
-    /// Per-size-class pool with atomic head pointer
-    struct alignas(64) size_class_pool {  // Cache-line aligned to avoid false sharing
-        std::atomic<free_node*> head{nullptr};
-        std::atomic<size_t> count{0};  // Current blocks in pool
-        size_t block_size = 0;
-    };
-
-    /// Global pools for each size class
-    static std::array<size_class_pool, NUM_SIZE_CLASSES> s_pools;
-
-    /// Max blocks per size class (0 = unlimited)
-    static std::atomic<size_t> s_max_blocks_per_class;
-
-    /// Statistics (atomic for thread safety)
-    static std::atomic<size_t> s_pool_hits;
-    static std::atomic<size_t> s_pool_misses;
-    static std::atomic<size_t> s_heap_fallbacks;
-    static std::atomic<size_t> s_pool_full_frees;
-
-    /// Get pool index for a given size
-    static size_t size_class_index(size_t size);
-
-    /// Initialize pools (called automatically)
-    static void init_pools();
-    static std::atomic<bool> s_initialized;
+    // Implementation (free lists, statistics) lives in message_pool.cpp.
+    // The free lists are moodycamel::ConcurrentQueue instances rather than a
+    // hand-rolled Treiber stack: the stack's pop was open to ABA, which handed
+    // one block to two owners as soon as two threads both allocated and freed.
 };
 
 } // namespace cas

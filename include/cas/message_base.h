@@ -19,10 +19,10 @@ struct message_base {
     // Pooled allocation - automatically used by make_unique and new
     // Size is stored in header before the returned pointer
     static void* operator new(size_t size) {
-        // Allocate extra space for size header
-        constexpr size_t header_size = sizeof(size_t);
-        constexpr size_t alignment = alignof(std::max_align_t);
-        size_t padded_header = (header_size + alignment - 1) & ~(alignment - 1);
+        // Allocate extra space for the size header. The header is padded to
+        // POOLED_ALIGNMENT and pool blocks come from ::operator new, so the
+        // message after it keeps the default new alignment.
+        constexpr size_t padded_header = message_pool::HEADER_OVERHEAD;
 
         size_t total_size = padded_header + size;
         void* raw = message_pool::allocate(total_size);
@@ -38,14 +38,26 @@ struct message_base {
         if (ptr == nullptr) return;
 
         // Recover header to get size
-        constexpr size_t header_size = sizeof(size_t);
-        constexpr size_t alignment = alignof(std::max_align_t);
-        size_t padded_header = (header_size + alignment - 1) & ~(alignment - 1);
+        constexpr size_t padded_header = message_pool::HEADER_OVERHEAD;
 
         void* raw = static_cast<char*>(ptr) - padded_header;
         size_t total_size = *static_cast<size_t*>(raw);
 
         message_pool::deallocate(raw, total_size);
+    }
+
+    // Over-aligned messages (alignas greater than POOLED_ALIGNMENT, e.g.
+    // alignas(64) to keep a message on its own cache line) bypass the pool.
+    // Pool blocks only have the default new alignment, and the size header
+    // would shift the object off any stricter boundary. Without these
+    // overloads a new-expression for such a type falls back to the unaligned
+    // operator new above and returns a misaligned object.
+    static void* operator new(size_t size, std::align_val_t alignment) {
+        return ::operator new(size, alignment);
+    }
+
+    static void operator delete(void* ptr, std::align_val_t alignment) noexcept {
+        ::operator delete(ptr, alignment);
     }
 };
 

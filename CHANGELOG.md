@@ -8,6 +8,39 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The message pool could hand one block to two owners.** Its free list was
+  a hand-rolled lock-free stack whose pop - load head, read `head->next`, CAS
+  head - was open to ABA: another thread could pop that block and the next
+  and push the first back between the read and the CAS, so the CAS installed
+  a block already in use. With two threads that both allocate and free, a
+  stress loop crashed within ~80 ms every time; a single allocating thread -
+  the shape of every existing test - cannot trigger it. The shared free list
+  is now a `moodycamel::ConcurrentQueue` (already vendored for the
+  mailboxes), fronted by a per-thread cache of up to 32 blocks per size class
+  that refills and flushes in batches of 16. Single-thread alloc+free costs
+  what it did (~11 ns, against ~33 ns for the system allocator), same-thread
+  churn under contention is 3-4x faster, and end-to-end throughput is
+  unchanged to slightly better once a size class is warm; the first
+  workload in a size class takes more pool misses while caches fill, which
+  `prewarm()` avoids. New tests in `tests/13_message_pool/`.
+- **Over-aligned messages were misaligned.** `message_base` only defined
+  `operator new(size_t)`, which a new-expression falls back to for an
+  `alignas(64)` type, returning a pointer aligned only to the pool header.
+  Such messages now bypass the pool through aligned `operator new`/`delete`.
+- **On MSVC, every pooled message was 8 bytes off a 16-byte boundary.** The
+  size header was padded to `alignof(std::max_align_t)`, which MSVC defines
+  as 8, while `operator new` guarantees 16 and the language treats
+  `alignas(16)` types as not over-aligned. The header is now padded to the
+  new `message_pool::POOLED_ALIGNMENT` (`__STDCPP_DEFAULT_NEW_ALIGNMENT__`).
+
+### Changed
+
+- **`message_pool::HEADER_OVERHEAD` is now 16 bytes on MSVC x64** (was 8),
+  matching GCC and Clang, as a consequence of the alignment fix above. On
+  MSVC a message within 8 bytes of a size-class boundary moves up one class,
+  and `max_payload_for_class()` returns 8 less - a `static_assert` sized
+  against it may need revisiting.
+
 - **`stop_actor()` ran `on_shutdown()`/`on_stop()` concurrently with the
   actor's handlers.** The hooks ran on the caller's thread while the actor's
   worker could still be dispatching - the drain only waited until the last

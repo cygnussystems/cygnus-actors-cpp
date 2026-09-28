@@ -423,12 +423,14 @@ Cygnus uses a lock-free memory pool for message allocation, eliminating heap all
 │                                                              │
 │  Allocation:                                                 │
 │    1. Find size class that fits message                     │
-│    2. Pop block from lock-free free-list (fast path)        │
-│    3. If empty, allocate from heap (slow path)              │
+│    2. Pop block from this thread's cache (fast path)        │
+│    3. If empty, refill 16 from the lock-free shared list    │
+│    4. If that is empty too, allocate from heap (slow path)  │
 │                                                              │
 │  Deallocation:                                               │
-│    1. Push block back to free-list (if under limit)         │
-│    2. Or free to OS (if pool is full)                       │
+│    1. Push block to this thread's cache                     │
+│    2. If full, move 16 to the shared list (if under limit)  │
+│    3. Or free to OS (if pool is full)                       │
 │                                                              │
 │  Messages > 1024 bytes: Always use heap                     │
 └─────────────────────────────────────────────────────────────┘
