@@ -347,7 +347,9 @@ double h = actor.call<double>(half_op{}, 10.0);     // OK
 
 ### Handler Exceptions
 
-Exceptions from handlers propagate to the caller:
+Exceptions from call handlers propagate to the caller. They are not passed to
+`system::set_handler_exception_handler()` or `on_handler_exception()` - the
+caller has them; the target actor keeps running:
 
 ```cpp
 class validator : public cas::actor {

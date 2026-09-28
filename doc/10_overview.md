@@ -13,6 +13,7 @@ Cygnus is a modern C++20 actor framework designed for high-performance concurren
 - **Lifecycle hooks** - Controlled initialization and cleanup
 - **Graceful shutdown** - Queued messages are drained, up to `shutdown_config::drain_timeout` (default 5 s); any left are reported by `system::get_shutdown_log()`
 - **Dynamic actor management** - Create and stop actors at runtime
+- **Fault containment** - An exception from a message handler is caught, reported (`system::set_handler_exception_handler()`) and the actor carries on - or stops, if it says so (`on_handler_exception()`); it never takes the process down. `on_start()` must not throw (see [Lifecycle Hooks](50_lifecycle_hooks.md#on_start))
 
 ### Advanced Features
 - **Call (RPC)** - Synchronous request-response calls (named `ask()` in 1.0; the old names still compile, with a deprecation warning)

@@ -557,7 +557,9 @@ void setup_pipeline() {
 
 ### Pattern 5: Supervisor (Watch Pattern)
 
-Monitor actors and react to termination.
+Monitor actors and react to termination - including actors that stop
+themselves after a failed handler (`on_handler_exception()` returning
+`exception_action::stop`, see principle 3).
 
 ```cpp
 class supervisor : public cas::actor {

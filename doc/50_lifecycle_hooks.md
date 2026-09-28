@@ -191,6 +191,8 @@ protected:
 ### on_shutdown()
 
 Called when shutdown is initiated (either system-wide or individual actor stop).
+If it throws, the exception is reported (`system::set_handler_exception_handler()`)
+and the stop continues.
 
 **Signature:**
 ```cpp
@@ -264,7 +266,8 @@ draining and `on_shutdown()`. In a system shutdown it is called from
 `wait_for_shutdown()`: for pooled actors on the thread calling
 `wait_for_shutdown()`, after the workers are joined; fast actors run it on their
 own thread. The actor object is destroyed only when the last `actor_ref` to it
-is released.
+is released. If `on_stop()` throws, the exception is reported and the actor is
+still marked stopped.
 
 **Signature:**
 ```cpp

@@ -77,6 +77,8 @@ Documentation files are numbered for easy ordering and insertion of new topics.
 - Actor registry (name-based lookup)
 - Graceful shutdown with message draining
 - Dynamic actor creation and removal at runtime
+- Fault containment: handler exceptions are caught and reported; the actor
+  resumes or stops (`on_handler_exception()`), the process survives
 
 ### Message Patterns
 - Asynchronous fire-and-forget messaging
@@ -132,6 +134,7 @@ All documentation includes complete, runnable examples. Additional examples can 
 - `tests/10_dead_letters/` - Dead-letter reporting
 - `tests/11_concurrency/` - Threading regression tests
 - `tests/13_message_pool/` - Message pool, including stress tests
+- `tests/15_failure_modes/` - What happens when user code throws, everywhere it can run
 
 ## Coding Conventions
 

@@ -494,6 +494,30 @@ struct termination_msg : public cas::message_base {
 };
 ```
 
+### Restarting After a Failure
+
+Watching is how a supervisor restarts a failed actor. An actor whose handler
+threw stops itself when its `on_handler_exception()` returns
+`cas::exception_action::stop` (queued messages become dead letters); its
+watchers then get `termination_msg`, and the supervisor creates a fresh
+instance - new object, clean state:
+
+```cpp
+class worker_actor : public cas::actor {
+protected:
+    void on_start() override { /* handlers */ }
+
+    // A failed handler may have left member state half-updated: don't carry on
+    cas::exception_action on_handler_exception(const cas::message_base&,
+                                               std::exception_ptr) override {
+        return cas::exception_action::stop;
+    }
+};
+```
+
+The default (`resume`) keeps the actor running; either way the exception is
+reported through `system::set_handler_exception_handler()`.
+
 ### Complete Example
 
 ```cpp

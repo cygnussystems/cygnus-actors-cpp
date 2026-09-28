@@ -288,6 +288,12 @@ protected:
 - Register multiple handlers for same message type (last one wins)
 - Modify handler registrations after `on_start()`
 
+**If a handler throws:** the framework catches the exception, reports it
+(`system::set_handler_exception_handler()`, stderr by default) and the actor
+handles its next message - or stops, if its `on_handler_exception()` returns
+`exception_action::stop`. Inline actors are different: the exception reaches
+the sender. See [Best Practices](120_best_practices.md#3-handle-exceptions-in-tell-handlers).
+
 ## Sending Messages
 
 ### Basic Sending

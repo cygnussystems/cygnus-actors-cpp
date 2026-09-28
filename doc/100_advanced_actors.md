@@ -23,6 +23,12 @@ Fast actors run on dedicated threads with tight polling loops for ultra-low late
 
 > **Runnable version:** `tutorials/13_fast_actor.cpp` — run `tutorials 13`.
 
+> **Warning:** a fast actor created **before** `system::start()` runs
+> `on_start()` on its own thread. If that `on_start()` throws, the exception is
+> reported and then **the process is terminated** - there is no caller to hand
+> it to. Keep `on_start()` to handler registration; do fallible set-up in a
+> handler (see [Lifecycle Hooks](50_lifecycle_hooks.md#on_start)).
+
 ### When to Use Fast Actors
 
 **Use fast actors when:**
