@@ -8,7 +8,7 @@
 #include "actor_ref.h"
 #include "actor.h"
 #include "system.h"
-#include "ask_message.h"
+#include "call_message.h"
 
 namespace cas {
 
@@ -57,42 +57,42 @@ const actor_ref& actor_ref::operator<<(const MessageType& msg) const {
 // Throws if the calling actor shares a worker thread with the target, since
 // blocking here would prevent that thread from ever servicing the request.
 // Non-actor callers (main, test threads) are never affected.
-inline void detail_check_ask_deadlock(actor* target) {
+inline void detail_check_call_deadlock(actor* target) {
     actor* current = actor::get_current_actor();
 
-    // ask() during on_start() would block waiting for a reply from a system
+    // call() during on_start() would block waiting for a reply from a system
     // that is not necessarily processing messages yet - at startup no worker
     // thread has been launched. Reject it rather than hang.
     if (current && current->is_initialising()) {
         throw on_start_violation(
-            "ask() is not permitted from on_start(): actor '" + current->name() +
+            "call() is not permitted from on_start(): actor '" + current->name() +
             "' is still initialising and no worker is guaranteed to service the "
             "request. Use tell() and handle the reply in a message handler.");
     }
     if (current && current != target &&
         current->get_thread_affinity() == target->get_thread_affinity()) {
-        throw ask_deadlock_error(
-            "ask() would deadlock: target actor '" + target->name() +
+        throw call_deadlock_error(
+            "call() would deadlock: target actor '" + target->name() +
             "' shares a worker thread with the calling actor '" + current->name() +
             "'. Use tell() with an explicit reply message instead.");
     }
     if (current == target) {
-        throw ask_deadlock_error(
-            "ask() would deadlock: actor '" + target->name() +
-            "' cannot ask itself. Call the method directly instead.");
+        throw call_deadlock_error(
+            "call() would deadlock: actor '" + target->name() +
+            "' cannot call itself. Call the method directly instead.");
     }
 }
 
 template<typename ReturnType, typename OpTag, typename... Args>
-ReturnType actor_ref::ask(OpTag op, Args&&... args) {
+ReturnType actor_ref::call(OpTag op, Args&&... args) {
     if (!m_actor_ptr) {
-        throw std::runtime_error("Cannot ask on invalid actor_ref");
+        throw std::runtime_error("Cannot call on invalid actor_ref");
     }
 
-    detail_check_ask_deadlock(m_actor_ptr.get());
+    detail_check_call_deadlock(m_actor_ptr.get());
 
-    // Create ask request with promise/future
-    auto request = std::make_unique<ask_request<ReturnType, OpTag, std::decay_t<Args>...>>(
+    // Create call request with promise/future
+    auto request = std::make_unique<call_request<ReturnType, OpTag, std::decay_t<Args>...>>(
         op, std::forward<Args>(args)...
     );
 
@@ -108,25 +108,25 @@ ReturnType actor_ref::ask(OpTag op, Args&&... args) {
     // Assign message ID
     request->message_id = system::next_message_id();
 
-    // Enqueue to ask queue (priority)
-    m_actor_ptr->enqueue_ask_message(std::move(request));
+    // Queue the call: handled next, ahead of queued messages
+    m_actor_ptr->enqueue_call_message(std::move(request));
 
     // Block waiting for result
     return future.get();
 }
 
 template<typename ReturnType, typename OpTag, typename... Args>
-std::optional<ReturnType> actor_ref::ask(OpTag op, std::chrono::milliseconds timeout, Args&&... args) {
+std::optional<ReturnType> actor_ref::call(OpTag op, std::chrono::milliseconds timeout, Args&&... args) {
     if (!m_actor_ptr) {
         return std::nullopt;
     }
 
     // Throws rather than returning nullopt: a guaranteed deadlock is a
     // programming error, not a timeout, and must not be silently swallowed.
-    detail_check_ask_deadlock(m_actor_ptr.get());
+    detail_check_call_deadlock(m_actor_ptr.get());
 
-    // Create ask request with promise/future
-    auto request = std::make_unique<ask_request<ReturnType, OpTag, std::decay_t<Args>...>>(
+    // Create call request with promise/future
+    auto request = std::make_unique<call_request<ReturnType, OpTag, std::decay_t<Args>...>>(
         op, std::forward<Args>(args)...
     );
 
@@ -142,8 +142,8 @@ std::optional<ReturnType> actor_ref::ask(OpTag op, std::chrono::milliseconds tim
     // Assign message ID
     request->message_id = system::next_message_id();
 
-    // Enqueue to ask queue (priority)
-    m_actor_ptr->enqueue_ask_message(std::move(request));
+    // Queue the call: handled next, ahead of queued messages
+    m_actor_ptr->enqueue_call_message(std::move(request));
 
     // Wait with timeout
     if (future.wait_for(timeout) == std::future_status::ready) {
@@ -151,6 +151,16 @@ std::optional<ReturnType> actor_ref::ask(OpTag op, std::chrono::milliseconds tim
     } else {
         return std::nullopt;  // Timeout
     }
+}
+
+template<typename ReturnType, typename OpTag, typename... Args>
+ReturnType actor_ref::ask(OpTag op, Args&&... args) {
+    return call<ReturnType>(op, std::forward<Args>(args)...);
+}
+
+template<typename ReturnType, typename OpTag, typename... Args>
+std::optional<ReturnType> actor_ref::ask(OpTag op, std::chrono::milliseconds timeout, Args&&... args) {
+    return call<ReturnType>(op, timeout, std::forward<Args>(args)...);
 }
 
 } // namespace cas

@@ -111,7 +111,7 @@ protected:
     void on_start() override {}
 };
 
-// Asks another actor on the same worker thread to stop it, blocking.
+// Calls another actor on the same worker thread to stop it, blocking.
 struct stop_target : cas::message_base {
     cas::actor_ref target;
 };

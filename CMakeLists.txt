@@ -127,9 +127,10 @@ if(BUILD_TESTS)
         tests/04_advanced/test_fast_actor.cpp
         tests/04_advanced/test_inline_actor.cpp
         # Level 5: Ask pattern (RPC-style)
-        tests/05_ask_pattern/test_ask_basic.cpp
-        tests/05_ask_pattern/test_ask_timeout.cpp
-        tests/05_ask_pattern/test_ask_argument_types.cpp
+        tests/05_call/test_call_basic.cpp
+        tests/05_call/test_call_timeout.cpp
+        tests/05_call/test_call_argument_types.cpp
+        tests/05_call/test_call_deprecated_ask.cpp
         # Level 6: Timers
         tests/06_timers/test_timer_basic.cpp
         tests/06_timers/test_timer_periodic.cpp
@@ -147,7 +148,7 @@ if(BUILD_TESTS)
         # Level 10: Dead letter handling
         tests/10_dead_letters/test_dead_letter_handling.cpp
         # Level 11: Concurrency invariants (see doc/INVARIANTS.md)
-        tests/11_concurrency/test_ask_serialization.cpp
+        tests/11_concurrency/test_call_serialization.cpp
         tests/11_concurrency/test_no_lock_during_handler.cpp
         tests/11_concurrency/test_queue_threshold.cpp
         tests/11_concurrency/test_message_ordering.cpp

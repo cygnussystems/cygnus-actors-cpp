@@ -12,7 +12,7 @@ Most actor frameworks force you to choose: either raw performance with complex A
   [benchmarks](#benchmarks), with ranges and caveats - run it yourself)
 - **Intuitive API**: Define actors in ~10 lines. No boilerplate, no macros, no inheritance hierarchies
 - **Easy Learning Curve**: If you know C++ lambdas and inheritance, you already know 80% of Cygnus
-- **Production Ready**: Timer scheduling, RPC-style ask pattern, actor supervision, dead letter handling
+- **Production Ready**: Timer scheduling, RPC-style call, actor supervision, dead letter handling
 
 ```cpp
 // This is a complete actor. Really.
@@ -35,7 +35,7 @@ class greeter : public cas::actor {
 - [Actor Communication](#actor-communication)
 - [Memory Pool](#memory-pool)
 - [Timers](#timers)
-- [Ask Pattern (RPC)](#ask-pattern-rpc)
+- [Call (RPC)](#call-rpc)
 - [Actor Types](#actor-types)
 - [Common Patterns](#common-patterns)
 - [Troubleshooting](#troubleshooting)
@@ -48,7 +48,7 @@ class greeter : public cas::actor {
   teaching order. Every one is compiled and executed by `ctest`, so unlike
   prose they cannot silently go stale. Start at `tutorials 1`.
 - **[Full documentation](doc/)** - reference chapters on messaging, lifecycle,
-  the registry, ask, timers, dynamic removal, advanced actor types and the
+  the registry, call, timers, dynamic removal, advanced actor types and the
   message pool.
 - **[Threading invariants](doc/INVARIANTS.md)** - read before changing the
   threading model.
@@ -607,7 +607,7 @@ cancel_timer(id);
 // Timers are automatically cancelled when actor stops
 ```
 
-## Ask Pattern (RPC)
+## Call (RPC)
 
 Make synchronous request-response calls:
 
@@ -621,8 +621,8 @@ protected:
     void on_start() override {
         set_name("account");
 
-        // Register ask handler: returns double, tagged with get_balance_op
-        ask_handler<double, get_balance_op>(&account_actor::get_balance);
+        // Register call handler: returns double, tagged with get_balance_op
+        call_handler<double, get_balance_op>(&account_actor::get_balance);
     }
 
     double get_balance(const std::string& account_id) {
@@ -637,9 +637,10 @@ private:
 auto account = cas::actor_registry::get("account");
 
 // Synchronous call with 5 second timeout
-auto result = account.ask<double, get_balance_op>(
-    std::string("ACC123"),
-    std::chrono::seconds(5)
+auto result = account.call<double>(
+    get_balance_op{},
+    std::chrono::seconds(5),
+    std::string("ACC123")   // exact parameter type: a "ACC123" literal would be rejected
 );
 
 if (result) {
@@ -649,7 +650,17 @@ if (result) {
 }
 ```
 
-**Warning**: Don't call `ask()` from within an actor's message handler - it blocks and can cause deadlocks. Use fire-and-forget `tell()` with correlation IDs instead.
+A call is handled **next** by the target - ahead of messages already queued - so
+it gets an answer even from an actor that is behind (see
+[doc/80_call.md](doc/80_call.md)).
+
+**Warning**: `call()` blocks the calling thread. From inside an actor's handler
+that stalls every actor on the same worker until the reply arrives, and calling
+an actor that shares your worker throws `call_deadlock_error`. Between actors,
+prefer `tell()` with a reply message.
+
+`call()` was named `ask()` in 1.0; the old names still compile, with a
+deprecation warning.
 
 ## Actor Types
 
@@ -806,7 +817,7 @@ protected:
 
 ### Deadlocks
 
-1. **Don't use `ask()` from within handlers** - Use `tell()` with callbacks
+1. **Don't use `call()` from within handlers** - Use `tell()` with callbacks
 2. **Don't call `wait_for_shutdown()` from an actor** - Only from main thread
 
 ### Memory Growing
@@ -912,7 +923,7 @@ virtual void on_stop();      // Called after shutdown (no messages)
 template<typename T> void handler(void (Derived::*method)(const T&));
 template<typename T, typename Callable> void handler(Callable&& callable);
 template<typename R, typename Tag, typename... Args>
-void ask_handler(R (Derived::*method)(Args...));
+void call_handler(R (Derived::*method)(Args...));
 
 // Timer scheduling
 template<typename T> uint64_t schedule_once(duration delay);
@@ -932,7 +943,7 @@ template<typename T> void tell(const T& msg) const;
 
 // Synchronous call (blocking, with timeout)
 template<typename R, typename Tag, typename... Args>
-std::optional<R> ask(Args&&... args, duration timeout);
+std::optional<R> call(Args&&... args, duration timeout);
 
 // State queries
 bool is_valid() const;    // Points to an actor

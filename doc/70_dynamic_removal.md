@@ -141,7 +141,7 @@ cas::system::stop_actor(actor, config);
 
 **Behavior:**
 - Queued messages are dropped without being handled, and counted as dead
-  letters (pending `ask()` callers get `std::future_error`, broken promise)
+  letters (pending `call()` callers get `std::future_error`, broken promise)
 - A handler already running finishes first; then the hooks run
 - Faster shutdown
 - Use when pending messages can be safely ignored

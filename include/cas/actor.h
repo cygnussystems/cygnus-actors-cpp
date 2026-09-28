@@ -27,8 +27,8 @@ namespace cas {
 class actor_ref;
 class system;
 struct message_base;
-struct ask_request_base;  // For friend declaration
-template<typename ReturnType, typename OpTag, typename... Args> struct ask_request;  // For friend declaration
+struct call_request_base;  // For friend declaration
+template<typename ReturnType, typename OpTag, typename... Args> struct call_request;  // For friend declaration
 
 // Subclasses granted dispatch access (see friend declarations below)
 template<bool ThreadSafe> class inline_actor;
@@ -78,9 +78,9 @@ enum class actor_state {
 class actor {
     // Allow system to call protected lifecycle methods
     friend class system;
-    // Allow ask requests to access handlers
-    friend struct ask_request_base;
-    template<typename ReturnType, typename OpTag, typename... Args> friend struct ask_request;
+    // Allow calls to access handlers
+    friend struct call_request_base;
+    template<typename ReturnType, typename OpTag, typename... Args> friend struct call_request;
 
     // Subclasses that override process_next_message() and therefore own the
     // actor's execution turn themselves. Each must dispatch only from the
@@ -119,9 +119,9 @@ private:
     std::atomic<actor_state> m_state{actor_state::running};
 
     // Mailbox: any thread pushes, only the owning thread consumes. Messages are
-    // delivered in the order each sender sent them, except that asks are
+    // delivered in the order each sender sent them, except that calls are
     // delivered next, ahead of queued ordinary messages (INVARIANT 3).
-    // INVARIANT: consumed only by the thread executing this actor, so ask
+    // INVARIANT: consumed only by the thread executing this actor, so call
     // handlers are serialised with regular handlers. See doc/INVARIANTS.md.
     detail::mailbox m_mailbox;
 
@@ -134,24 +134,24 @@ private:
     // Message type -> handler function map
     std::unordered_map<std::type_index, std::function<void(message_base*)>> m_handlers;
 
-    // A registered ask handler plus the exact types it was registered with.
+    // A registered call handler plus the exact types it was registered with.
     //
-    // The caller and the handler meet only through void*: ask_request stores
+    // The caller and the handler meet only through void*: call_request stores
     // the arguments as std::tuple<std::decay_t<CallerArgs>...> and the handler
     // reads them as std::tuple<std::decay_t<HandlerParams>...>. Nothing at
     // compile time ties the two together - they are linked only by OpTag - so
-    // ask_request::process() compares these type_index values before invoking
-    // and rejects a mismatch with ask_type_error. Without that check, an
+    // call_request::process() compares these type_index values before invoking
+    // and rejects a mismatch with call_type_error. Without that check, an
     // lvalue or an implicitly-converting argument was read through the wrong
     // type and the handler silently received garbage.
-    struct ask_handler_entry {
+    struct call_handler_entry {
         std::type_index args_type;    // typeid(std::tuple<std::decay_t<Params>...>)
         std::type_index result_type;  // typeid(ReturnType)
         std::function<void*(void*)> invoke;
     };
 
-    // Ask operation tag type -> handler
-    std::unordered_map<std::type_index, ask_handler_entry> m_ask_handlers;
+    // Call operation tag type -> handler
+    std::unordered_map<std::type_index, call_handler_entry> m_call_handlers;
 
     // Unique instance ID (assigned by system during registration)
     // Placed at end with explicit alignment to minimize layout impact
@@ -162,7 +162,7 @@ private:
 
     // Queue metrics - track high water marks
     std::atomic<size_t> m_mailbox_high_water_mark{0};
-    std::atomic<size_t> m_ask_queue_high_water_mark{0};
+    std::atomic<size_t> m_call_queue_high_water_mark{0};
 
     // Queue threshold - warn if total queue exceeds this (0 = disabled)
     size_t m_queue_threshold = 0;
@@ -170,7 +170,7 @@ private:
     // Track if we've already warned about queue threshold to avoid spam
     std::atomic<bool> m_threshold_warning_sent{false};
 
-    // True while this actor's on_start() is executing. Used to reject ask()
+    // True while this actor's on_start() is executing. Used to reject call()
     // from initialisation, where no worker is guaranteed to be servicing the
     // target yet. Only ever read/written by the thread running on_start().
     bool m_in_on_start = false;
@@ -228,7 +228,7 @@ protected:
 
     // Internal: count a message this actor will never deliver as a dead letter.
     // For subclasses that override enqueue_message().
-    void report_rejected(const message_base* msg, bool was_ask);
+    void report_rejected(const message_base* msg, bool was_call);
 
     // Acto-style handler registration API for messages
     // Register a handler using a member function pointer
@@ -259,8 +259,8 @@ protected:
         };
     }
 
-    // Register an ask handler (RPC-style function call)
-    // Usage: ask_handler<double, profit_op>(&my_actor::calculate_profit);
+    // Register a call handler (RPC-style function call)
+    // Usage: call_handler<double, profit_op>(&my_actor::calculate_profit);
     //
     // The derived_from check reports a method belonging to an unrelated class
     // at this call site. Without it the mismatch surfaces from inside the
@@ -268,16 +268,16 @@ protected:
     // std::apply, and the diagnostic is close to unreadable.
     //
     // Callers must pass arguments whose decayed types match the method's
-    // decayed parameter types exactly, and ask<R>() must name this ReturnType.
+    // decayed parameter types exactly, and call<R>() must name this ReturnType.
     // Lvalues are fine (they are copied); implicit conversions are not - a
-    // mismatch is rejected at runtime with ask_type_error. See ask_handler_entry.
+    // mismatch is rejected at runtime with call_type_error. See call_handler_entry.
     template<typename ReturnType, typename OpTag, typename ActorType, typename... Args>
         requires std::derived_from<ActorType, actor>
-    void ask_handler(ReturnType (ActorType::*method)(Args...)) {
+    void call_handler(ReturnType (ActorType::*method)(Args...)) {
         using args_tuple = std::tuple<std::decay_t<Args>...>;
 
         auto invoke = [this, method](void* args_ptr) -> void* {
-            // Safe only because ask_request::process() has already verified
+            // Safe only because call_request::process() has already verified
             // that args_ptr points at exactly an args_tuple.
             auto* args = static_cast<args_tuple*>(args_ptr);
 
@@ -295,9 +295,17 @@ protected:
             }
         };
 
-        m_ask_handlers.insert_or_assign(
+        m_call_handlers.insert_or_assign(
             std::type_index(typeid(OpTag)),
-            ask_handler_entry{typeid(args_tuple), typeid(ReturnType), std::move(invoke)});
+            call_handler_entry{typeid(args_tuple), typeid(ReturnType), std::move(invoke)});
+    }
+
+    // Deprecated: renamed call_handler() (1.0 name kept so existing code builds).
+    template<typename ReturnType, typename OpTag, typename ActorType, typename... Args>
+        requires std::derived_from<ActorType, actor>
+    [[deprecated("ask_handler() is renamed call_handler()")]]
+    void ask_handler(ReturnType (ActorType::*method)(Args...)) {
+        call_handler<ReturnType, OpTag>(method);
     }
 
     // Timer API: Schedule messages to be sent in the future
@@ -367,8 +375,8 @@ public:
     // Internal: enqueue regular message (called by actor_ref::receive/push/enqueue)
     virtual void enqueue_message(std::unique_ptr<message_base> msg);
 
-    // Internal: enqueue ask message (called by actor_ref::ask)
-    virtual void enqueue_ask_message(std::unique_ptr<message_base> msg);
+    // Internal: enqueue call message (called by actor_ref::call)
+    virtual void enqueue_call_message(std::unique_ptr<message_base> msg);
 
     // Internal: process the next message, in delivery order
     // Runs on the actor's owning thread only - this is the actor's execution turn.
@@ -400,8 +408,12 @@ public:
 
     // Queue metrics - get high water marks
     size_t mailbox_high_water_mark() const;
-    size_t ask_queue_high_water_mark() const;
+    size_t call_queue_high_water_mark() const;
     size_t total_high_water_mark() const;
+
+    // Deprecated: renamed call_queue_high_water_mark().
+    [[deprecated("ask_queue_high_water_mark() is renamed call_queue_high_water_mark()")]]
+    size_t ask_queue_high_water_mark() const;
 };
 
 // Thread-local storage for current actor being processed (defined in actor.cpp)

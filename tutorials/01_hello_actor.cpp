@@ -117,7 +117,7 @@ bool run_hello_actor() {
     //
     // tell() is fire-and-forget: it copies the message into the actor's
     // mailbox and returns immediately, without waiting for it to be handled.
-    // For a call that waits for a reply, see the ask tutorial.
+    // For a call that waits for a reply, see the call tutorial.
 
     section("Sending a message");
     greet msg;
@@ -130,7 +130,7 @@ bool run_hello_actor() {
 
     // --- 6. Shut down --------------------------------------------------------
     //
-    // shutdown() asks every actor to stop and drains messages already queued;
+    // shutdown() calls every actor to stop and drains messages already queued;
     // wait_for_shutdown() blocks until that has finished. Once it returns, no
     // actor thread is running.
     //

@@ -1,10 +1,10 @@
-# Ask Pattern (RPC-Style Messaging)
+# Call (RPC-Style Messaging)
 
-The ask pattern provides synchronous request-response messaging, similar to remote procedure calls (RPC). Unlike regular asynchronous messages, ask calls **block** until the result is ready, making them ideal for operations that need immediate results.
+The call provides synchronous request-response messaging, similar to remote procedure calls (RPC). Unlike regular asynchronous messages, call calls **block** until the result is ready, making them ideal for operations that need immediate results.
 
 ## Quick Example
 
-> **Runnable version:** `tutorials/06_ask_pattern.cpp` — run `tutorials 6`.
+> **Runnable version:** `tutorials/06_call.cpp` — run `tutorials 6`.
 > It is compiled and executed by `ctest`, and also demonstrates timeouts,
 > exceptions crossing the actor boundary, and the deadlock check firing.
 
@@ -15,7 +15,7 @@ class calculator : public cas::actor {
 protected:
     void on_start() override {
         set_name("calculator");
-        ask_handler<int, calculate_op>(&calculator::calculate);
+        call_handler<int, calculate_op>(&calculator::calculate);
     }
 
     int calculate(int a, int b) {
@@ -28,7 +28,7 @@ int main() {
     cas::system::start();
 
     // Synchronous call - blocks until result ready
-    int result = calc.ask<int>(calculate_op{}, 10, 5);
+    int result = calc.call<int>(calculate_op{}, 10, 5);
     std::cout << "10 + 5 = " << result << std::endl;  // 15
 
     cas::system::shutdown();
@@ -36,12 +36,12 @@ int main() {
 }
 ```
 
-## Basic Ask Pattern
+## Basic Call
 
-### Register Ask Handler
+### Register Call Handler
 
 ```cpp
-ask_handler<ReturnType, OperationTag>(&ActorClass::method);
+call_handler<ReturnType, OperationTag>(&ActorClass::method);
 ```
 
 **Components:**
@@ -58,9 +58,9 @@ struct multiply_double_op {};  // one handler per tag - a second registration re
 class calculator : public cas::actor {
 protected:
     void on_start() override {
-        ask_handler<int, add_op>(&calculator::add);
-        ask_handler<int, multiply_op>(&calculator::multiply);
-        ask_handler<double, multiply_double_op>(&calculator::multiply_double);
+        call_handler<int, add_op>(&calculator::add);
+        call_handler<int, multiply_op>(&calculator::multiply);
+        call_handler<double, multiply_double_op>(&calculator::multiply_double);
     }
 
     int add(int a, int b) {
@@ -77,10 +77,10 @@ protected:
 };
 ```
 
-### Call with Ask
+### Making a Call
 
 ```cpp
-ReturnType result = actor_ref.ask<ReturnType>(operation_tag, args...);
+ReturnType result = actor_ref.call<ReturnType>(operation_tag, args...);
 ```
 
 **Parameters:**
@@ -93,7 +93,7 @@ type must equal the decayed type of the corresponding handler parameter. There i
 no implicit conversion: pass `10.0`, not `10`, to a `double` parameter, and
 `std::string{"x"}`, not `"x"`, to a `std::string` parameter. Lvalues and
 `const T&` parameters are fine. A mismatch in argument types, arity or
-`ReturnType` throws `cas::ask_type_error` to the caller, naming both types.
+`ReturnType` throws `cas::call_type_error` to the caller, naming both types.
 
 **Example:**
 ```cpp
@@ -101,21 +101,21 @@ auto calc = cas::system::create<calculator>();
 cas::system::start();
 
 // Call different operations
-int sum = calc.ask<int>(add_op{}, 10, 5);
-int product = calc.ask<int>(multiply_op{}, 10, 5);
-double product_d = calc.ask<double>(multiply_double_op{}, 3.14, 2.0);
+int sum = calc.call<int>(add_op{}, 10, 5);
+int product = calc.call<int>(multiply_op{}, 10, 5);
+double product_d = calc.call<double>(multiply_double_op{}, 3.14, 2.0);
 
 std::cout << "Sum: " << sum << std::endl;           // 15
 std::cout << "Product: " << product << std::endl;    // 50
 std::cout << "Product (double): " << product_d << std::endl;  // 6.28
 ```
 
-## Ask with Timeout
+## Call with Timeout
 
 For operations that might take too long, use timeouts:
 
 ```cpp
-std::optional<ReturnType> result = actor_ref.ask<ReturnType>(
+std::optional<ReturnType> result = actor_ref.call<ReturnType>(
     operation_tag,
     timeout_duration,
     args...
@@ -133,7 +133,7 @@ struct slow_op {};
 class slow_actor : public cas::actor {
 protected:
     void on_start() override {
-        ask_handler<int, slow_op>(&slow_actor::slow_operation);
+        call_handler<int, slow_op>(&slow_actor::slow_operation);
     }
 
     int slow_operation(int delay_ms, int value) {
@@ -149,7 +149,7 @@ int main() {
     cas::system::start();
 
     // Fast call - succeeds
-    auto result1 = actor.ask<int>(
+    auto result1 = actor.call<int>(
         slow_op{},
         std::chrono::milliseconds(500),  // timeout
         50,   // delay_ms argument
@@ -161,7 +161,7 @@ int main() {
     }
 
     // Slow call - times out
-    auto result2 = actor.ask<int>(
+    auto result2 = actor.call<int>(
         slow_op{},
         std::chrono::milliseconds(100),  // timeout
         500,  // delay_ms argument (longer than timeout!)
@@ -179,7 +179,7 @@ int main() {
 
 ## Multiple Operations per Actor
 
-Actors can handle multiple ask operations:
+Actors can handle multiple call operations:
 
 ```cpp
 struct get_balance_op {};
@@ -194,9 +194,9 @@ protected:
     void on_start() override {
         set_name("account");
 
-        ask_handler<double, get_balance_op>(&account::get_balance);
-        ask_handler<bool, withdraw_op>(&account::withdraw);
-        ask_handler<void, deposit_op>(&account::deposit);
+        call_handler<double, get_balance_op>(&account::get_balance);
+        call_handler<bool, withdraw_op>(&account::withdraw);
+        call_handler<void, deposit_op>(&account::deposit);
     }
 
     double get_balance() {
@@ -222,18 +222,18 @@ int main() {
     cas::system::start();
 
     // Deposit
-    acct.ask<void>(deposit_op{}, 100.0);
+    acct.call<void>(deposit_op{}, 100.0);
 
     // Check balance
-    double balance = acct.ask<double>(get_balance_op{});
+    double balance = acct.call<double>(get_balance_op{});
     std::cout << "Balance: " << balance << std::endl;  // 100.0
 
     // Withdraw
-    bool success = acct.ask<bool>(withdraw_op{}, 30.0);
+    bool success = acct.call<bool>(withdraw_op{}, 30.0);
     std::cout << "Withdraw: " << (success ? "OK" : "Failed") << std::endl;
 
     // Check new balance
-    balance = acct.ask<double>(get_balance_op{});
+    balance = acct.call<double>(get_balance_op{});
     std::cout << "New balance: " << balance << std::endl;  // 70.0
 
     cas::system::shutdown();
@@ -245,17 +245,17 @@ int main() {
 
 ### Primitive Types
 ```cpp
-ask_handler<int, op>(&actor::method);
-ask_handler<double, op>(&actor::method);
-ask_handler<bool, op>(&actor::method);
+call_handler<int, op>(&actor::method);
+call_handler<double, op>(&actor::method);
+call_handler<bool, op>(&actor::method);
 ```
 
 ### Void Return
 ```cpp
-ask_handler<void, op>(&actor::method);
+call_handler<void, op>(&actor::method);
 
 // Call site
-actor.ask<void>(op{}, args...);  // Returns void
+actor.call<void>(op{}, args...);  // Returns void
 ```
 
 ### Custom Types
@@ -265,49 +265,49 @@ struct result_data {
     std::string message;
 };
 
-ask_handler<result_data, op>(&actor::method);
+call_handler<result_data, op>(&actor::method);
 
 // Call site
-result_data res = actor.ask<result_data>(op{}, args...);
+result_data res = actor.call<result_data>(op{}, args...);
 ```
 
 ### Containers
 ```cpp
-ask_handler<std::vector<int>, op>(&actor::method);
-ask_handler<std::map<std::string, double>, op>(&actor::method);
-ask_handler<std::optional<std::string>, op>(&actor::method);
+call_handler<std::vector<int>, op>(&actor::method);
+call_handler<std::map<std::string, double>, op>(&actor::method);
+call_handler<std::optional<std::string>, op>(&actor::method);
 ```
 
 ## Error Handling
 
 ### Missing Handler
 
-If no handler is registered for an operation, `ask()` throws:
+If no handler is registered for an operation, `call()` throws:
 
 ```cpp
 try {
-    int result = actor.ask<int>(undefined_op{});
+    int result = actor.call<int>(undefined_op{});
 } catch (const std::runtime_error& e) {
     std::cerr << "Error: " << e.what() << std::endl;
-    // "No ask handler registered for operation"
+    // "No call handler registered for operation"
 }
 ```
 
 ### Type Mismatch
 
 If the arguments or `ReturnType` do not match the registered handler exactly,
-`ask()` throws `cas::ask_type_error` (a `std::logic_error`) instead of calling
+`call()` throws `cas::call_type_error` (a `std::logic_error`) instead of calling
 the handler. With a timeout this is still an exception, not `std::nullopt`:
 
 ```cpp
 // handler: double half(double x)
 try {
-    double h = actor.ask<double>(half_op{}, 10);   // int, not double
-} catch (const cas::ask_type_error& e) {
-    // "ask() argument type mismatch for operation ... caller passed
+    double h = actor.call<double>(half_op{}, 10);   // int, not double
+} catch (const cas::call_type_error& e) {
+    // "call() argument type mismatch for operation ... caller passed
     //  std::tuple<int>, handler takes std::tuple<double> ..."
 }
-double h = actor.ask<double>(half_op{}, 10.0);     // OK
+double h = actor.call<double>(half_op{}, 10.0);     // OK
 ```
 
 ### Handler Exceptions
@@ -318,7 +318,7 @@ Exceptions from handlers propagate to the caller:
 class validator : public cas::actor {
 protected:
     void on_start() override {
-        ask_handler<int, validate_op>(&validator::validate);
+        call_handler<int, validate_op>(&validator::validate);
     }
 
     int validate(int value) {
@@ -331,15 +331,15 @@ protected:
 
 // Call site
 try {
-    int result = validator_ref.ask<int>(validate_op{}, -5);
+    int result = validator_ref.call<int>(validate_op{}, -5);
 } catch (const std::invalid_argument& e) {
     std::cerr << "Validation failed: " << e.what() << std::endl;
 }
 ```
 
-## Actor-to-Actor Ask
+## Actor-to-Actor Call
 
-Actors can ask other actors:
+Actors can call other actors:
 
 ```cpp
 class frontend : public cas::actor {
@@ -355,8 +355,8 @@ protected:
     }
 
     void on_request(const request& msg) {
-        // Ask backend synchronously
-        auto result = m_backend.ask<std::string>(
+        // Call backend synchronously
+        auto result = m_backend.call<std::string>(
             process_op{},
             msg.data
         );
@@ -373,84 +373,84 @@ protected:
 };
 ```
 
-## How Ask Is Processed
+## How Call Is Processed
 
-An ask request goes into the target actor's mailbox and is handled **next**:
+A call request goes into the target actor's mailbox and is handled **next**:
 right after the handler that is currently running, ahead of every ordinary
-message still queued. Asks are handled in order among themselves. The request is
+message still queued. Calls are handled in order among themselves. The request is
 executed by the target actor's own worker thread; the calling thread blocks on a
 future until the handler returns.
 
-That is the point of `ask()` beyond returning a value: it gets an answer even
+That is the point of `call()` beyond returning a value: it gets an answer even
 when the actor is behind — including when the question is *why* it is behind.
 
 What "next" does not cover:
 
-- **A handler that is already running** is not interrupted; the ask is handled
+- **A handler that is already running** is not interrupted; the call is handled
   when it returns.
-- **Messages the caller sent earlier** may still be queued, and the ask is
+- **Messages the caller sent earlier** may still be queued, and the call is
   handled before them:
 
   ```cpp
   position_keeper.tell(fill);
-  int qty = position_keeper.ask<int>(position_op{});  // may not include the fill yet
+  int qty = position_keeper.call<int>(position_op{});  // may not include the fill yet
   ```
 
-  If the answer must reflect an earlier message, send that message as an ask
-  too (asks are ordered among themselves), or design the handler to account
+  If the answer must reflect an earlier message, send that message as a call
+  too (calls are ordered among themselves), or design the handler to account
   for it.
 - **Other actors on the same worker.** A pooled actor that is waiting for its
   turn runs after the actors queued ahead of it on that worker, each for at most
   `system_config::max_messages_per_turn` messages. For an actor that must always
   answer at once, use a `fast_actor` (its own thread).
 
-This means an ask handler is serialised with the actor's regular handlers: they
+This means a call handler is serialised with the actor's regular handlers: they
 never run at the same time on the same actor, so both can touch member state
 without locks. That is INVARIANT 1 — see `doc/INVARIANTS.md`.
 
-> **Historical note:** an earlier version processed asks on a dedicated thread
-> pool, dispatching directly into the target actor. That let an ask handler and a
+> **Historical note:** an earlier version processed calls on a dedicated thread
+> pool, dispatching directly into the target actor. That let a call handler and a
 > regular handler run concurrently on one actor, which is a data race in any actor
 > that mixes them. `system_config::ask_thread_pool_size` still exists so old
 > configuration code compiles, but it is ignored.
 
-### Calling ask() from inside a handler
+### Calling call() from inside a handler
 
 Safe **only when the target actor is on a different worker thread**. Since the
-target's own thread must run the handler, asking an actor pinned to your own
+target's own thread must run the handler, calling an actor pinned to your own
 thread would block the very thread that has to service the request.
 
-That case is detected and throws `cas::ask_deadlock_error` immediately rather
+That case is detected and throws `cas::call_deadlock_error` immediately rather
 than hanging:
 
 ```cpp
 void on_request(const request& msg) {
     try {
-        int result = other_actor.ask<int>(compute_op{}, 42);
-    } catch (const cas::ask_deadlock_error& e) {
+        int result = other_actor.call<int>(compute_op{}, 42);
+    } catch (const cas::call_deadlock_error& e) {
         // Target shares this actor's thread - use tell() with a reply instead
     }
 }
 ```
 
 Actor assignment to threads is round-robin and not something you control, so a
-handler that asks another actor **may throw depending on placement**. For
+handler that calls another actor **may throw depending on placement**. For
 actor-to-actor communication, prefer `tell()` with an explicit reply message —
-it is non-blocking and never has this problem. Reserve `ask()` for calls from
+it is non-blocking and never has this problem. Reserve `call()` for calls from
 outside the actor system (main thread, test code, request handlers).
 
 ## Performance Considerations
 
-### When to Use Ask
+### When to Use Call
 
-**Use ask for:**
+**Use call for:**
 - ✓ Operations needing immediate results
 - ✓ Synchronous APIs (REST endpoints, CLI commands)
 - ✓ Database queries
 - ✓ Calculations with dependencies
 - ✓ Validation that must complete before continuing
 
-**Don't use ask for:**
+**Don't use call for:**
 - ✗ Fire-and-forget operations (use `tell()` instead)
 - ✗ High-frequency operations (async messages are faster)
 - ✗ Long-running operations without timeout
@@ -459,8 +459,8 @@ outside the actor system (main thread, test code, request handlers).
 ### Performance Comparison
 
 ```cpp
-// Ask (synchronous) - ~10-50 microseconds overhead
-int result = actor.ask<int>(op{}, arg);  // Blocks
+// Call (synchronous) - ~10-50 microseconds overhead
+int result = actor.call<int>(op{}, arg);  // Blocks
 
 // Regular message (asynchronous) - ~1-10 microseconds overhead
 actor.tell(msg);  // Returns immediately
@@ -482,7 +482,7 @@ protected:
 
     std::string handle_get_request(const std::string& user_id) {
         // Synchronous database query
-        auto user_data = m_database.ask<std::optional<user>>(
+        auto user_data = m_database.call<std::optional<user>>(
             query_user_op{},
             std::chrono::seconds(5),  // Timeout
             user_id
@@ -509,8 +509,8 @@ protected:
         set_name("config");
         load_from_file("config.ini");
 
-        ask_handler<std::string, get_config_op>(&config_manager::get_value);
-        ask_handler<void, set_config_op>(&config_manager::set_value);
+        call_handler<std::string, get_config_op>(&config_manager::get_value);
+        call_handler<void, set_config_op>(&config_manager::set_value);
     }
 
     std::string get_value(const std::string& key) {
@@ -525,7 +525,8 @@ protected:
 
 // Usage
 auto config = cas::actor_registry::get("config");
-std::string db_host = config.ask<std::string>(get_config_op{}, "database.host");
+// Arguments must have exactly the parameter types: std::string, not a literal
+std::string db_host = config.call<std::string>(get_config_op{}, std::string("database.host"));
 ```
 
 ## Best Practices
@@ -533,7 +534,7 @@ std::string db_host = config.ask<std::string>(get_config_op{}, "database.host");
 ### DO: Use Timeouts for External Operations
 
 ```cpp
-auto result = actor.ask<data>(
+auto result = actor.call<data>(
     fetch_op{},
     std::chrono::seconds(10),  // Generous timeout
     url
@@ -544,7 +545,7 @@ if (!result.has_value()) {
 }
 ```
 
-### DO: Keep Ask Handlers Fast
+### DO: Keep Call Handlers Fast
 
 ```cpp
 // ✓ GOOD: Fast computation
@@ -574,12 +575,12 @@ struct operation {};
 struct do_something {};
 ```
 
-### DON'T: Overuse Ask
+### DON'T: Overuse Call
 
 ```cpp
-// ✗ BAD: Using ask when async would work
+// ✗ BAD: Using call when async would work
 for (int i = 0; i < 1000; ++i) {
-    actor.ask<void>(process_op{}, i);  // Synchronous, slow!
+    actor.call<void>(process_op{}, i);  // Synchronous, slow!
 }
 
 // ✓ GOOD: Use async messages
@@ -588,9 +589,9 @@ for (int i = 0; i < 1000; ++i) {
 }
 ```
 
-## Comparison: Ask vs Regular Messages
+## Comparison: Call vs Regular Messages
 
-| Feature | Ask Pattern | Regular Messages |
+| Feature | Call | Regular Messages |
 |---------|------------|------------------|
 | Execution | Synchronous (blocks) | Asynchronous (returns immediately) |
 | Return value | Yes | No (use callbacks) |

@@ -26,7 +26,7 @@ with no locks, which is what the documentation teaches.
   callers is closed and greppable.
 - All message delivery funnels through `actor::process_next_message()`, which runs
   only on the actor's owning worker thread.
-- Ask requests go into the actor's own `m_ask_queue` and are drained by that same
+- Call requests go into the actor's own `m_ask_queue` and are drained by that same
   function — they do **not** get a separate thread.
 - Debug builds: `dispatch_guard` in `source/actor.cpp` aborts with a diagnostic if
   two threads enter dispatch for one actor.
@@ -35,10 +35,10 @@ with no locks, which is what the documentation teaches.
 - Does this diff add a caller of `dispatch_message()`, or a `friend` declaration
   granting access to it?
 - Does it introduce a thread that can reach an actor outside its owning worker?
-- Does it make an ask, timer, or relay path dispatch "directly" for latency?
+- Does it make a call, timer, or relay path dispatch "directly" for latency?
 
 **History:** violated between the introduction of the dedicated ask thread pool
-and its removal. Ask handlers ran on 4 shared threads while regular handlers ran
+and its removal. Call handlers ran on 4 shared threads while regular handlers ran
 on the worker pool, so any actor with both had a silent data race. The fix was a
 return to the original design. Do not reintroduce a separate ask thread.
 
@@ -83,9 +83,9 @@ and self-deadlocks.
 > handled in the order they were sent. Every message sent to a live actor is
 > handled exactly once.
 >
-> **Exception — `ask()`:** an ask is handled *next*, after the handler currently
+> **Exception — `call()`:** a call is handled *next*, after the handler currently
 > running, ahead of every ordinary message still queued — including messages
-> its own sender sent earlier. Asks are handled in order among themselves.
+> its own sender sent earlier. Calls are handled in order among themselves.
 
 There is **no** ordering between different senders; that would need a global
 lock. `stateful_actor`'s selective receive reorders by design.
@@ -94,28 +94,28 @@ lock. `stateful_actor`'s selective receive reorders by design.
 adapted from CAF). Producers push onto one intrusive lock-free stack; every push
 is a CAS on a single atomic word, so pushes are totally ordered, and a push that
 happens-before another precedes it in that order. The single consumer takes the
-whole stack and reverses it into two FIFO caches — asks, and everything else —
-and serves asks first. Before serving each ordinary message it checks for asks
-pushed since (via the ask count), so an ask never waits behind a backlog that
+whole stack and reverses it into two FIFO caches — calls, and everything else —
+and serves calls first. Before serving each ordinary message it checks for calls
+pushed since (via the call count), so a call never waits behind a backlog that
 was already taken off the stack.
 
-**Why asks jump the queue:** `ask()` is the RPC path, and one of its jobs is
-finding out why an actor is slow. An ask stuck behind the backlog it is asking
+**Why calls jump the queue:** `call()` is the RPC path, and one of its jobs is
+finding out why an actor is slow. A call stuck behind the backlog it is calling
 about would be useless. The cost is the one documented exception: a caller that
-does `tell(x)` then `ask(...)` may be answered before `x` is handled.
+does `tell(x)` then `call(...)` may be answered before `x` is handled.
 
 **Reviewer questions:**
 - Does this diff add a queue, a priority class, or any path that delivers a
-  message other than through `m_mailbox.pop()` (push order, asks first)?
+  message other than through `m_mailbox.pop()` (push order, calls first)?
 - Does it let an actor be consumed by more than one thread (which would
   reorder, as well as break INVARIANT 1)?
 - Does new documentation promise ordering *between* senders?
 
 **History:** early documentation promised FIFO, but the mailbox was a
 `moodycamel::ConcurrentQueue` used without producer tokens and nothing enforced
-or tested order; the docs were then corrected to "no guarantee". Asks lived in
-a separate priority queue, as they still do (now inside the one mailbox). Asks
-were briefly made strictly FIFO; that was reverted because an ask must be
+or tested order; the docs were then corrected to "no guarantee". Calls lived in
+a separate priority queue, as they still do (now inside the one mailbox). Calls
+were briefly made strictly FIFO; that was reverted because a call must be
 answerable while the actor is behind.
 
 **Tests:** `tests/11_concurrency/test_message_ordering.cpp`,
@@ -127,9 +127,9 @@ answerable while the actor is behind.
 
 > A metric that is exposed must be updated by live code.
 
-**Why:** `m_ask_queue_high_water_mark` was exposed through
-`ask_queue_high_water_mark()` and included in `total_high_water_mark()`, but after
-asks moved to a global queue nothing ever wrote it. It silently returned 0 while
+**Why:** `m_call_queue_high_water_mark` was exposed through
+`call_queue_high_water_mark()` and included in `total_high_water_mark()`, but after
+calls moved to a global queue nothing ever wrote it. It silently returned 0 while
 appearing to be a real measurement. A metric that lies is worse than one that is
 absent, because it is trusted.
 
@@ -171,10 +171,10 @@ modelled on `set_dead_letter_handler()`.
 - `on_start_scope` (in `include/cas/actor.h`) sets the actor context and the
   `m_in_on_start` flag at all three call sites — `start()`, `register_actor()`, and
   `fast_actor::run_dedicated_thread()`.
-- `actor_ref::ask()` throws `on_start_violation` when the caller is initialising.
+- `actor_ref::call()` throws `on_start_violation` when the caller is initialising.
 
 **Why blocking is fatal here:** at startup no worker thread has been launched yet,
-so an `ask()` from `on_start()` waits for a reply nobody can produce. It hangs
+so an `call()` from `on_start()` waits for a reply nobody can produce. It hangs
 rather than fails, with no diagnostic.
 
 **Why `tell()` and `create()` are allowed:** both are non-blocking. `tell()`
@@ -186,7 +186,7 @@ queues; `create()` registers. Both are used throughout the documentation
 - Does this diff add a call site for `on_start()`? If so, does it use
   `on_start_scope`?
 - Does it introduce a new blocking operation reachable from `on_start()`? If so,
-  it needs the same `is_initialising()` check that `ask()` has.
+  it needs the same `is_initialising()` check that `call()` has.
 - Does it hold a lock across `on_start()`? That is INVARIANT 2 — `on_start()` may
   call `system::create()`.
 

@@ -38,7 +38,7 @@ std::mutex g_dead_mutex;
 std::vector<std::string> g_dead_letter_names;
 
 // Dead letters are counted by category rather than as one total: a dropped
-// tell() and a dropped ask() are different problems. This sums them for the
+// tell() and a dropped call() are different problems. This sums them for the
 // checks below.
 size_t total_dead_letters() {
     const auto s = cas::system::get_dead_letter_stats();
@@ -94,7 +94,7 @@ bool run_dead_letters() {
 
     const auto stats = cas::system::get_dead_letter_stats();
     std::cout << "  dropped tells: " << stats.dropped_tell
-              << ", dropped asks: " << stats.dropped_ask
+              << ", dropped calls: " << stats.dropped_ask
               << ", to invalid refs: " << stats.dropped_to_invalid << "\n";
 
     // --- 2. Inspecting each one ----------------------------------------------

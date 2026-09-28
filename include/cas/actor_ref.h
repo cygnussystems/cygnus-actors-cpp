@@ -38,18 +38,27 @@ public:
     template<typename MessageType>
     const actor_ref& operator<<(const MessageType& msg) const;
 
-    // RPC-style ask: Call a function on the actor and block for result
-    // Usage: auto result = actor_ref.ask<double>(profit_op{}, 42, 5);
+    // RPC-style call: Call a function on the actor and block for result
+    // Usage: auto result = actor_ref.call<double>(profit_op{}, 42, 5);
     //
     // Arguments are copied, and their decayed types must match the handler's
     // decayed parameter types exactly (no implicit conversion); ReturnType must
-    // match the handler's. A mismatch throws ask_type_error.
+    // match the handler's. A mismatch throws call_type_error.
     template<typename ReturnType, typename OpTag, typename... Args>
+    ReturnType call(OpTag op, Args&&... args);
+
+    // RPC-style call with timeout (returns optional)
+    // Usage: auto opt = actor_ref.call<double>(profit_op{}, 5s, 42, 5);
+    template<typename ReturnType, typename OpTag, typename... Args>
+    std::optional<ReturnType> call(OpTag op, std::chrono::milliseconds timeout, Args&&... args);
+
+    // Deprecated: renamed call() (1.0 name kept so existing code builds).
+    template<typename ReturnType, typename OpTag, typename... Args>
+    [[deprecated("ask() is renamed call()")]]
     ReturnType ask(OpTag op, Args&&... args);
 
-    // RPC-style ask with timeout (returns optional)
-    // Usage: auto opt = actor_ref.ask<double>(profit_op{}, 5s, 42, 5);
     template<typename ReturnType, typename OpTag, typename... Args>
+    [[deprecated("ask() is renamed call()")]]
     std::optional<ReturnType> ask(OpTag op, std::chrono::milliseconds timeout, Args&&... args);
 
     // Check if reference is valid
@@ -92,9 +101,9 @@ public:
     bool operator!=(const actor_ref& other) const;
 };
 
-// Forward declare ask_request for template use
+// Forward declare call_request for template use
 template<typename ReturnType, typename OpTag, typename... Args>
-struct ask_request;
+struct call_request;
 
 } // namespace cas
 

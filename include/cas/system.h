@@ -37,7 +37,7 @@ enum class actor_state;
 // Dead letter statistics - always collected (negligible overhead)
 struct dead_letter_stats {
     size_t dropped_tell = 0;       // Fire-and-forget messages dropped
-    size_t dropped_ask = 0;        // Ask messages dropped (no response sent)
+    size_t dropped_ask = 0;        // call() requests dropped (no response sent); 1.0 name kept
     size_t dropped_to_invalid = 0; // Messages to null/invalid actor refs
 };
 
@@ -95,7 +95,7 @@ struct system_config {
     // lowest latency on a critical path, use fast_actor.
     std::chrono::microseconds worker_idle_spin{20};
 
-    // DEPRECATED and ignored. Ask requests are processed on the target actor's
+    // DEPRECATED and ignored. Calls are processed on the target actor's
     // own thread so they serialise with regular handlers; there is no separate
     // ask thread pool. Retained so existing configuration code still compiles.
     size_t ask_thread_pool_size = 0;
@@ -382,7 +382,7 @@ public:
     static void report_dead_letter(const std::string& actor_name,
                                    const message_base* msg,
                                    actor_state state,
-                                   bool was_ask);
+                                   bool was_call);
 };
 
 // Template implementations (must be in header)

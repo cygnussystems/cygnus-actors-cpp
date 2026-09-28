@@ -122,7 +122,7 @@ void system::start() {
         inst.m_thread_pool.emplace_back(&system::worker_thread, &inst, i);
     }
 
-    // Note: no ask thread pool. Ask requests are drained by the target actor's
+    // Note: no ask thread pool. Calls are drained by the target actor's
     // own worker thread so they serialise with regular handlers (INVARIANT 1).
 
     // Start all fast actors with dedicated threads
@@ -765,7 +765,7 @@ bool system::stop_actor(actor_ref ref, const stop_config& config) {
     target->m_stop_notify_watchers = config.notify_watchers;
     target->m_stop_drain_deadline = std::chrono::steady_clock::now() + config.drain_timeout;
 
-    // Stop accepting messages now: from here, tell() and ask() to this actor
+    // Stop accepting messages now: from here, tell() and call() to this actor
     // are dead letters, so the drain below terminates.
     actor_state expected_state = actor_state::running;
     if (!target->m_state.compare_exchange_strong(expected_state, actor_state::stopping)) {
@@ -864,9 +864,9 @@ bool system::service_stop(actor* target) {
     // check just as the stop completed was silently lost. Anything still queued
     // - left over after a drain timeout, or pushed during the stop - is a dead
     // letter. (A pending system_shutdown is control traffic, not a message.)
-    target->m_mailbox.close([target](message_base& msg, bool is_ask) {
+    target->m_mailbox.close([target](message_base& msg, bool is_call) {
         if (msg.cas_framework_kind() != message_base::framework_kind::shutdown) {
-            report_dead_letter(target->name(), &msg, actor_state::stopping, is_ask);
+            report_dead_letter(target->name(), &msg, actor_state::stopping, is_call);
         }
     });
 
@@ -1116,11 +1116,11 @@ void system::clear_dead_letter_handler() {
 void system::report_dead_letter(const std::string& actor_name,
                                  const message_base* msg,
                                  actor_state state,
-                                 bool was_ask) {
+                                 bool was_call) {
     auto& inst = instance();
 
     // Always increment counter (negligible overhead)
-    if (was_ask) {
+    if (was_call) {
         inst.m_dead_letter_ask.fetch_add(1, std::memory_order_relaxed);
     } else {
         inst.m_dead_letter_tell.fetch_add(1, std::memory_order_relaxed);

@@ -31,7 +31,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //
 // Modifications for Cygnus (c) 2026 cygnussystems, MIT License: a single class
-// over cas::message_base; ask requests take CAF's "urgent" role and are served
+// over cas::message_base; calls take CAF's "urgent" role and are served
 // ahead of other messages, including ones already taken from the stack; atomic
 // counts so size and metrics can be read from any thread.
 
@@ -61,16 +61,16 @@ enum class push_result {
 /// Producers push onto an intrusive lock-free LIFO stack - one atomic word,
 /// linked through message_base's next pointer, no node allocation. The
 /// consumer (the thread executing the actor) takes the whole stack with one
-/// exchange and reverses it into two private FIFO caches: ask requests and
+/// exchange and reverses it into two private FIFO caches: calls and
 /// everything else.
 ///
 /// Ordering: pushes are totally ordered by the CAS on the stack word, and each
-/// cache delivers in that order. So among ordinary messages - and among asks -
+/// cache delivers in that order. So among ordinary messages - and among calls -
 /// if one push happens-before another (same actor, same thread), the first is
-/// delivered first (INVARIANT 3). Asks are the exception across the two: an
-/// ask is delivered next, ahead of every ordinary message still queued, even
-/// ones its own sender pushed earlier. pop() checks for newly pushed asks
-/// before serving each ordinary message, so an ask does not wait behind a
+/// delivered first (INVARIANT 3). Calls are the exception across the two: an
+/// call is delivered next, ahead of every ordinary message still queued, even
+/// ones its own sender pushed earlier. pop() checks for newly pushed calls
+/// before serving each ordinary message, so a call does not wait behind a
 /// batch already taken from the stack.
 ///
 /// The stack word also carries two states, as sentinel values that are never
@@ -97,7 +97,7 @@ public:
 
     /// Approximate counts (exact when no push or pop is in progress).
     size_t size() const noexcept;
-    size_t ask_size() const noexcept;    ///< queued ask requests
+    size_t call_size() const noexcept;    ///< queued calls
     size_t other_size() const noexcept;  ///< everything else
 
     bool closed() const noexcept;
@@ -105,7 +105,7 @@ public:
 
     // --- owner (consumer) only ----------------------------------------------
 
-    /// Next message: an ask if any is queued, else the oldest ordinary message;
+    /// Next message: a call if any is queued, else the oldest ordinary message;
     /// nullptr if there is none.
     std::unique_ptr<message_base> pop() noexcept;
 
@@ -120,10 +120,10 @@ public:
     /// Close the mailbox: later pushes fail. Every message still queued is
     /// handed to on_dropped (which does not take ownership; the message is
     /// deleted afterwards). Returns how many there were.
-    size_t close(const std::function<void(message_base&, bool is_ask)>& on_dropped);
+    size_t close(const std::function<void(message_base&, bool is_call)>& on_dropped);
 
 private:
-    static bool is_ask(const message_base& msg) noexcept;
+    static bool is_call(const message_base& msg) noexcept;
     std::atomic<size_t>& count_for(const message_base& msg) noexcept;
     message_base* take_head(message_base* new_head) noexcept;
     bool fetch_more() noexcept;
@@ -139,13 +139,13 @@ private:
     };
 
     // Owner-only FIFO caches, oldest first (CAF's urgent_queue_/normal_queue_)
-    fifo m_asks;
+    fifo m_calls;
     fifo m_others;
 
     // Shared by all producers: the LIFO stack and the counts they update.
     // Kept together on their own cache line, away from the owner's cache.
     alignas(64) std::atomic<message_base*> m_stack;
-    std::atomic<size_t> m_ask_count{0};
+    std::atomic<size_t> m_call_count{0};
     std::atomic<size_t> m_other_count{0};
 };
 

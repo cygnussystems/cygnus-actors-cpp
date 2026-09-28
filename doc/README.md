@@ -25,7 +25,7 @@ Documentation files are numbered for easy ordering and insertion of new topics.
 - **[70_dynamic_removal.md](70_dynamic_removal.md)** - Stop actors at runtime, watch pattern, lifecycle management
 
 ### Advanced Features
-- **[80_ask_pattern.md](80_ask_pattern.md)** - RPC-style synchronous messaging with timeouts
+- **[80_call.md](80_call.md)** - RPC-style synchronous messaging with timeouts
 - **[90_timers.md](90_timers.md)** - One-shot and periodic timers
 - **[100_advanced_actors.md](100_advanced_actors.md)** - Fast actors, inline actors, stateful actors.
   Note `stateful_actor`'s tests are currently disabled (`CMakeLists.txt:111`),
@@ -56,7 +56,7 @@ Documentation files are numbered for easy ordering and insertion of new topics.
 - [Initialize actors properly](50_lifecycle_hooks.md#on_start)
 - [Schedule delayed messages](90_timers.md#one-shot-timers)
 - [Stop an actor at runtime](70_dynamic_removal.md#quick-example)
-- [Make synchronous RPC calls](80_ask_pattern.md#quick-example)
+- [Make synchronous RPC calls](80_call.md#quick-example)
 - [Handle actor termination](70_dynamic_removal.md#watch-pattern)
 - [Inter-process communication](130_zeromq_relay.md#quick-example)
 - [Size messages to fit the pool](140_message_pool.md#sizing-messages-correctly)
@@ -82,8 +82,8 @@ Documentation files are numbered for easy ordering and insertion of new topics.
 ### Message Patterns
 - Asynchronous fire-and-forget messaging
 - Request-response with sender tracking
-- **Ask pattern** for synchronous RPC-style calls
-- Ask with timeout support
+- **Call** for synchronous RPC-style calls
+- Call with timeout support
 - Message correlation IDs
 
 ### Actor Lifecycle
@@ -108,7 +108,7 @@ Documentation files are numbered for easy ordering and insertion of new topics.
 - Pooled actors (default) - Thread pool with affinity
 - Fast actors - One dedicated thread per actor
 - Inline actors - Execute in caller's thread
-- Ask pattern - Runs on the target actor's own thread, serialised with its
+- Call - Runs on the target actor's own thread, serialised with its
   regular handlers (see [INVARIANTS.md](INVARIANTS.md))
 
 ### Inter-Process Communication
@@ -186,7 +186,7 @@ When adding new features or documentation:
 - ✅ Message passing with sender tracking
 - ✅ Actor registry
 - ✅ Lifecycle hooks
-- ✅ Ask pattern (RPC)
+- ✅ Ask pattern (RPC) - now `call()`
 - ✅ Timers (one-shot and periodic)
 - ✅ Fast actors
 - ✅ Inline actors
@@ -207,5 +207,5 @@ When adding new features or documentation:
 1. Start with [Overview](10_overview.md) to understand core concepts
 2. Follow [Getting Started](20_getting_started.md) to build your first application
 3. Explore [Dynamic Removal](70_dynamic_removal.md) for runtime actor management
-4. Learn [Ask Pattern](80_ask_pattern.md) for synchronous operations
+4. Learn [Call](80_call.md) for synchronous operations
 5. Use [ZeroMQ Relay](130_zeromq_relay.md) for inter-process communication

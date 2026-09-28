@@ -7,7 +7,7 @@
 // The guarantee: if sending A happens-before sending B, and both go to the
 // same actor, A is handled before B. So messages from one actor, or from one
 // thread, are handled in the order they were sent. There is no ordering
-// between different senders. The one exception is ask(): an ask is handled
+// between different senders. The one exception is call(): a call is handled
 // next, ahead of every ordinary message still queued - including ones its
 // sender sent earlier.
 //
@@ -49,7 +49,7 @@ namespace ordering_test {
                 std::lock_guard<std::mutex> lock(m_mutex);
                 m_received.emplace_back(msg.source, msg.seq);
             });
-            ask_handler<int, count_op>(&recorder_actor::handled_so_far);
+            call_handler<int, count_op>(&recorder_actor::handled_so_far);
         }
 
         int handled_so_far() {
@@ -189,13 +189,13 @@ TEST_CASE("Actors sending to one actor each keep their own send order",
     require_fifo_per_source(received, kSenders, kPerSender);
 }
 
-TEST_CASE("An ask is handled ahead of messages already queued",
+TEST_CASE("A call is handled ahead of messages already queued",
           "[11_concurrency][ordering]") {
     CAS_TEST_GUARD();
     using namespace ordering_test;
 
-    // Queue a backlog, and an ask behind it, before start() - so the only
-    // thing deciding the order is the mailbox. The ask must be handled first:
+    // Queue a backlog, and a call behind it, before start() - so the only
+    // thing deciding the order is the mailbox. The call must be handled first:
     // it reports that nothing else has been handled yet.
     auto rec = cas::system::create<recorder_actor>();
     constexpr int backlog = 1000;
@@ -206,8 +206,8 @@ TEST_CASE("An ask is handled ahead of messages already queued",
     }
 
     std::atomic<int> answer{-1};
-    std::thread asker([&] { answer = rec.ask<int>(count_op{}); });  // blocks until handled
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));   // ask is queued
+    std::thread asker([&] { answer = rec.call<int>(count_op{}); });  // blocks until handled
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));   // call is queued
 
     cas::system::start();
     asker.join();

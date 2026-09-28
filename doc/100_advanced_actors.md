@@ -1040,5 +1040,5 @@ protected:
 
 - [Best Practices](120_best_practices.md) - Design patterns and anti-patterns
 - [Timers](90_timers.md) - Schedule messages with timers
-- [Ask Pattern](80_ask_pattern.md) - Synchronous RPC-style calls
+- [Call](80_call.md) - Synchronous RPC-style calls
 - [Dynamic Removal](70_dynamic_removal.md) - Stop actors at runtime

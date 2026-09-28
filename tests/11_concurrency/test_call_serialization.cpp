@@ -17,12 +17,12 @@ namespace ask_serialization_test {
 
     // INVARIANT 1 probe.
     //
-    // m_counter is deliberately a PLAIN int, not an atomic. If an ask handler
+    // m_counter is deliberately a PLAIN int, not an atomic. If a call handler
     // can run concurrently with a regular handler on the same actor, the
     // read-modify-write races and the final total comes out below 2N.
     //
-    // Under the pre-fix implementation (ask requests dispatched directly from a
-    // dedicated ask thread while a worker thread ran the mailbox) this test
+    // Under the pre-fix implementation (calls dispatched directly from a
+    // dedicated call thread while a worker thread ran the mailbox) this test
     // fails under load. It must never fail again.
     class counter_actor : public cas::actor {
     private:
@@ -35,7 +35,7 @@ namespace ask_serialization_test {
         void on_start() override {
             set_name("counter_actor");
             handler<increment_msg>(&counter_actor::on_increment);
-            ask_handler<int, bump_op>(&counter_actor::on_bump);
+            call_handler<int, bump_op>(&counter_actor::on_bump);
         }
 
         void on_increment(const increment_msg&) {
@@ -49,7 +49,7 @@ namespace ask_serialization_test {
     };
 }
 
-TEST_CASE("Ask handlers are serialised with regular handlers", "[11_concurrency][invariant1]") {
+TEST_CASE("Call handlers are serialised with regular handlers", "[11_concurrency][invariant1]") {
     CAS_TEST_GUARD();
     using namespace ask_serialization_test;
 
@@ -76,12 +76,12 @@ TEST_CASE("Ask handlers are serialised with regular handlers", "[11_concurrency]
         });
     }
 
-    // Ask senders - these block on the actor's own thread servicing the request
+    // Call senders - these block on the actor's own thread servicing the request
     for (int t = 0; t < kAskThreads; ++t) {
         threads.emplace_back([ref, &ask_failures, n = kPerThread]() mutable {
             for (int i = 0; i < n; ++i) {
                 try {
-                    ref.ask<int>(bump_op{});
+                    ref.call<int>(bump_op{});
                 } catch (const std::exception&) {
                     ask_failures.fetch_add(1);
                 }
@@ -95,7 +95,7 @@ TEST_CASE("Ask handlers are serialised with regular handlers", "[11_concurrency]
 
     REQUIRE(ask_failures.load() == 0);
 
-    // Drain the mailbox: asks are synchronous but tells are not
+    // Drain the mailbox: calls are synchronous but tells are not
     constexpr int kExpected = (kTellThreads + kAskThreads) * kPerThread;
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     auto& actor_obj = counter.get_checked<counter_actor>();
@@ -149,7 +149,7 @@ TEST_CASE("Only one thread is inside an actor's handlers at a time",
                 enter();
                 leave();
             });
-            ask_handler<int, bump_op>(&observed_actor::on_bump);
+            call_handler<int, bump_op>(&observed_actor::on_bump);
         }
 
         int on_bump() {
@@ -179,7 +179,7 @@ TEST_CASE("Only one thread is inside an actor's handlers at a time",
     for (int t = 0; t < kAskThreads; ++t) {
         threads.emplace_back([ref, n = kPerThread]() mutable {
             for (int i = 0; i < n; ++i) {
-                try { ref.ask<int>(bump_op{}); } catch (const std::exception&) {}
+                try { ref.call<int>(bump_op{}); } catch (const std::exception&) {}
             }
         });
     }
@@ -201,7 +201,7 @@ TEST_CASE("Only one thread is inside an actor's handlers at a time",
     TEST_CLEANUP();
 }
 
-TEST_CASE("Ask that would deadlock throws instead of hanging", "[11_concurrency][invariant1]") {
+TEST_CASE("Call that would deadlock throws instead of hanging", "[11_concurrency][invariant1]") {
     CAS_TEST_GUARD();
     using namespace ask_serialization_test;
 
@@ -214,7 +214,7 @@ TEST_CASE("Ask that would deadlock throws instead of hanging", "[11_concurrency]
 
         void on_start() override {
             set_name("self_ask_actor");
-            ask_handler<int, bump_op>(&self_ask_actor::on_bump);
+            call_handler<int, bump_op>(&self_ask_actor::on_bump);
             handler<increment_msg>(&self_ask_actor::on_trigger);
         }
 
@@ -222,8 +222,8 @@ TEST_CASE("Ask that would deadlock throws instead of hanging", "[11_concurrency]
 
         void on_trigger(const increment_msg&) {
             try {
-                self().ask<int>(bump_op{});
-            } catch (const cas::ask_deadlock_error&) {
+                self().call<int>(bump_op{});
+            } catch (const cas::call_deadlock_error&) {
                 threw.store(true);
             }
             completed.store(true);

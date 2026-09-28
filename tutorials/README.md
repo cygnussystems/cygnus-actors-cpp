@@ -52,7 +52,7 @@ the examples cannot quietly go stale.
 | # | Tutorial | Teaches |
 |---|----------|---------|
 | 5 | `actor_registry` | Finding actors by name instead of holding a reference |
-| 6 | `ask_pattern` | Request/response with a return value, timeouts, deadlock rules |
+| 6 | `call` | Request/response with a return value, timeouts, deadlock rules |
 | 7 | `timers` | One-shot and periodic timers, cancellation |
 | 8 | `dynamic_removal` | Stopping one actor while the system runs; drain vs discard |
 | 9 | `watch_pattern` | Being notified when a watched actor terminates |

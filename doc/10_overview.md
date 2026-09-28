@@ -15,7 +15,7 @@ Cygnus is a modern C++20 actor framework designed for high-performance concurren
 - **Dynamic actor management** - Create and stop actors at runtime
 
 ### Advanced Features
-- **Ask pattern (RPC)** - Synchronous request-response calls
+- **Call (RPC)** - Synchronous request-response calls
 - **Timers** - One-shot and periodic message scheduling
 - **Fast actors** - Dedicated threads for low-latency processing
 - **Inline actors** - Zero-latency synchronous execution
@@ -156,7 +156,7 @@ int main() {
 ## Message Delivery Guarantees
 
 - **Exactly once to a live actor** - Nothing lost, nothing duplicated
-- **Send order per sender** - Messages from A to B are handled in the order A sent them; an `ask()` is handled next, ahead of queued messages
+- **Send order per sender** - Messages from A to B are handled in the order A sent them; an `call()` is handled next, ahead of queued messages
 - **No global ordering** - Messages from different senders may interleave
 - **Dead letters** - Messages to stopped actors are dropped and counted (see dead-letter handling)
 

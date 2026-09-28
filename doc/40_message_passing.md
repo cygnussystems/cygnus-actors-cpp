@@ -507,12 +507,12 @@ Precisely: if sending A happens-before sending B, and both go to the same actor,
 A is handled before B. That covers messages sent by one actor, and messages sent
 from one thread (including `main()`).
 
-**The exception is `ask()`**: an ask is handled next — right after the handler
+**The exception is `call()`**: a call is handled next — right after the handler
 that is currently running — ahead of every ordinary message still queued,
-including ones its own sender sent earlier. That is what lets an ask get an
-answer from an actor that is behind (see [80_ask_pattern.md](80_ask_pattern.md)).
-If you need an ask to see the effect of your earlier `tell()`, make the earlier
-message an ask too, or have the handler answer only once it has seen it.
+including ones its own sender sent earlier. That is what lets a call get an
+answer from an actor that is behind (see [80_call.md](80_call.md)).
+If you need a call to see the effect of your earlier `tell()`, make the earlier
+message a call too, or have the handler answer only once it has seen it.
 
 What is **not** ordered is messages from *different* senders — see below. If
 two senders' messages must be processed in a particular order, have one of them
@@ -844,8 +844,8 @@ void on_message(const my_msg& msg) {
     // ✗ BAD: Blocking call
     auto result = http_get("http://slow-server.com");
 
-    // ✓ GOOD: Offload to ask pattern or separate thread
-    // Use ask pattern for synchronous operations
+    // ✓ GOOD: Offload to call or separate thread
+    // Use call for synchronous operations
 }
 ```
 
@@ -885,5 +885,5 @@ void on_tracked(const tracked_message& msg) {
 
 - [Lifecycle Hooks](50_lifecycle_hooks.md) - Master actor initialization and cleanup
 - [Actor Registry](60_actor_registry.md) - Name-based actor discovery
-- [Ask Pattern](80_ask_pattern.md) - Synchronous request-response
+- [Call](80_call.md) - Synchronous request-response
 - [Best Practices](120_best_practices.md) - Design patterns and anti-patterns

@@ -77,7 +77,7 @@ protected:
 | Operation | Notes |
 |---|---|
 | `set_name()` | Also registers in the actor registry |
-| `handler<T>()`, `ask_handler<>()` | The main purpose of the hook |
+| `handler<T>()`, `call_handler<>()` | The main purpose of the hook |
 | Member initialisation | |
 | `schedule_once()`, `schedule_periodic()` | Timers fire once the system is running |
 | `tell()` / `operator<<` | Queued; delivered once workers start |
@@ -88,7 +88,7 @@ protected:
 
 | Operation | Why | Result |
 |---|---|---|
-| `ask()` | Blocks waiting for a reply from a system that may not be processing messages yet — at startup no worker thread exists | Throws `cas::on_start_violation` |
+| `call()` | Blocks waiting for a reply from a system that may not be processing messages yet — at startup no worker thread exists | Throws `cas::on_start_violation` |
 
 ```cpp
 void on_start() override {
@@ -98,7 +98,7 @@ void on_start() override {
     auto other = cas::actor_registry::get("other_actor");
 
     other.tell(hello_msg{});           // ✓ fine - queued for delivery
-    // int r = other.ask<int>(op{});   // ✗ throws cas::on_start_violation
+    // int r = other.call<int>(op{});   // ✗ throws cas::on_start_violation
 }
 ```
 

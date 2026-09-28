@@ -1,8 +1,8 @@
 #include "../test_common.h"
 
-// Level 5: Test ask pattern (RPC-style synchronous request-response)
+// Level 5: Test call pattern (RPC-style synchronous request-response)
 
-// Operation tags for ask pattern
+// Operation tags for call pattern
 struct add_op {};
 struct multiply_op {};
 struct divide_op {};
@@ -10,16 +10,16 @@ struct divide_op {};
 // Simple trigger message for actor-to-actor test
 struct trigger_msg : public cas::message_base {};
 
-// Calculator actor that responds to ask requests
+// Calculator actor that responds to calls
 class calculator_actor : public cas::actor {
 protected:
     void on_start() override {
         set_name("calculator");
 
-        // Register ask handlers for different operations
-        ask_handler<int, add_op>(&calculator_actor::add);
-        ask_handler<int, multiply_op>(&calculator_actor::multiply);
-        ask_handler<double, divide_op>(&calculator_actor::divide);
+        // Register call handlers for different operations
+        call_handler<int, add_op>(&calculator_actor::add);
+        call_handler<int, multiply_op>(&calculator_actor::multiply);
+        call_handler<double, divide_op>(&calculator_actor::divide);
     }
 
     int add(int a, int b) {
@@ -38,22 +38,22 @@ protected:
     }
 };
 
-TEST_CASE("Simple ask with integer return", "[05_ask_pattern][basic]") {
+TEST_CASE("Simple call with integer return", "[05_call][basic]") {
     CAS_TEST_GUARD();
     auto calc = cas::system::create<calculator_actor>();
 
     cas::system::start();
     wait_ms(50);
 
-    // Ask for addition
-    int result = calc.ask<int>(add_op{}, 10, 5);
+    // Call for addition
+    int result = calc.call<int>(add_op{}, 10, 5);
 
     REQUIRE(result == 15);
 
     TEST_CLEANUP();
 }
 
-TEST_CASE("Multiple ask operations", "[05_ask_pattern][basic]") {
+TEST_CASE("Multiple call operations", "[05_call][basic]") {
     CAS_TEST_GUARD();
     auto calc = cas::system::create<calculator_actor>();
 
@@ -61,9 +61,9 @@ TEST_CASE("Multiple ask operations", "[05_ask_pattern][basic]") {
     wait_ms(50);
 
     // Multiple operations
-    int sum = calc.ask<int>(add_op{}, 100, 50);
-    int product = calc.ask<int>(multiply_op{}, 10, 5);
-    double quotient = calc.ask<double>(divide_op{}, 20, 4);
+    int sum = calc.call<int>(add_op{}, 100, 50);
+    int product = calc.call<int>(multiply_op{}, 10, 5);
+    double quotient = calc.call<double>(divide_op{}, 20, 4);
 
     REQUIRE(sum == 150);
     REQUIRE(product == 50);
@@ -72,9 +72,12 @@ TEST_CASE("Multiple ask operations", "[05_ask_pattern][basic]") {
     TEST_CLEANUP();
 }
 
-// NOTE: With dedicated ask thread pool, this test now works without deadlock!
-// Ask requests are processed by separate threads, so actors can call ask() safely.
-TEST_CASE("Ask from one actor to another", "[05_ask_pattern][basic]") {
+// An actor may call() another actor that runs on a different worker thread:
+// the caller's worker blocks while the target's worker handles the call. The
+// two actors here are created back to back, so round-robin placement puts them
+// on different workers. (A call to an actor on the caller's own worker would
+// deadlock, and throws call_deadlock_error instead.)
+TEST_CASE("Call from one actor to another", "[05_call][basic]") {
     CAS_TEST_GUARD();
     class requester_actor : public cas::actor {
     private:
@@ -93,8 +96,8 @@ TEST_CASE("Ask from one actor to another", "[05_ask_pattern][basic]") {
         }
 
         void on_trigger(const trigger_msg& msg) {
-            // Ask calculator from within actor
-            result = calc_ref.ask<int>(add_op{}, 7, 3);
+            // Call calculator from within actor
+            result = calc_ref.call<int>(add_op{}, 7, 3);
         }
     };
 
@@ -104,7 +107,7 @@ TEST_CASE("Ask from one actor to another", "[05_ask_pattern][basic]") {
     cas::system::start();
     wait_ms(50);
 
-    // Trigger the ask
+    // Trigger the call
     requester << trigger_msg{};
     wait_ms(100);
 
@@ -115,13 +118,13 @@ TEST_CASE("Ask from one actor to another", "[05_ask_pattern][basic]") {
     TEST_CLEANUP();
 }
 
-TEST_CASE("Ask blocks until result ready", "[05_ask_pattern][blocking]") {
+TEST_CASE("Call blocks until result ready", "[05_call][blocking]") {
     CAS_TEST_GUARD();
     class slow_actor : public cas::actor {
     protected:
         void on_start() override {
             set_name("slow");
-            ask_handler<int, add_op>(&slow_actor::slow_add);
+            call_handler<int, add_op>(&slow_actor::slow_add);
         }
 
         int slow_add(int a, int b) {
@@ -137,7 +140,7 @@ TEST_CASE("Ask blocks until result ready", "[05_ask_pattern][blocking]") {
     wait_ms(50);
 
     auto start = std::chrono::steady_clock::now();
-    int result = slow.ask<int>(add_op{}, 5, 3);
+    int result = slow.call<int>(add_op{}, 5, 3);
     auto elapsed = std::chrono::steady_clock::now() - start;
 
     REQUIRE(result == 8);
@@ -147,7 +150,7 @@ TEST_CASE("Ask blocks until result ready", "[05_ask_pattern][blocking]") {
     TEST_CLEANUP();
 }
 
-TEST_CASE("Ask with no handler throws exception", "[05_ask_pattern][error]") {
+TEST_CASE("Call with no handler throws exception", "[05_call][error]") {
     CAS_TEST_GUARD();
     struct unknown_op {};
 
@@ -158,14 +161,14 @@ TEST_CASE("Ask with no handler throws exception", "[05_ask_pattern][error]") {
 
     // Try to call unregistered operation
     REQUIRE_THROWS_AS(
-        calc.ask<int>(unknown_op{}, 5, 3),
+        calc.call<int>(unknown_op{}, 5, 3),
         std::runtime_error
     );
 
     TEST_CLEANUP();
 }
 
-TEST_CASE("Ask handler exception propagates to caller", "[05_ask_pattern][error]") {
+TEST_CASE("Call handler exception propagates to caller", "[05_call][error]") {
     CAS_TEST_GUARD();
     auto calc = cas::system::create<calculator_actor>();
 
@@ -174,7 +177,7 @@ TEST_CASE("Ask handler exception propagates to caller", "[05_ask_pattern][error]
 
     // Division by zero should throw
     REQUIRE_THROWS_AS(
-        calc.ask<double>(divide_op{}, 10, 0),
+        calc.call<double>(divide_op{}, 10, 0),
         std::runtime_error
     );
 

@@ -4,14 +4,14 @@
 // Level 11: the on_start() contract.
 //
 // on_start() is for initialising the actor itself. What is permitted:
-//   - set_name(), handler<>() / ask_handler<>() registration
+//   - set_name(), handler<>() / call_handler<>() registration
 //   - member initialisation
 //   - schedule_once() / schedule_periodic()
 //   - tell() to other actors (queued, delivered once workers run)
 //   - system::create() (safe on both the startup and runtime paths)
 //
 // What is rejected:
-//   - ask() - blocks waiting for a reply from a system that may not be
+//   - call() - blocks waiting for a reply from a system that may not be
 //     processing messages yet. At startup no worker thread exists, so this
 //     would hang forever rather than fail.
 
@@ -26,14 +26,14 @@ namespace on_start_contract_test {
     protected:
         void on_start() override {
             set_name("contract_target");
-            ask_handler<int, compute_op>(&target_actor::compute);
+            call_handler<int, compute_op>(&target_actor::compute);
             handler<probe_msg>([this](const probe_msg&) { received.fetch_add(1); });
         }
         int compute() { return 99; }
     };
 }
 
-TEST_CASE("ask() from on_start() throws instead of hanging",
+TEST_CASE("call() from on_start() throws instead of hanging",
           "[11_concurrency][on_start_contract]") {
     CAS_TEST_GUARD();
     using namespace on_start_contract_test;
@@ -48,7 +48,7 @@ TEST_CASE("ask() from on_start() throws instead of hanging",
             auto target = cas::actor_registry::get("contract_target");
             if (target.is_valid()) {
                 try {
-                    target.ask<int>(compute_op{});
+                    target.call<int>(compute_op{});
                 } catch (const cas::on_start_violation&) {
                     threw.store(true);
                 }
@@ -65,7 +65,7 @@ TEST_CASE("ask() from on_start() throws instead of hanging",
     auto asker = cas::system::create<asking_actor>();
     auto& obj = asker.get_checked<asking_actor>();
 
-    // create() runs on_start() synchronously - if ask() hung, we never get here
+    // create() runs on_start() synchronously - if call() hung, we never get here
     REQUIRE(obj.finished.load());
     REQUIRE(obj.threw.load());
 
@@ -149,7 +149,7 @@ TEST_CASE("is_initialising() is false outside on_start()",
     CAS_TEST_GUARD();
     using namespace on_start_contract_test;
 
-    // The flag must be cleared when on_start() returns, or ask() would be
+    // The flag must be cleared when on_start() returns, or call() would be
     // rejected forever afterwards.
     class checker : public cas::actor {
     public:

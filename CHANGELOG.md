@@ -6,16 +6,29 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Deprecated
+
+- **`ask()` is renamed `call()`**, because it is a blocking function call
+  into an actor (RPC), not a question. Renamed along with it:
+  `ask_handler` -> `call_handler`, `ask_deadlock_error` ->
+  `call_deadlock_error`, `ask_type_error` -> `call_type_error`,
+  `ask_queue_high_water_mark()` -> `call_queue_high_water_mark()`, and the
+  header `ask_message.h` -> `call_message.h`. Every old name still compiles
+  and forwards to the new one, with a deprecation warning that names it.
+  `dead_letter_stats::dropped_ask` keeps its name: a struct field cannot be
+  aliased. The docs chapter, tutorial and tests are renamed to match
+  (`doc/80_call.md`, `tutorials/06_call.cpp`, `tests/05_call/`).
+
 ### Added
 
 - **Messages from one sender are handled in send order** - now a guarantee
   (INVARIANT 3): if sending A happens-before sending B to the same actor, A
   is handled first. That covers one actor messaging another and one thread
   (including `main()`) messaging an actor. There is still no order between
-  different senders. The one exception is `ask()`: an ask is handled next,
+  different senders. The one exception is `call()`: a call is handled next,
   after the running handler and ahead of every queued ordinary message -
   including ones its own sender sent earlier - so an actor that is behind can
-  still answer (for example, a query about why it is slow). Asks are ordered
+  still answer (for example, a query about why it is slow). Calls are ordered
   among themselves. Earlier documentation
   first claimed FIFO without the implementation providing it, then said there
   was no ordering at all.
@@ -66,8 +79,8 @@ This project follows [Semantic Versioning](https://semver.org/).
   while the same fields as `fixed_string` are ~2x faster. The likely cause
   is heap contention now that sender and receiver run concurrently; it has
   not yet been profiled.
-- `ask()` requests keep their priority (as in 1.0), now as a lane inside the
-  single mailbox, and more strictly: an ask pushed while the actor is working
+- `call()` requests keep their priority (as in 1.0), now as a lane inside the
+  single mailbox, and more strictly: a call pushed while the actor is working
   through a backlog it has already taken from the mailbox is still handled
   next, rather than after that backlog.
 - Messages still queued when a stop completes (for example after a drain
@@ -96,7 +109,7 @@ This project follows [Semantic Versioning](https://semver.org/).
   never reported as a dead letter. The mailbox is now closed atomically when
   a stop completes, so such a push fails and is counted as a dead letter.
 - Message dispatch no longer uses `typeid` and `dynamic_cast` to recognise
-  framework messages (shutdown, ask); a private virtual identifies them.
+  framework messages (shutdown, call); a private virtual identifies them.
 
 - **The message pool could hand one block to two owners.** Its free list was
   a hand-rolled lock-free stack whose pop - load head, read `head->next`, CAS
@@ -160,17 +173,17 @@ This project follows [Semantic Versioning](https://semver.org/).
   The name is now unregistered first, and only if it still refers to the
   stopping actor (new `actor_registry::unregister_actor(name, expected)`).
 
-- **`ask()` could pass garbage arguments to the handler.** The request stored
+- **`call()` could pass garbage arguments to the handler.** The request stored
   its arguments as `std::tuple` of the *caller's* deduced types (references
   for lvalues) and the handler read them back as a tuple of *its* parameter
   types, with nothing checking the two agreed. Passing a variable
-  (`ask<int>(add_op{}, a, b)`), or a value needing conversion (`10` to a
+  (`call<int>(add_op{}, a, b)`), or a value needing conversion (`10` to a
   `double` parameter), silently produced wrong results; a mismatched
-  `ask<R>()` return type reinterpreted the result the same way. Arguments are
+  `call<R>()` return type reinterpreted the result the same way. Arguments are
   now stored as decayed copies (so lvalues work, and cannot dangle when an
-  ask-with-timeout caller returns before the handler runs), and argument and
+  call-with-timeout caller returns before the handler runs), and argument and
   return types are checked against the registered handler before it is
-  invoked. A mismatch throws the new `cas::ask_type_error` to the caller.
+  invoked. A mismatch throws the new `cas::call_type_error` to the caller.
   Calls that previously worked are unaffected; calls that relied on implicit
   conversion now throw instead of returning wrong values — pass the exact
   parameter types.

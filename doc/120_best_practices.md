@@ -892,13 +892,13 @@ for (int i = 0; i < 1000; ++i) {
 actor_ref.tell(msg);  // 1 queue operation
 ```
 
-### 4. Use Ask Pattern Sparingly
+### 4. Use Call Sparingly
 
 **Avoid:**
 ```cpp
 // ✗ Synchronous call from actor (blocks)
 void on_request(const request& msg) {
-    auto result = m_database.ask<query, query_response>(
+    auto result = m_database.call<query, query_response>(
         query{"key"},
         std::chrono::seconds(1));  // Blocks actor thread!
 

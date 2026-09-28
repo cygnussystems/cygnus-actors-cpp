@@ -27,8 +27,8 @@ public:
         dispatch_inline(std::move(msg), false);
     }
 
-    // No ask queue needed - the request is processed before this returns
-    void enqueue_ask_message(std::unique_ptr<message_base> msg) override {
+    // No queueing - the call is processed before this returns
+    void enqueue_call_message(std::unique_ptr<message_base> msg) override {
         dispatch_inline(std::move(msg), true);
     }
 
@@ -54,12 +54,12 @@ public:
     }
 
 private:
-    void dispatch_inline(std::unique_ptr<message_base> msg, bool was_ask) {
+    void dispatch_inline(std::unique_ptr<message_base> msg, bool was_call) {
         // Checked before locking so a handler or hook that sends to this
         // actor while it is stopping is dropped rather than self-deadlocking
         // on the (non-recursive) mutex held by the stop.
         if (get_state() != actor_state::running) {
-            report_rejected(msg.get(), was_ask);
+            report_rejected(msg.get(), was_call);
             return;
         }
 
@@ -67,7 +67,7 @@ private:
             std::lock_guard<std::mutex> lock(m_handler_mutex);
             // Re-check under the lock: a stop may have completed while we waited
             if (get_state() != actor_state::running) {
-                report_rejected(msg.get(), was_ask);
+                report_rejected(msg.get(), was_call);
                 return;
             }
             run_handler(msg.get());

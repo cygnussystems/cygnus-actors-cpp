@@ -12,7 +12,7 @@ set(TUTORIAL_SOURCES
     03_actor_to_actor.cpp
     04_lifecycle_hooks.cpp
     05_actor_registry.cpp
-    06_ask_pattern.cpp
+    06_call.cpp
     07_timers.cpp
     08_dynamic_removal.cpp
     09_watch_pattern.cpp
@@ -45,7 +45,7 @@ set(TUTORIAL_NAMES
     actor_to_actor
     lifecycle_hooks
     actor_registry
-    ask_pattern
+    call
     timers
     dynamic_removal
     watch_pattern

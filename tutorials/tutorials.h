@@ -40,7 +40,7 @@ bool run_message_passing();   // 2
 bool run_actor_to_actor();    // 3
 bool run_lifecycle_hooks();   // 4
 bool run_actor_registry();    // 5
-bool run_ask_pattern();       // 6
+bool run_call();       // 6
 bool run_timers();            // 7
 bool run_dynamic_removal();   // 8
 bool run_watch_pattern();     // 9

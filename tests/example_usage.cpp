@@ -49,7 +49,7 @@ protected:
         handler<message::ping>(&pong::on_ping);
 
         // Register invoke handlers (RPC-style)
-        ask_handler<double, calculate_op>(&pong::do_calculate);
+        call_handler<double, calculate_op>(&pong::do_calculate);
 
         println("[PONG] actor started");
 

@@ -72,7 +72,7 @@ protected:
     enum class framework_kind : unsigned char {
         user,          // dispatch to a registered handler
         shutdown,      // system_shutdown
-        ask_request    // ask(): processed ahead of other messages
+        call_request    // call(): processed ahead of other messages
     };
 
 private:

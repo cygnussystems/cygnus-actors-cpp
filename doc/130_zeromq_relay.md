@@ -481,5 +481,5 @@ For lowest latency:
 ## See Also
 
 - [Message Passing](40_message_passing.md) - Actor message fundamentals
-- [Ask Pattern](80_ask_pattern.md) - Synchronous RPC
+- [Call](80_call.md) - Synchronous RPC
 - [Best Practices](120_best_practices.md) - Performance tips

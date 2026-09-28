@@ -25,7 +25,7 @@ mailbox::~mailbox() {
     };
     message_base* stack = m_stack.load(std::memory_order_acquire);
     free_list(is_tag(stack) ? nullptr : stack);
-    free_list(m_asks.head);
+    free_list(m_calls.head);
     free_list(m_others.head);
 }
 
@@ -43,12 +43,12 @@ bool mailbox::is_tag(message_base* p) const noexcept {
     return p == empty_tag() || p == blocked_tag() || p == closed_tag();
 }
 
-bool mailbox::is_ask(const message_base& msg) noexcept {
-    return msg.cas_framework_kind() == message_base::framework_kind::ask_request;
+bool mailbox::is_call(const message_base& msg) noexcept {
+    return msg.cas_framework_kind() == message_base::framework_kind::call_request;
 }
 
 std::atomic<size_t>& mailbox::count_for(const message_base& msg) noexcept {
-    return is_ask(msg) ? m_ask_count : m_other_count;
+    return is_call(msg) ? m_call_count : m_other_count;
 }
 
 push_result mailbox::push(std::unique_ptr<message_base>& msg) noexcept {
@@ -96,7 +96,7 @@ bool mailbox::fetch_more() noexcept {
         return false;
     }
 
-    // The stack is newest-first. Reversing it gives push order; asks and other
+    // The stack is newest-first. Reversing it gives push order; calls and other
     // messages are split into their own caches as we go.
     message_base* ask_first = nullptr;
     message_base* ask_last = nullptr;
@@ -104,7 +104,7 @@ bool mailbox::fetch_more() noexcept {
     message_base* other_last = nullptr;
     while (node != nullptr) {
         message_base* next = node->m_next;
-        if (is_ask(*node)) {
+        if (is_call(*node)) {
             node->m_next = ask_first;
             if (ask_first == nullptr) ask_last = node;
             ask_first = node;
@@ -125,24 +125,24 @@ bool mailbox::fetch_more() noexcept {
         }
         q.tail = last;
     };
-    append(m_asks, ask_first, ask_last);
+    append(m_calls, ask_first, ask_last);
     append(m_others, other_first, other_last);
     return true;
 }
 
 std::unique_ptr<message_base> mailbox::pop() noexcept {
-    // An ask may be on the stack while ordinary messages are already cached
+    // A call may be on the stack while ordinary messages are already cached
     // (a whole backlog is taken in one exchange). Its count is published before
-    // the push, so a queued-but-uncached ask shows up here and we fetch it
+    // the push, so a queued-but-uncached call shows up here and we fetch it
     // before serving another ordinary message.
-    if (m_asks.head == nullptr && m_ask_count.load(std::memory_order_relaxed) > 0) {
+    if (m_calls.head == nullptr && m_call_count.load(std::memory_order_relaxed) > 0) {
         fetch_more();
     }
-    if (m_asks.head == nullptr && m_others.head == nullptr && !fetch_more()) {
+    if (m_calls.head == nullptr && m_others.head == nullptr && !fetch_more()) {
         return nullptr;
     }
 
-    fifo& q = (m_asks.head != nullptr) ? m_asks : m_others;
+    fifo& q = (m_calls.head != nullptr) ? m_calls : m_others;
     message_base* node = q.head;
     q.head = node->m_next;
     if (q.head == nullptr) q.tail = nullptr;
@@ -152,7 +152,7 @@ std::unique_ptr<message_base> mailbox::pop() noexcept {
 }
 
 bool mailbox::try_block() noexcept {
-    if (m_asks.head != nullptr || m_others.head != nullptr) {
+    if (m_calls.head != nullptr || m_others.head != nullptr) {
         return false;
     }
     message_base* expected = empty_tag();
@@ -166,7 +166,7 @@ bool mailbox::try_unblock() noexcept {
                                            std::memory_order_seq_cst);
 }
 
-size_t mailbox::close(const std::function<void(message_base&, bool is_ask)>& on_dropped) {
+size_t mailbox::close(const std::function<void(message_base&, bool is_call)>& on_dropped) {
     // Close first, so no push can slip in behind the drain.
     message_base* stack = take_head(closed_tag());
 
@@ -175,14 +175,14 @@ size_t mailbox::close(const std::function<void(message_base&, bool is_ask)>& on_
         while (node != nullptr) {
             message_base* next = node->m_next;
             count_for(*node).fetch_sub(1, std::memory_order_relaxed);
-            if (on_dropped) on_dropped(*node, is_ask(*node));
+            if (on_dropped) on_dropped(*node, is_call(*node));
             delete node;
             ++dropped;
             node = next;
         }
     };
-    drain(m_asks.head);    // cached messages, oldest first
-    m_asks = {};
+    drain(m_calls.head);    // cached messages, oldest first
+    m_calls = {};
     drain(m_others.head);
     m_others = {};
     drain(stack);   // then anything pushed since (newest first)
@@ -190,11 +190,11 @@ size_t mailbox::close(const std::function<void(message_base&, bool is_ask)>& on_
 }
 
 size_t mailbox::size() const noexcept {
-    return ask_size() + other_size();
+    return call_size() + other_size();
 }
 
-size_t mailbox::ask_size() const noexcept {
-    return m_ask_count.load(std::memory_order_relaxed);
+size_t mailbox::call_size() const noexcept {
+    return m_call_count.load(std::memory_order_relaxed);
 }
 
 size_t mailbox::other_size() const noexcept {

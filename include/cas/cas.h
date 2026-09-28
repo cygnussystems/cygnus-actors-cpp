@@ -13,7 +13,7 @@
 #include "inline_actor.h"
 #include "actor_registry.h"
 #include "system.h"
-#include "ask_message.h"
+#include "call_message.h"
 #include "timer.h"
 
 // Include template implementations AFTER all headers are fully defined
