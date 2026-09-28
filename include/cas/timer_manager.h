@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <queue>
 #include <unordered_map>
+#include <set>
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -63,6 +64,10 @@ public:
 
     /// Get count of active (non-cancelled) timers
     size_t active_count() const;
+
+    /// Remove from ids every timer that has finished (one-shot fired) or
+    /// was cancelled
+    void retain_active(std::set<timer_id>& ids) const;
 
 private:
     /// Timer thread main loop. Runs until the stop token is signalled.

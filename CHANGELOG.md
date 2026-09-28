@@ -8,6 +8,9 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Deprecated
 
+- **`queue_threshold_warning`**: the framework never sent it. Use
+  `system::set_queue_threshold_handler()`.
+
 - **`ask()` is renamed `call()`**, because it is a blocking function call
   into an actor (RPC), not a question. Renamed along with it:
   `ask_handler` -> `call_handler`, `ask_deadlock_error` ->
@@ -95,6 +98,52 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`call()` deadlock detection is decided by thread, not by actor.** It
+  compared the calling actor's worker with the target's, which was wrong
+  both ways: a pooled actor calling an `inline_actor` that happened to share
+  its worker number got a spurious `call_deadlock_error` (the call runs
+  synchronously), while an inline actor's handler - running on its sender's
+  worker - could call a pooled actor on that same busy worker and hang. Now
+  the call is refused only when the calling thread is the one that has to
+  run the target; calls to inline actors are always allowed.
+- **An `inline_actor` can send to itself.** A handler telling its own inline
+  actor (directly or through other inline actors) deadlocked on the
+  thread-safe variant's mutex, and nested one handler inside another on the
+  single-sender variant (a Debug-build abort). Such messages are now handled
+  right after the current handler, in send order, before the outer `tell()`
+  returns. A `call()` back into an inline actor that is mid-handler throws
+  `call_deadlock_error`. A handler exception now reaches the sender with the
+  actor left usable.
+- **Metrics that did not measure what they said (INVARIANT 4):**
+  - `dead_letter_stats::dropped_to_invalid` was never written. `tell()` and
+    `call(op, timeout, ...)` on an invalid `actor_ref` now count there and
+    reach the dead-letter handler (empty target name).
+  - The queue-threshold handler fired once per actor lifetime. It now fires
+    once per breach: it re-arms when the queue is back to half the
+    threshold.
+  - `total_high_water_mark()` returned the sum of two separate maxima; it
+    is now the largest combined queue seen.
+- **Small races and leaks:**
+  - `actor::name()` wrote the default name lazily from whichever thread
+    asked first (a data race with dead-letter reports from sender threads).
+    The default name is assigned at creation, and `set_name()` publishes
+    names so `name()` can be read from any thread. Renaming now releases
+    the old registry name.
+  - The registry holds weak references: it no longer keeps actors alive.
+  - Actors that schedule many one-shot timers no longer track fired ids
+    forever.
+  - Timer messages carry a `message_id` (they had 0).
+- **ZeroMQ relay:**
+  - Inbound messages are drained, up to 256 per wake-up, instead of one per
+    10 ms poll tick (about 100 msg/s).
+  - All relays share one ZeroMQ context, so `inproc://` works between them.
+  - `auto_reconnect` / `reconnect_delay_ms` are applied (ZeroMQ's reconnect
+    interval); sockets get a bounded linger so teardown cannot hang.
+  - Errors are also sent to the actor whose control message failed, so a
+    bind/connect failure before any route exists is no longer lost.
+  - A second relay no longer takes over the `"zeromq_relay"` registry name.
+  - Unanswered correlation ids expire after the new
+    `zeromq_config::request_timeout_ms` (default 30 s).
 - **Timers no longer fire into a stopping actor during system shutdown.**
   `stop_actor()` cancelled an actor's timers, but system shutdown left them
   running until `wait_for_shutdown()`: after `on_shutdown()` the actor

@@ -2,6 +2,7 @@
 #include "cas/timer_manager.h"
 #include "cas/message_base.h"
 #include <atomic>
+#include <set>
 #include <thread>
 #include <chrono>
 
@@ -326,4 +327,36 @@ TEST_CASE("Timer manager is_running reflects lifecycle", "[timer_manager][standa
     // stop() must be idempotent - the destructor calls it again.
     mgr.stop();
     REQUIRE(!mgr.is_running());
+}
+
+TEST_CASE("Timer manager retain_active drops fired one-shots and cancelled timers",
+          "[timer_manager][standalone][issue009]") {
+    cas::timer_manager mgr;
+    mgr.start();
+
+    auto make = [] { return std::make_unique<test_tick>(); };
+    auto copier = []() -> std::unique_ptr<cas::message_base> { return std::make_unique<test_tick>(); };
+    auto ignore = [](cas::timer_id, std::unique_ptr<cas::message_base>) {};
+
+    std::set<cas::timer_id> ids;
+    for (int i = 0; i < 100; ++i) {  // one-shots that fire at once
+        ids.insert(mgr.schedule(make(), copier, std::chrono::milliseconds(1),
+                                std::chrono::milliseconds(0), ignore));
+    }
+    const auto periodic = mgr.schedule(make(), copier, std::chrono::milliseconds(5),
+                                       std::chrono::milliseconds(5), ignore);
+    const auto pending = mgr.schedule(make(), copier, std::chrono::seconds(60),
+                                      std::chrono::milliseconds(0), ignore);
+    const auto cancelled = mgr.schedule(make(), copier, std::chrono::seconds(60),
+                                        std::chrono::milliseconds(0), ignore);
+    ids.insert({periodic, pending, cancelled});
+    mgr.cancel(cancelled);
+
+    for (int i = 0; i < 200 && mgr.active_count() > 2; ++i) {
+        wait_ms(5);
+    }
+    mgr.retain_active(ids);
+
+    REQUIRE(ids == std::set<cas::timer_id>{periodic, pending});
+    mgr.stop();
 }

@@ -28,10 +28,7 @@ timer_id actor::schedule_once(std::chrono::milliseconds delay, MessageType msg) 
     // Schedule with system
     timer_id id = system::schedule_timer(this, std::move(msg_ptr), std::move(copier), delay);
 
-    // Track this timer (INVALID_TIMER_ID: the actor is stopping, nothing scheduled)
-    if (id != INVALID_TIMER_ID) {
-        m_active_timers.insert(id);
-    }
+    track_timer(id);
 
     return id;
 }
@@ -53,10 +50,7 @@ timer_id actor::schedule_periodic(std::chrono::milliseconds interval, MessageTyp
     // Schedule with system (interval parameter makes it periodic)
     timer_id id = system::schedule_timer(this, std::move(msg_ptr), std::move(copier), interval, interval);
 
-    // Track this timer (INVALID_TIMER_ID: the actor is stopping, nothing scheduled)
-    if (id != INVALID_TIMER_ID) {
-        m_active_timers.insert(id);
-    }
+    track_timer(id);
 
     return id;
 }

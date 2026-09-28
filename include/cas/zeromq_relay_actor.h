@@ -8,6 +8,8 @@
 #include <vector>
 #include <unordered_map>
 #include <string>
+#include <memory>
+#include <chrono>
 
 namespace cas {
 
@@ -55,11 +57,12 @@ struct zeromq_route : public cas::message_base {
 // Configuration
 struct zeromq_config : public cas::message_base {
     int poll_interval_ms = 10;          // How often to check for messages
-    int send_timeout_ms = 1000;         // Send timeout
-    int recv_timeout_ms = 1000;         // Receive timeout
+    int send_timeout_ms = 1000;         // Send timeout; also the linger on close
+    int recv_timeout_ms = 1000;         // No effect: receives are non-blocking
     int max_message_size = 1048576;     // 1MB max
-    bool auto_reconnect = true;         // Reconnect on disconnect (DEALER only)
-    int reconnect_delay_ms = 1000;     // Delay between reconnects
+    bool auto_reconnect = true;         // Reconnect after a dropped connection (ZMQ_RECONNECT_IVL)
+    int reconnect_delay_ms = 1000;      // Delay before reconnecting
+    int request_timeout_ms = 30000;     // Forget an unanswered correlation id after this
 };
 
 // Status update
@@ -113,12 +116,16 @@ protected:
     // Override to interleave ZeroMQ polling with actor messages
     void process_next_message() override;
 
-    // Send error notification
-    void send_error(const std::string& message, int error_code = 0);
+    // Send error notification to the routes, and to reply_to if it is valid
+    // (the sender of the control message that failed)
+    void send_error(const std::string& message, int error_code = 0,
+                    const cas::actor_ref& reply_to = cas::actor_ref());
 
 private:
-    // ZeroMQ context and socket
-    void* m_context = nullptr;        // zmq::context_t* (void* to avoid header dependency)
+    // ZeroMQ context, shared by every relay in the process (so inproc://
+    // works between them) and destroyed with the last one. Type-erased
+    // zmq::context_t to keep zmq.hpp out of this header.
+    std::shared_ptr<void> m_context;
     void* m_socket = nullptr;         // zmq::socket_t*
     mode m_mode = mode::router;
     std::atomic<bool> m_connected{false};
@@ -131,6 +138,7 @@ private:
     int m_max_message_size = 1048576;
     bool m_auto_reconnect = true;
     int m_reconnect_delay_ms = 1000;
+    int m_request_timeout_ms = 30000;
 
     // Timer for polling
     timer_id m_poll_timer = INVALID_TIMER_ID;
@@ -138,8 +146,18 @@ private:
     // Routing table: message_type -> actor_ref
     std::unordered_map<std::string, cas::actor_ref> m_routes;
 
-    // Pending requests for correlation (request_id -> sender)
-    std::unordered_map<uint64_t, cas::actor_ref> m_pending_requests;
+    // Pending requests for correlation (correlation_id -> sender), expired
+    // after m_request_timeout_ms by the poll tick
+    struct pending_request {
+        cas::actor_ref requester;
+        std::chrono::steady_clock::time_point deadline;
+    };
+    std::unordered_map<uint64_t, pending_request> m_pending_requests;
+
+    // Receive and route one multipart message; false when none is waiting
+    bool receive_one();
+    void expire_pending_requests();
+    void start_polling();
 
     // Default route (for unmatched messages)
     cas::actor_ref m_default_route;

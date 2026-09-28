@@ -792,7 +792,7 @@ void on_query(const query& msg) {
     response.value = lookup(msg.key);
 
     // ✗ Forgot to check sender validity
-    msg.sender.tell(response);  // Invalid sender: tell() does nothing - reply silently lost (not counted)
+    msg.sender.tell(response);  // Invalid sender: reply dropped (counted in dead_letter_stats::dropped_to_invalid)
 }
 ```
 

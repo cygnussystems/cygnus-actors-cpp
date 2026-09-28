@@ -416,12 +416,15 @@ without locks. That is INVARIANT 1 — see `doc/INVARIANTS.md`.
 
 ### Calling call() from inside a handler
 
-Safe **only when the target actor is on a different worker thread**. Since the
-target's own thread must run the handler, calling an actor pinned to your own
-thread would block the very thread that has to service the request.
+Safe **only when the thread you are on is not the one that runs the target**.
+The target's own thread must run the handler, so blocking that thread means the
+request is never serviced. The check is about threads, not actors: a
+`fast_actor` may call any pooled actor, and an inline actor's handler runs on
+the thread that sent to it - so from there, calling a pooled actor on that
+same worker is refused.
 
-That case is detected and throws `cas::call_deadlock_error` immediately rather
-than hanging:
+Such a call is detected and throws `cas::call_deadlock_error` immediately
+rather than hanging:
 
 ```cpp
 void on_request(const request& msg) {
@@ -433,8 +436,13 @@ void on_request(const request& msg) {
 }
 ```
 
+Calling an `inline_actor` never waits for a worker - its handler runs on your
+thread before `call()` returns - so it is always allowed, except into an inline
+actor that is already handling a message on this thread (a cycle back into
+it), which throws `call_deadlock_error`.
+
 Actor assignment to threads is round-robin and not something you control, so a
-handler that calls another actor **may throw depending on placement**. For
+handler that calls another pooled actor **may throw depending on placement**. For
 actor-to-actor communication, prefer `tell()` with an explicit reply message —
 it is non-blocking and never has this problem. Reserve `call()` for calls from
 outside the actor system (main thread, test code, request handlers).

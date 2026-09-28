@@ -388,6 +388,14 @@ if (is_valid) {
 - Thread-safe variant has mutex overhead
 - Non-thread-safe variant requires single caller
 
+**Sending to itself:** a handler that tells its own inline actor - directly,
+or through other inline actors that lead back to it - does not run the message
+nested inside the current handler. The message is handled right after the
+current handler returns, in send order, before the original `tell()` returns.
+A `call()` back into an inline actor that is mid-handler on the same thread
+throws `call_deadlock_error`. If a handler throws, the exception reaches the
+sender, and messages it had sent to itself are dropped as dead letters.
+
 **Best Practices:**
 ```cpp
 // ✓ GOOD: Use for quick, synchronous operations

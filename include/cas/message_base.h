@@ -96,9 +96,10 @@ private:
     framework_kind cas_framework_kind() const noexcept override { return framework_kind::shutdown; }
 };
 
-// System message sent when an actor's queue exceeds threshold
-// Allows system or monitoring actors to react to queue buildup
-struct queue_threshold_warning : public message_base {
+// Never sent by the framework (it was declared but never delivered). Queue
+// threshold breaches are reported through system::set_queue_threshold_handler().
+struct [[deprecated("never sent: use cas::system::set_queue_threshold_handler()")]]
+queue_threshold_warning : public message_base {
     std::string actor_name;
     size_t actor_instance_id = 0;
     size_t mailbox_size = 0;

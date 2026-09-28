@@ -128,6 +128,7 @@ if(BUILD_TESTS)
         tests/04_advanced/test_stateful_actor.cpp
         tests/04_advanced/test_fast_actor.cpp
         tests/04_advanced/test_inline_actor.cpp
+        tests/04_advanced/test_inline_reentrancy.cpp
         # Level 5: Ask pattern (RPC-style)
         tests/05_call/test_call_basic.cpp
         tests/05_call/test_call_timeout.cpp
@@ -159,6 +160,7 @@ if(BUILD_TESTS)
         tests/11_concurrency/test_on_start_contract.cpp
         tests/11_concurrency/test_scheduler.cpp
         tests/11_concurrency/test_shutdown_callbacks.cpp
+        tests/11_concurrency/test_metrics_and_naming.cpp
         # Level 13: Message pool correctness (see doc/140_message_pool.md)
         tests/13_message_pool/test_message_pool.cpp
         # Level 14: Actor mailbox (lock-free, adapted from CAF)

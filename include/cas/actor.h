@@ -10,6 +10,7 @@
 #include <iostream>
 #include <chrono>
 #include <set>
+#include <forward_list>
 #include <concepts>
 #include <type_traits>
 #include <tuple>
@@ -108,7 +109,17 @@ protected:
     };
 
 private:
-    std::string m_name;
+    // Name, readable from any thread (dead-letter reports, errors, logs).
+    // Every name the actor has had is kept in m_names for its lifetime, so a
+    // reference returned by name() stays valid across a rename. Written only
+    // by system::register_actor() (default name) and set_name() on the owning
+    // thread; readers load m_name (acquire).
+    std::atomic<const std::string*> m_name{nullptr};
+    std::forward_list<std::string> m_names;
+    void publish_name(std::string name);
+    // Internal: give an unnamed actor its default name (typename_id)
+    void assign_default_name();
+
     std::weak_ptr<actor> m_self_ref;  // Weak reference to self for creating actor_ref
 
     // Thread affinity - which thread processes this actor
@@ -159,15 +170,22 @@ private:
 
     // Active timer IDs for this actor (for lifecycle management)
     std::set<timer_id> m_active_timers;
+    // Prune finished one-shots from m_active_timers when it reaches this
+    // size, so actors scheduling many timeouts do not grow it forever
+    size_t m_timer_prune_at = 64;
+    void track_timer(timer_id id);
 
     // Queue metrics - track high water marks
     std::atomic<size_t> m_mailbox_high_water_mark{0};
     std::atomic<size_t> m_call_queue_high_water_mark{0};
+    std::atomic<size_t> m_total_high_water_mark{0};  // calls + others, sampled together
+    void update_high_water_marks(size_t mailbox_size, size_t total);
 
     // Queue threshold - warn if total queue exceeds this (0 = disabled)
     size_t m_queue_threshold = 0;
 
-    // Track if we've already warned about queue threshold to avoid spam
+    // Set when a breach has been reported; cleared once the queue is back to
+    // half the threshold, so each new breach is reported once (hysteresis).
     std::atomic<bool> m_threshold_warning_sent{false};
 
     // True while this actor's on_start() is executing. Used to reject call()
@@ -372,6 +390,11 @@ public:
     // Internal: set queue threshold (called by framework)
     void set_queue_threshold(size_t threshold);
 
+    // Internal: true for actors whose handlers run synchronously on the
+    // sender's thread (inline_actor). A call() to one never waits for a
+    // worker, so the worker-sharing deadlock check does not apply.
+    virtual bool runs_inline() const;
+
     // Get an actor_ref to this actor
     actor_ref self();
 
@@ -412,6 +435,7 @@ public:
     // Queue metrics - get high water marks
     size_t mailbox_high_water_mark() const;
     size_t call_queue_high_water_mark() const;
+    // Highest total (calls + ordinary messages) observed at an enqueue
     size_t total_high_water_mark() const;
 
     // Deprecated: renamed call_queue_high_water_mark().

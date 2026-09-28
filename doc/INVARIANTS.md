@@ -142,7 +142,14 @@ answerable while the actor is behind.
 `call_queue_high_water_mark()` and included in `total_high_water_mark()`, but after
 calls moved to a global queue nothing ever wrote it. It silently returned 0 while
 appearing to be a real measurement. A metric that lies is worse than one that is
-absent, because it is trusted.
+absent, because it is trusted. Later audit (issue 008): `dropped_to_invalid` had
+no writer, the queue-threshold warning fired once per actor lifetime rather than
+once per breach, `total_high_water_mark()` summed two unrelated maxima, and the
+`queue_threshold_warning` message type was never sent. All fixed; the message
+type is deprecated.
+
+**Tests:** `tests/11_concurrency/test_metrics_and_naming.cpp`,
+`tests/11_concurrency/test_queue_threshold.cpp`
 
 **Reviewer questions:**
 - If this diff makes a code path dead, does any metric, accessor, or config field

@@ -98,8 +98,8 @@ void run_client() {
 }
 ```
 
-Every relay calls `set_name("zeromq_relay")` in `on_start()`, so with two relays
-in one process the registry name refers to the last one started. Hold the
+The first relay started takes the registry name `"zeromq_relay"`; further
+relays keep their unique default names. With more than one relay, hold the
 `actor_ref` returned by `create()` instead of looking relays up by name.
 
 ## ZeroMQ Patterns
@@ -179,11 +179,12 @@ struct zeromq_route : public cas::message_base {
 // Configuration
 struct zeromq_config : public cas::message_base {
     int poll_interval_ms = 10;      // Poll timer period (see Performance)
-    int send_timeout_ms = 1000;
-    int recv_timeout_ms = 1000;     // Currently unused: receives are non-blocking
+    int send_timeout_ms = 1000;     // Send timeout; also the linger on close
+    int recv_timeout_ms = 1000;     // No effect: receives are non-blocking
     int max_message_size = 1048576; // 1MB
-    bool auto_reconnect = true;     // Currently unused
-    int reconnect_delay_ms = 1000;  // Currently unused
+    bool auto_reconnect = true;     // ZeroMQ reconnects dropped connections (false: never)
+    int reconnect_delay_ms = 1000;  // Delay before a reconnect attempt
+    int request_timeout_ms = 30000; // Forget an unanswered correlation id after this
 };
 
 // Status query/response
@@ -319,8 +320,8 @@ m_relay.tell(request);
 A request is tracked only if the `zeromq_send` came from inside an actor (valid
 `sender`) and `correlation_id != 0`. Sends from `main()` or with
 `correlation_id == 0` are not tracked; their replies go through the normal
-routes. Pending entries never expire: an entry whose reply never arrives stays
-until the relay closes its socket.
+routes. An entry whose reply has not arrived within `request_timeout_ms`
+(default 30 s) is forgotten; a late reply is then routed like any other message.
 
 ## Endpoints
 
@@ -351,10 +352,9 @@ relay.tell(bind);
 
 ### In-Process
 
-`inproc://` only works between sockets that share one ZeroMQ context, and each
-relay creates its own `zmq::context_t`. Two relays therefore cannot talk over
-`inproc://`; use `ipc://` or `tcp://` (e.g. `tcp://127.0.0.1:port`) even within
-one process - or, better, plain actor messages.
+All relays in a process share one ZeroMQ context, so two relays can talk over
+`inproc://` (useful in tests). Between actors in one process, plain actor
+messages are simpler and faster.
 
 ## Configuration
 
@@ -364,10 +364,10 @@ one process - or, better, plain actor messages.
 cas::msg::zeromq_config config;
 config.poll_interval_ms = 5;       // Fast polling for low latency
 config.send_timeout_ms = 500;      // Fail fast on send
-config.recv_timeout_ms = 500;      // Currently unused (receives are non-blocking)
 config.max_message_size = 10 * 1024 * 1024;  // 10MB max
-config.auto_reconnect = true;       // Currently unused
-config.reconnect_delay_ms = 100;    // Currently unused
+config.auto_reconnect = true;       // Reconnect dropped connections...
+config.reconnect_delay_ms = 100;    // ...after 100 ms
+config.request_timeout_ms = 5000;   // Forget unanswered correlation ids after 5 s
 
 relay.tell(config);
 
@@ -488,10 +488,11 @@ int main() {
 
 ## Error Handling
 
-`zeromq_error` is sent only to registered route targets (and the default
-route). Errors raised before any route exists - such as a bind or connect
-failure - are lost, so add a route before sending `zeromq_bind` /
-`zeromq_connect`.
+`zeromq_error` is sent to every route target (and the default route), and to
+the sender of the control message that failed - so an actor that sends
+`zeromq_bind` / `zeromq_connect` / `zeromq_send` from a handler hears about its
+own failures even before any route exists. (Messages sent from outside an
+actor have no sender; their errors reach only the routes.)
 
 ```cpp
 // Register error handler
@@ -538,14 +539,13 @@ ZeroMQ support is controlled by `CAS_ENABLE_ZEROMQ` compile definition:
 
 ## Performance Considerations
 
-The relay reads its socket in `poll()`, which receives at most one ZeroMQ
-(multipart) message each time the relay processes an actor message. The relay
-is woken by its periodic poll timer (`poll_interval_ms`, default 10 ms) or by
-other messages sent to it. So:
+The relay reads its socket each time it processes an actor message, draining
+up to 256 waiting ZeroMQ messages at a time. It is woken by its periodic poll
+timer (`poll_interval_ms`, default 10 ms) or by other messages sent to it. So:
 
 - **Inbound latency** is up to `poll_interval_ms`, not microseconds.
-- **Inbound throughput** is bounded: when the relay is otherwise idle, roughly
-  one message per tick (~100 msg/s at the default 10 ms).
+- **Inbound throughput** is not limited by the tick: bursts are drained (up to
+  256 messages per wake-up, then the relay's own queue gets a turn).
 
 Outbound sends go to the socket as soon as the relay processes the `zeromq_send`.
 

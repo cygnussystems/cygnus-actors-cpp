@@ -4,6 +4,10 @@
 #include "actor.h"
 #include <mutex>
 #include <variant>
+#include <deque>
+#include <thread>
+#include <atomic>
+#include "call_message.h"
 
 namespace cas {
 
@@ -18,17 +22,49 @@ private:
     // Mutex only instantiated when ThreadSafe=true
     typename std::conditional<ThreadSafe, std::mutex, std::monostate>::type m_handler_mutex;
 
+    // Thread currently running one of this actor's handlers (default id when
+    // none). A send from that same thread - the handler telling itself, or a
+    // chain of inline actors leading back here - must not dispatch nested
+    // (the mutex is not recursive, and handlers never nest), so it is queued
+    // in m_deferred and handled once the current handler returns.
+    std::atomic<std::thread::id> m_dispatching_thread{};
+
+    // Touched only by the thread in m_dispatching_thread
+    std::deque<std::unique_ptr<message_base>> m_deferred;
+
 public:
     inline_actor() = default;
     virtual ~inline_actor() = default;
 
+    bool runs_inline() const override {
+        return true;
+    }
+
     // Override to process messages synchronously in caller's thread
     void enqueue_message(std::unique_ptr<message_base> msg) override {
+        if (is_reentrant()) {
+            // Accepted like a queued message: handled after the current
+            // handler, even if that handler started a stop (as a pooled actor
+            // drains). Rejected once the actor is no longer running.
+            if (get_state() != actor_state::running) {
+                report_rejected(msg.get(), false);
+                return;
+            }
+            m_deferred.push_back(std::move(msg));
+            return;
+        }
         dispatch_inline(std::move(msg), false);
     }
 
     // No queueing - the call is processed before this returns
     void enqueue_call_message(std::unique_ptr<message_base> msg) override {
+        if (is_reentrant()) {
+            // The caller blocks until the call is handled, but it can only be
+            // handled after the handler the caller is running in returns.
+            throw call_deadlock_error(
+                "call() would deadlock: inline actor '" + name() +
+                "' is already handling a message on this thread.");
+        }
         dispatch_inline(std::move(msg), true);
     }
 
@@ -54,6 +90,10 @@ public:
     }
 
 private:
+    bool is_reentrant() const {
+        return m_dispatching_thread.load(std::memory_order_relaxed) == std::this_thread::get_id();
+    }
+
     void dispatch_inline(std::unique_ptr<message_base> msg, bool was_call) {
         // Checked before locking so a handler or hook that sends to this
         // actor while it is stopping is dropped rather than self-deadlocking
@@ -70,17 +110,41 @@ private:
                 report_rejected(msg.get(), was_call);
                 return;
             }
-            run_handler(msg.get());
+            run_turn(msg.get());
         } else {
-            run_handler(msg.get());
+            run_turn(msg.get());
         }
     }
 
-    void run_handler(message_base* msg) {
-        actor* prev_context = current_actor_context;
-        current_actor_context = this;
+    // Handles msg, then whatever its handler (transitively) sent back to this
+    // actor on this thread, in send order.
+    void run_turn(message_base* msg) {
+        struct turn_scope {
+            inline_actor& self;
+            actor* prev_context = current_actor_context;
+
+            explicit turn_scope(inline_actor& a) : self(a) {
+                current_actor_context = &self;
+                self.m_dispatching_thread.store(std::this_thread::get_id(), std::memory_order_relaxed);
+            }
+            ~turn_scope() {
+                // Also on a handler exception (which propagates to the sender):
+                // messages deferred behind it are never handled.
+                for (auto& m : self.m_deferred) {
+                    self.report_rejected(m.get(), false);
+                }
+                self.m_deferred.clear();
+                self.m_dispatching_thread.store(std::thread::id{}, std::memory_order_relaxed);
+                current_actor_context = prev_context;
+            }
+        } scope(*this);
+
         dispatch_message(msg);
-        current_actor_context = prev_context;
+        while (!m_deferred.empty()) {
+            std::unique_ptr<message_base> next = std::move(m_deferred.front());
+            m_deferred.pop_front();
+            dispatch_message(next.get());
+        }
     }
 };
 

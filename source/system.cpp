@@ -370,6 +370,10 @@ void system::register_actor(std::shared_ptr<actor> actor_ptr) {
     // Assign unique instance ID (do this FIRST, before any virtual calls)
     actor_ptr->m_instance_id = inst.m_next_instance_id.fetch_add(1);
 
+    // Default name now, before the actor is shared: name() is read from
+    // other threads and must never be written lazily (issue 009)
+    actor_ptr->assign_default_name();
+
     // Set the actor's self reference
     actor_ptr->set_self_ref(actor_ptr);
 
@@ -649,6 +653,8 @@ timer_id system::schedule_timer(actor* target, std::unique_ptr<message_base> msg
 
     auto callback = [weak_target](timer_id, std::unique_ptr<message_base> fired_msg) {
         if (auto alive = weak_target.lock()) {
+            // Each firing is a new message; timer messages have no sender
+            fired_msg->message_id = next_message_id();
             alive->enqueue_message(std::move(fired_msg));
         }
         // else: the actor was destroyed between the callback being extracted
@@ -669,6 +675,10 @@ timer_id system::schedule_timer(actor* target, std::unique_ptr<message_base> msg
 void system::cancel_timer_internal(timer_id id) {
     auto& inst = instance();
     inst.m_timer_manager.cancel(id);
+}
+
+void system::forget_finished_timers(std::set<timer_id>& ids) {
+    instance().m_timer_manager.retain_active(ids);
 }
 
 void system::cancel_actor_timers(actor* target) {
@@ -959,6 +969,41 @@ void system::reap_stopped_fast_actors() {
     }
 }
 
+void system::check_call_allowed(actor* target) {
+    actor* current = current_actor_context;
+
+    // call() during on_start() would block waiting for a reply from a system
+    // that is not necessarily processing messages yet - at startup no worker
+    // thread has been launched. Reject it rather than hang.
+    if (current && current->is_initialising()) {
+        throw on_start_violation(
+            "call() is not permitted from on_start(): actor '" + current->name() +
+            "' is still initialising and no worker is guaranteed to service the "
+            "request. Use tell() and handle the reply in a message handler.");
+    }
+    if (current == target && current) {
+        throw call_deadlock_error(
+            "call() would deadlock: actor '" + target->name() +
+            "' cannot call itself. Call the method directly instead.");
+    }
+    // An inline actor handles the call on this thread before call() returns.
+    // (Re-entering one that is already handling a message on this thread is
+    // refused by inline_actor itself.)
+    if (target->runs_inline()) {
+        return;
+    }
+    // Blocking the only thread that executes the target means the request is
+    // never serviced. Decided by thread, not by the calling actor: an inline
+    // actor's handler runs on its sender's thread, whatever its affinity.
+    if (is_executor_of(target)) {
+        throw call_deadlock_error(
+            "call() would deadlock: target actor '" + target->name() +
+            "' shares a worker thread with the caller" +
+            (current ? " '" + current->name() + "'" : std::string()) +
+            ". Use tell() with an explicit reply message instead.");
+    }
+}
+
 bool system::is_executor_of(actor* target) {
     // Self-stop from a handler (also covers an inline actor stopping itself)
     if (current_actor_context == target) {
@@ -1132,6 +1177,26 @@ void system::clear_dead_letter_handler() {
 
     std::lock_guard<std::mutex> lock(inst.m_dead_letter_handler_mutex);
     inst.m_dead_letter_handler.reset();
+}
+
+void system::report_invalid_target(std::type_index message_type) {
+    auto& inst = instance();
+    inst.m_dead_letter_invalid.fetch_add(1, std::memory_order_relaxed);
+
+    if (inst.m_config.log_dead_letters) {
+        std::cerr << "[DEAD LETTER] " << message_type.name()
+                  << " sent to an invalid actor_ref\n";
+    }
+
+    std::shared_ptr<dead_letter_handler> handler;
+    {
+        std::lock_guard<std::mutex> lock(inst.m_dead_letter_handler_mutex);
+        handler = inst.m_dead_letter_handler;
+    }
+    if (handler && *handler) {
+        dead_letter_info info(std::string(), message_type, 0, actor_state::stopped);
+        (*handler)(info);
+    }
 }
 
 void system::report_dead_letter(const std::string& actor_name,

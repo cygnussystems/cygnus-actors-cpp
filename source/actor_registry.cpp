@@ -26,8 +26,11 @@ void actor_registry::unregister_actor(const std::string& name, const actor* expe
     auto& inst = instance();
     std::lock_guard<std::mutex> lock(inst.m_mutex);
     auto it = inst.m_actors.find(name);
-    if (it != inst.m_actors.end() && it->second.get() == expected) {
-        inst.m_actors.erase(it);
+    if (it != inst.m_actors.end()) {
+        auto current = it->second.lock();
+        if (!current || current.get() == expected) {
+            inst.m_actors.erase(it);
+        }
     }
 }
 
@@ -37,7 +40,10 @@ actor_ref actor_registry::get(const std::string& name) {
 
     auto it = inst.m_actors.find(name);
     if (it != inst.m_actors.end()) {
-        return actor_ref(it->second);
+        if (auto actor_ptr = it->second.lock()) {
+            return actor_ref(actor_ptr);
+        }
+        inst.m_actors.erase(it);  // the actor is gone
     }
 
     // Return empty actor_ref if not found
@@ -47,7 +53,8 @@ actor_ref actor_registry::get(const std::string& name) {
 bool actor_registry::exists(const std::string& name) {
     auto& inst = instance();
     std::lock_guard<std::mutex> lock(inst.m_mutex);
-    return inst.m_actors.find(name) != inst.m_actors.end();
+    auto it = inst.m_actors.find(name);
+    return it != inst.m_actors.end() && !it->second.expired();
 }
 
 void actor_registry::clear() {
@@ -59,6 +66,7 @@ void actor_registry::clear() {
 size_t actor_registry::count() {
     auto& inst = instance();
     std::lock_guard<std::mutex> lock(inst.m_mutex);
+    std::erase_if(inst.m_actors, [](const auto& entry) { return entry.second.expired(); });
     return inst.m_actors.size();
 }
 

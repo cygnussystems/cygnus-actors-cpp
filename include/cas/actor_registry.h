@@ -16,8 +16,9 @@ class actor_ref;
 // Allows actors to discover each other without hard references
 class actor_registry {
 private:
-    // Map from actor name to actor
-    std::unordered_map<std::string, std::shared_ptr<actor>> m_actors;
+    // Map from actor name to actor. Weak: the registry never keeps an actor
+    // alive; an entry whose actor is gone reads as absent.
+    std::unordered_map<std::string, std::weak_ptr<actor>> m_actors;
     mutable std::mutex m_mutex;
 
     // Singleton instance

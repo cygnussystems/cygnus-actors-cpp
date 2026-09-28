@@ -124,6 +124,11 @@ size_t timer_manager::active_count() const {
     return m_timer_lookup.size();
 }
 
+void timer_manager::retain_active(std::set<timer_id>& ids) const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    std::erase_if(ids, [this](timer_id id) { return m_callbacks.find(id) == m_callbacks.end(); });
+}
+
 void timer_manager::timer_thread_func(std::stop_token stop) {
     std::unique_lock<std::mutex> lock(m_mutex);
 

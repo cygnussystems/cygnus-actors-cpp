@@ -16,7 +16,10 @@ namespace cas {
 
 template<typename MessageType>
 void actor_ref::tell(const MessageType& msg) const {
-    if (!m_actor_ptr) return;
+    if (!m_actor_ptr) {
+        system::report_invalid_target(typeid(MessageType));
+        return;
+    }
 
     // Clone message from stack and enqueue
     auto msg_copy = std::make_unique<MessageType>(msg);
@@ -54,42 +57,13 @@ const actor_ref& actor_ref::operator<<(const MessageType& msg) const {
     return *this;
 }
 
-// Throws if the calling actor shares a worker thread with the target, since
-// blocking here would prevent that thread from ever servicing the request.
-// Non-actor callers (main, test threads) are never affected.
-inline void detail_check_call_deadlock(actor* target) {
-    actor* current = actor::get_current_actor();
-
-    // call() during on_start() would block waiting for a reply from a system
-    // that is not necessarily processing messages yet - at startup no worker
-    // thread has been launched. Reject it rather than hang.
-    if (current && current->is_initialising()) {
-        throw on_start_violation(
-            "call() is not permitted from on_start(): actor '" + current->name() +
-            "' is still initialising and no worker is guaranteed to service the "
-            "request. Use tell() and handle the reply in a message handler.");
-    }
-    if (current && current != target &&
-        current->get_thread_affinity() == target->get_thread_affinity()) {
-        throw call_deadlock_error(
-            "call() would deadlock: target actor '" + target->name() +
-            "' shares a worker thread with the calling actor '" + current->name() +
-            "'. Use tell() with an explicit reply message instead.");
-    }
-    if (current == target) {
-        throw call_deadlock_error(
-            "call() would deadlock: actor '" + target->name() +
-            "' cannot call itself. Call the method directly instead.");
-    }
-}
-
 template<typename ReturnType, typename OpTag, typename... Args>
 ReturnType actor_ref::call(OpTag op, Args&&... args) {
     if (!m_actor_ptr) {
         throw std::runtime_error("Cannot call on invalid actor_ref");
     }
 
-    detail_check_call_deadlock(m_actor_ptr.get());
+    system::check_call_allowed(m_actor_ptr.get());
 
     // Create call request with promise/future
     auto request = std::make_unique<call_request<ReturnType, OpTag, std::decay_t<Args>...>>(
@@ -118,12 +92,13 @@ ReturnType actor_ref::call(OpTag op, Args&&... args) {
 template<typename ReturnType, typename OpTag, typename... Args>
 std::optional<ReturnType> actor_ref::call(OpTag op, std::chrono::milliseconds timeout, Args&&... args) {
     if (!m_actor_ptr) {
+        system::report_invalid_target(typeid(call_request<ReturnType, OpTag, std::decay_t<Args>...>));
         return std::nullopt;
     }
 
     // Throws rather than returning nullopt: a guaranteed deadlock is a
     // programming error, not a timeout, and must not be silently swallowed.
-    detail_check_call_deadlock(m_actor_ptr.get());
+    system::check_call_allowed(m_actor_ptr.get());
 
     // Create call request with promise/future
     auto request = std::make_unique<call_request<ReturnType, OpTag, std::decay_t<Args>...>>(

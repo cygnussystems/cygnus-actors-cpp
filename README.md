@@ -264,7 +264,6 @@ void on_order(const order& msg) {
 The framework sends these automatically:
 - `cas::system_shutdown` - Sent to all actors during shutdown
 - `cas::termination_msg` - Sent to watchers when a watched actor stops
-- `cas::queue_threshold_warning` - Sent when an actor's queue exceeds threshold
 
 ## Actors
 
@@ -680,7 +679,8 @@ it gets an answer even from an actor that is behind (see
 
 **Warning**: `call()` blocks the calling thread. From inside an actor's handler
 that stalls every actor on the same worker until the reply arrives, and calling
-an actor that shares your worker throws `call_deadlock_error`. Between actors,
+an actor that only your thread runs (one on your own worker) throws
+`call_deadlock_error`. Between actors,
 prefer `tell()` with a reply message.
 
 `call()` was named `ask()` in 1.0; the old names still compile, with a

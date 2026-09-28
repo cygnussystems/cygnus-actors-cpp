@@ -7,6 +7,7 @@
 #include "cas/actor_ref_impl.h"
 #include <iostream>
 #include <typeinfo>
+#include <algorithm>
 #include <cstdlib>
 
 // Platform-specific demangling
@@ -33,12 +34,24 @@ bool actor::is_initialising() const {
 }
 
 const std::string& actor::name() const {
-    // If no custom name set, generate default: typename_id
-    if (m_name.empty()) {
-        // Cache the auto-generated name
-        const_cast<actor*>(this)->m_name = type_name() + "_" + std::to_string(m_instance_id);
+    if (const std::string* n = m_name.load(std::memory_order_acquire)) {
+        return *n;
     }
-    return m_name;
+    // Only reachable before system::register_actor() - the actor is not
+    // shared with any other thread yet, so writing here cannot race.
+    const_cast<actor*>(this)->assign_default_name();
+    return *m_name.load(std::memory_order_acquire);
+}
+
+void actor::publish_name(std::string name) {
+    m_names.push_front(std::move(name));
+    m_name.store(&m_names.front(), std::memory_order_release);
+}
+
+void actor::assign_default_name() {
+    if (m_name.load(std::memory_order_relaxed) == nullptr) {
+        publish_name(type_name() + "_" + std::to_string(m_instance_id));
+    }
 }
 
 size_t actor::instance_id() const {
@@ -87,15 +100,24 @@ size_t actor::get_thread_affinity() const {
     return m_assigned_thread_id;
 }
 
+bool actor::runs_inline() const {
+    return false;
+}
+
 void actor::set_queue_threshold(size_t threshold) {
     m_queue_threshold = threshold;
 }
 
 void actor::set_name(const std::string& name) {
-    m_name = name;
+    const std::string* previous = m_name.load(std::memory_order_relaxed);
+    publish_name(name);
 
-    // Register with actor registry for name-based lookup
+    // Register with actor registry for name-based lookup. A rename releases
+    // the old name, unless another actor has taken it since.
     if (auto shared = m_self_ref.lock()) {
+        if (previous && *previous != name) {
+            actor_registry::unregister_actor(*previous, this);
+        }
         actor_registry::register_actor(name, shared);
     }
 }
@@ -110,6 +132,23 @@ actor_ref actor::self() {
 
 system* actor::get_system() {
     return system::get_instance();
+}
+
+namespace {
+
+// Raise an atomic maximum; loses only to a concurrent higher value
+void raise_to(std::atomic<size_t>& hwm, size_t value) {
+    size_t current = hwm.load(std::memory_order_relaxed);
+    while (value > current &&
+           !hwm.compare_exchange_weak(current, value, std::memory_order_relaxed)) {
+    }
+}
+
+} // namespace
+
+void actor::update_high_water_marks(size_t mailbox_size, size_t total) {
+    raise_to(m_mailbox_high_water_mark, mailbox_size);
+    raise_to(m_total_high_water_mark, total);
 }
 
 void actor::enqueue_message(std::unique_ptr<message_base> msg) {
@@ -129,31 +168,28 @@ void actor::enqueue_message(std::unique_ptr<message_base> msg) {
         return;
     }
 
-    // Approximate size for metrics and threshold checking
-    size_t mailbox_size = m_mailbox.other_size();
+    // Approximate sizes for metrics and threshold checking
+    const size_t mailbox_size = m_mailbox.other_size();
+    const size_t total = mailbox_size + m_mailbox.call_size();
+    update_high_water_marks(mailbox_size, total);
 
-    // Update high water mark
-    size_t current_hwm = m_mailbox_high_water_mark.load();
-    while (mailbox_size > current_hwm &&
-           !m_mailbox_high_water_mark.compare_exchange_weak(current_hwm, mailbox_size)) {
-        // Loop until we successfully update or find that someone else updated to a higher value
-    }
-
-    // Check threshold
-    if (m_queue_threshold > 0 && !m_threshold_warning_sent.load()) {
-        size_t total = m_mailbox.size();
-
-        if (total > m_queue_threshold) {
-            // Report once per threshold breach
-            bool expected = false;
-            if (m_threshold_warning_sent.compare_exchange_strong(expected, true)) {
+    // Check threshold: report once per breach, re-armed once the queue is
+    // back down to half the threshold.
+    if (m_queue_threshold > 0) {
+        if (!m_threshold_warning_sent.load(std::memory_order_relaxed)) {
+            if (total > m_queue_threshold) {
+                bool expected = false;
+                if (m_threshold_warning_sent.compare_exchange_strong(expected, true)) {
 #ifdef CAS_DEBUG_LOGGING
-                std::cout << "[QUEUE WARNING] Actor " << name() << " exceeded threshold: "
-                          << total << " > " << m_queue_threshold << "\n" << std::flush;
+                    std::cout << "[QUEUE WARNING] Actor " << name() << " exceeded threshold: "
+                              << total << " > " << m_queue_threshold << "\n" << std::flush;
 #endif
-                // Deliver to the user's handler (works in release builds).
-                system::report_queue_threshold(name(), total, m_queue_threshold);
+                    // Deliver to the user's handler (works in release builds).
+                    system::report_queue_threshold(name(), total, m_queue_threshold);
+                }
             }
+        } else if (total <= m_queue_threshold / 2) {
+            m_threshold_warning_sent.store(false, std::memory_order_relaxed);
         }
     }
 
@@ -184,13 +220,10 @@ void actor::enqueue_call_message(std::unique_ptr<message_base> msg) {
         return;  // destroying the request breaks its promise; the caller is not left hanging
     }
 
-    // Update the high water mark of queued calls
-    size_t call_size = m_mailbox.call_size();
-    size_t current_hwm = m_call_queue_high_water_mark.load();
-    while (call_size > current_hwm &&
-           !m_call_queue_high_water_mark.compare_exchange_weak(current_hwm, call_size)) {
-        // Loop until we successfully update or find that someone else updated higher
-    }
+    // Update the high water marks of queued calls and of the total
+    const size_t call_size = m_mailbox.call_size();
+    raise_to(m_call_queue_high_water_mark, call_size);
+    raise_to(m_total_high_water_mark, call_size + m_mailbox.other_size());
 
     // The caller is blocked on the request's future: make sure the actor runs.
     if (pushed == detail::push_result::unblocked) {
@@ -238,12 +271,12 @@ void actor::dispatch_message(message_base* msg) {
 #endif
 
 #ifdef CAS_DEBUG_LOGGING
-    std::cout << "[DISPATCH:" << m_name << "] Dispatching message, typeid: " << typeid(*msg).name() << "\n" << std::flush;
+    std::cout << "[DISPATCH:" << name() << "] Dispatching message, typeid: " << typeid(*msg).name() << "\n" << std::flush;
 
     // Debug: print all registered handlers
-    std::cout << "[DISPATCH:" << m_name << "] Registered handlers count: " << m_handlers.size() << "\n" << std::flush;
+    std::cout << "[DISPATCH:" << name() << "] Registered handlers count: " << m_handlers.size() << "\n" << std::flush;
     for (const auto& [type_idx, handler] : m_handlers) {
-        std::cout << "[DISPATCH:" << m_name << "]   - " << type_idx.name() << "\n" << std::flush;
+        std::cout << "[DISPATCH:" << name() << "]   - " << type_idx.name() << "\n" << std::flush;
     }
 #endif
 
@@ -279,16 +312,16 @@ void actor::dispatch_message(message_base* msg) {
     if (it != m_handlers.end()) {
         // Found handler - call it
 #ifdef CAS_DEBUG_LOGGING
-        std::cout << "[DISPATCH:" << m_name << "] Handler found, calling...\n" << std::flush;
+        std::cout << "[DISPATCH:" << name() << "] Handler found, calling...\n" << std::flush;
 #endif
         it->second(msg);
 #ifdef CAS_DEBUG_LOGGING
-        std::cout << "[DISPATCH:" << m_name << "] Handler completed\n" << std::flush;
+        std::cout << "[DISPATCH:" << name() << "] Handler completed\n" << std::flush;
 #endif
     } else {
         // No handler registered for this message type
 #ifdef CAS_DEBUG_LOGGING
-        std::cout << "[DISPATCH:" << m_name << "] No handler found!\n" << std::flush;
+        std::cout << "[DISPATCH:" << name() << "] No handler found!\n" << std::flush;
 #endif
         on_unhandled_message(msg);
     }
@@ -366,7 +399,19 @@ size_t actor::ask_queue_high_water_mark() const {
 }
 
 size_t actor::total_high_water_mark() const {
-    return m_mailbox_high_water_mark.load() + m_call_queue_high_water_mark.load();
+    return m_total_high_water_mark.load();
+}
+
+void actor::track_timer(timer_id id) {
+    if (id == INVALID_TIMER_ID) {
+        return;  // not scheduled: the actor is stopping
+    }
+    if (m_active_timers.size() >= m_timer_prune_at) {
+        system::forget_finished_timers(m_active_timers);
+        // Amortised: the next prune comes after as many insertions again
+        m_timer_prune_at = std::max<size_t>(64, 2 * m_active_timers.size());
+    }
+    m_active_timers.insert(id);
 }
 
 void actor::cancel_timer(timer_id id) {

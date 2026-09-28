@@ -12,6 +12,7 @@
 #include <condition_variable>
 #include <functional>
 #include <typeindex>
+#include <set>
 #include "timer.h"
 #include "timer_manager.h"
 #include "external/concurrentqueue.h"
@@ -38,7 +39,7 @@ enum class actor_state;
 struct dead_letter_stats {
     size_t dropped_tell = 0;       // Fire-and-forget messages dropped
     size_t dropped_ask = 0;        // call() requests dropped (no response sent); 1.0 name kept
-    size_t dropped_to_invalid = 0; // Messages to null/invalid actor refs
+    size_t dropped_to_invalid = 0; // tell()/call(timeout) on an invalid actor_ref
 };
 
 // Information about a dead letter (passed to callback handler)
@@ -318,6 +319,15 @@ public:
     // Internal: Cancel all timers for an actor (called on actor stop)
     static void cancel_actor_timers(actor* target);
 
+    // Internal: drop finished and cancelled timers from an actor's set
+    static void forget_finished_timers(std::set<timer_id>& ids);
+
+    // Internal: throw if a call() from this thread to target can never be
+    // answered - from on_start() (on_start_violation), to itself, or to an
+    // actor that only this thread executes (call_deadlock_error). Called by
+    // actor_ref::call before blocking.
+    static void check_call_allowed(actor* target);
+
     // Internal: wake the worker thread owning this actor (called by enqueue_message)
     static void notify_worker(size_t thread_id);
 
@@ -400,6 +410,11 @@ public:
                                    const message_base* msg,
                                    actor_state state,
                                    bool was_call);
+
+    // Internal: a tell() or call(timeout) on an invalid actor_ref. Counted in
+    // dead_letter_stats::dropped_to_invalid; the dead-letter handler sees an
+    // empty target name, message_id 0 and state stopped.
+    static void report_invalid_target(std::type_index message_type);
 };
 
 // Template implementations (must be in header)
