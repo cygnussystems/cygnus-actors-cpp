@@ -308,7 +308,7 @@ int main() {
 
 ### Message Delivery
 - **Asynchronous** - `tell()` returns immediately
-- **FIFO** - Messages processed in send order
+- **In order per sender** - Messages from one actor (or thread) are handled in the order sent
 - **No blocking** - Sender never waits for receiver
 
 ## Common Patterns

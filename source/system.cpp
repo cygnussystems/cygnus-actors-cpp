@@ -765,6 +765,17 @@ bool system::service_stop(actor* target) {
     // on_shutdown() may have scheduled timers; the actor is gone, cancel them.
     cancel_actor_timers(target);
 
+    // Close the mailbox. From here a push fails atomically instead of landing
+    // in a mailbox nobody will read: before, a tell() that passed the running
+    // check just as the stop completed was silently lost. Anything still queued
+    // - left over after a drain timeout, or pushed during the stop - is a dead
+    // letter. (A pending system_shutdown is control traffic, not a message.)
+    target->m_mailbox.close([target](message_base& msg, bool is_ask) {
+        if (msg.cas_framework_kind() != message_base::framework_kind::shutdown) {
+            report_dead_letter(target->name(), &msg, actor_state::stopping, is_ask);
+        }
+    });
+
     // Unregister BEFORE notifying watchers: a supervisor typically reacts to
     // termination_msg by creating a replacement under the same name, and
     // that registration must not be removed by this one. The conditional

@@ -184,9 +184,9 @@ budget, the options are:
 2. **Refcounted payload handle** — the message carries a `shared_ptr` to the bulk
    data. The message itself stays small and pooled; the payload is allocated once
    and shared rather than copied per send.
-3. **Split into multiple messages** — but note there is **no ordering guarantee
-   between messages** (see [40_message_passing.md](40_message_passing.md)), so the
-   receiver must handle out-of-order arrival explicitly.
+3. **Split into multiple messages** — parts sent by one sender arrive in order
+   (see [40_message_passing.md](40_message_passing.md)), but parts from different
+   senders can interleave.
 
 Option 2 is usually the right answer for bulk market data.
 

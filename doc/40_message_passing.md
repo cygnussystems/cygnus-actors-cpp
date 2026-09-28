@@ -487,13 +487,12 @@ Messages are delivered **at most once** - they may be lost if:
 actor.tell(msg);  // May be dropped if actor stopped
 ```
 
-### Delivery, Not Ordering
+### Delivery and Ordering
 
 Every message sent to a live actor is delivered **exactly once** — nothing is
 lost, nothing is duplicated.
 
-**There is no ordering guarantee between separate messages**, not even from a
-single sender:
+**Messages from one sender are handled in the order they were sent:**
 
 ```cpp
 // In actor A
@@ -501,40 +500,21 @@ target.tell(msg1);
 target.tell(msg2);
 target.tell(msg3);
 
-// Actor B receives all three, in an UNSPECIFIED order.
-// Do not write code that depends on msg1 arriving before msg2.
+// Actor B handles msg1, then msg2, then msg3.
 ```
 
-The mailbox is a `moodycamel::ConcurrentQueue` enqueued without a `ProducerToken`,
-which does not promise FIFO order across producers.
+Precisely: if sending A happens-before sending B, and both go to the same actor,
+A is handled before B. That covers messages sent by one actor, and messages sent
+from one thread (including `main()`). `ask()` calls are part of the same order:
+an ask is never handled before messages its sender sent earlier.
 
-**If your logic is ordering-sensitive**, use one of:
+What is **not** ordered is messages from *different* senders — see below. If
+two senders' messages must be processed in a particular order, have one of them
+forward through the other, or carry a sequence number and reorder on receipt.
 
-1. **Combine into one message.** If three facts must be processed together and in
-   order, they belong in one message, not three. This is the preferred fix — it is
-   better design regardless of what the queue guarantees.
-
-   ```cpp
-   struct batch_update : public cas::message_base {
-       std::vector<item> items;  // ordered within the message
-   };
-   ```
-
-2. **Carry an explicit sequence number** and reorder on the receiving side.
-
-   ```cpp
-   struct seq_update : public cas::message_base {
-       uint64_t sequence;
-       // receiver buffers out-of-order arrivals
-   };
-   ```
-
-3. **Use `ask()`** when you need a strict request/response handshake — it blocks
-   the caller until the handler has run, which imposes ordering by construction.
-
-> This section previously claimed delivery was in "guaranteed order". That was
-> incorrect and did not match the implementation. See `doc/INVARIANTS.md`
-> (INVARIANT 3) for what would have to change to make a real ordering guarantee.
+> Earlier versions documented no ordering at all (and, before that, claimed an
+> ordering the implementation did not provide). The guarantee is now enforced by
+> the mailbox — see `doc/INVARIANTS.md` (INVARIANT 3).
 
 ### No Global Ordering
 

@@ -68,24 +68,38 @@ and self-deadlocks.
 
 ---
 
-## INVARIANT 3 — Ordering guarantees are stated accurately
+## INVARIANT 3 — Messages from one sender are handled in send order
 
-> The documentation promises exactly what the mailbox delivers, and no more.
+> If sending A happens-before sending B, and both go to the same actor, A is
+> handled before B. Messages from one actor, or from one thread, are therefore
+> handled in the order they were sent — asks included. Every message sent to a
+> live actor is handled exactly once.
 
-The mailbox is `moodycamel::ConcurrentQueue` enqueued **without** a `ProducerToken`.
-That does not provide FIFO ordering across producers. What *is* guaranteed is
-exactly-once delivery: no message is lost or duplicated.
+There is **no** ordering between different senders; that would need a global
+lock. `stateful_actor`'s selective receive reorders by design.
+
+**Enforced by:** `cas::detail::mailbox` (`include/cas/detail/mailbox.h`,
+adapted from CAF). Producers push onto one intrusive lock-free stack; every push
+is a CAS on a single atomic word, so pushes are totally ordered, and a push that
+happens-before another precedes it in that order. The single consumer takes the
+whole stack and reverses it, delivering in push order. Asks share the mailbox
+with no priority, so an ask never overtakes messages its sender sent earlier.
 
 **Reviewer questions:**
-- Does this diff change the mailbox type or enqueue path? If so, does
-  `doc/40_message_passing.md` still describe what the code actually does?
-- Does any new documentation use the word "guaranteed" about ordering?
+- Does this diff add a second queue, a priority class, or any path that
+  delivers a message other than through `m_mailbox.pop()` in push order?
+- Does it let an actor be consumed by more than one thread (which would
+  reorder, as well as break INVARIANT 1)?
+- Does new documentation promise ordering *between* senders?
 
-**If you want real FIFO:** switch the mailbox to an MPSC queue. Each actor has
-exactly one consumer, so MPMC is over-general — an MPSC queue would be both faster
-and ordered. Until that happens, the docs must not promise ordering.
+**History:** early documentation promised FIFO, but the mailbox was a
+`moodycamel::ConcurrentQueue` used without producer tokens and nothing enforced
+or tested order; the docs were then corrected to "no guarantee". Asks lived in
+a separate priority queue, so an ask could overtake earlier `tell()`s from the
+same sender — a caller could read state that ignored its own earlier messages.
 
-**Test:** `tests/11_concurrency/test_message_ordering.cpp`
+**Tests:** `tests/11_concurrency/test_message_ordering.cpp`,
+`tests/14_mailbox/test_mailbox.cpp`
 
 ---
 

@@ -155,10 +155,10 @@ int main() {
 
 ## Message Delivery Guarantees
 
-- **At-most-once** - Messages may be lost if actor stops
-- **FIFO order** - Messages from A to B delivered in send order
-- **No global ordering** - Message interleaving between different senders
-- **Best-effort delivery** - Messages to stopped actors are dropped
+- **Exactly once to a live actor** - Nothing lost, nothing duplicated
+- **Send order per sender** - Messages from A to B are handled in the order A sent them (asks included)
+- **No global ordering** - Messages from different senders may interleave
+- **Dead letters** - Messages to stopped actors are dropped and counted (see dead-letter handling)
 
 ## Naming Conventions
 

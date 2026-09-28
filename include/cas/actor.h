@@ -15,7 +15,7 @@
 #include <tuple>
 #include <thread>
 #include "timer.h"
-#include "external/concurrentqueue.h"
+#include "detail/mailbox.h"
 
 // Uncomment to enable debug logging
 // #define CAS_DEBUG_LOGGING
@@ -114,16 +114,12 @@ private:
     // Lifecycle state - atomic so it can be checked without locking
     std::atomic<actor_state> m_state{actor_state::running};
 
-    // Two queues for different message priorities
-    // Regular mailbox: fire-and-forget messages (receive/push/enqueue)
-    // Lock-free MPMC queue - multiple threads can send, assigned thread reads
-    moodycamel::ConcurrentQueue<std::unique_ptr<message_base>> m_mailbox;
-
-    // Ask queue: priority request-response messages (ask)
-    // Processed before regular mailbox to provide RPC-like semantics.
-    // INVARIANT: drained only by process_next_message() on the owning thread,
-    // so ask handlers are serialised with regular handlers. See doc/INVARIANTS.md.
-    moodycamel::ConcurrentQueue<std::unique_ptr<message_base>> m_ask_queue;
+    // Mailbox: any thread pushes, only the owning thread consumes. Messages -
+    // asks included - are delivered in the order each sender sent them
+    // (INVARIANT 3).
+    // INVARIANT: consumed only by the thread executing this actor, so ask
+    // handlers are serialised with regular handlers. See doc/INVARIANTS.md.
+    detail::mailbox m_mailbox;
 
     // Message type -> handler function map
     std::unordered_map<std::type_index, std::function<void(message_base*)>> m_handlers;
@@ -364,11 +360,11 @@ public:
     // Internal: enqueue ask message (called by actor_ref::ask)
     virtual void enqueue_ask_message(std::unique_ptr<message_base> msg);
 
-    // Internal: process next message (checks ask queue first, then mailbox)
+    // Internal: process the next message, in delivery order
     // Runs on the actor's owning thread only - this is the actor's execution turn.
     virtual void process_next_message();
 
-    // Internal: check if actor has any messages (ask queue or mailbox)
+    // Internal: check if actor has any queued messages
     virtual bool has_messages();
 
     // Internal: advance a requested stop (see system::stop_actor()). Must be

@@ -19,6 +19,7 @@ set(SOURCES
     source/fast_actor.cpp
     source/timer_manager.cpp
     source/message_pool.cpp
+    source/mailbox.cpp
 )
 
 # ZeroMQ relay actor (optional)
@@ -74,6 +75,10 @@ if(BUILD_EXAMPLES)
     # Benchmark executable
     add_executable(benchmark benchmarks/throughput_benchmark.cpp)
     target_link_libraries(benchmark ${PROJECT_NAME})
+
+    # Latency benchmark (round-trip percentiles)
+    add_executable(latency_benchmark benchmarks/latency_benchmark.cpp)
+    target_link_libraries(latency_benchmark ${PROJECT_NAME})
 
     # Size check utility
     add_executable(size_check benchmarks/size_check.cpp)
@@ -149,6 +154,8 @@ if(BUILD_TESTS)
         tests/11_concurrency/test_on_start_contract.cpp
         # Level 13: Message pool correctness (see doc/140_message_pool.md)
         tests/13_message_pool/test_message_pool.cpp
+        # Level 14: Actor mailbox (lock-free, adapted from CAF)
+        tests/14_mailbox/test_mailbox.cpp
     )
 
     target_link_libraries(unit_tests

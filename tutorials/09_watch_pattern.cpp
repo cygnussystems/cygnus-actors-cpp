@@ -75,12 +75,18 @@ protected:
         //
         // A real supervisor would bound this - restarting unconditionally
         // turns a permanently failing actor into an infinite restart loop.
-        if (g_restarts.load() == 0) {
-            g_restarts.fetch_add(1);
+        if (!m_restarted) {
+            m_restarted = true;
             cas::system::create<fragile_worker>();
             std::cout << "  supervisor: restarted it\n";
+            // Counted only once the replacement exists, so main() never sees
+            // "restarted" while create() is still running.
+            g_restarts.fetch_add(1);
         }
     }
+
+private:
+    bool m_restarted = false;
 };
 
 } // namespace
@@ -121,7 +127,10 @@ bool run_watch_pattern() {
                     "termination_msg named the actor that stopped");
     }
 
-    ok &= check(g_restarts.load() == 1, "supervisor restarted the worker");
+    // The restart happens in the supervisor's handler, on its own thread, so
+    // wait for it rather than assuming it has already happened.
+    ok &= check(wait_until([] { return g_restarts.load() == 1; }),
+                "supervisor restarted the worker");
 
     // The restarted actor is a new one; the old reference stays stale.
     auto restarted = cas::actor_registry::get("fragile_worker");

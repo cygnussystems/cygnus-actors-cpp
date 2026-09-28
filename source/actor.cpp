@@ -121,11 +121,15 @@ void actor::enqueue_message(std::unique_ptr<message_base> msg) {
         return;  // Drop message
     }
 
-    // Lock-free enqueue
-    m_mailbox.enqueue(std::move(msg));
+    // Lock-free enqueue. Closed means the actor finished stopping after the
+    // state check above: the message was never queued, so it is a dead letter.
+    if (m_mailbox.push(msg) == detail::push_result::closed) {
+        system::report_dead_letter(name(), msg.get(), m_state.load(), false);
+        return;
+    }
 
-    // Get approximate size for metrics and threshold checking
-    size_t mailbox_size = m_mailbox.size_approx();
+    // Approximate size for metrics and threshold checking
+    size_t mailbox_size = m_mailbox.other_size();
 
     // Update high water mark
     size_t current_hwm = m_mailbox_high_water_mark.load();
@@ -136,8 +140,7 @@ void actor::enqueue_message(std::unique_ptr<message_base> msg) {
 
     // Check threshold
     if (m_queue_threshold > 0 && !m_threshold_warning_sent.load()) {
-        size_t ask_size = m_ask_queue.size_approx();
-        size_t total = mailbox_size + ask_size;
+        size_t total = m_mailbox.size();
 
         if (total > m_queue_threshold) {
             // Report once per threshold breach
@@ -166,13 +169,18 @@ void actor::enqueue_ask_message(std::unique_ptr<message_base> msg) {
         return;  // Drop message
     }
 
-    // Enqueue to this actor's own ask queue. Drained by process_next_message()
-    // on the owning thread, which serialises ask handlers with regular handlers
+    // Ask requests share the mailbox with every other message and are
+    // delivered in order with them (INVARIANT 3): an ask never overtakes
+    // messages its sender sent earlier. Consumed by process_next_message() on
+    // the owning thread, so ask handlers are serialised with regular handlers
     // (INVARIANT 1). The caller blocks on the request's future until then.
-    m_ask_queue.enqueue(std::move(msg));
+    if (m_mailbox.push(msg) == detail::push_result::closed) {
+        system::report_dead_letter(name(), msg.get(), m_state.load(), true);
+        return;  // destroying the request breaks its promise; the caller is not left hanging
+    }
 
     // Update ask queue high water mark
-    size_t ask_size = m_ask_queue.size_approx();
+    size_t ask_size = m_mailbox.ask_size();
     size_t current_hwm = m_ask_queue_high_water_mark.load();
     while (ask_size > current_hwm &&
            !m_ask_queue_high_water_mark.compare_exchange_weak(current_hwm, ask_size)) {
@@ -233,8 +241,11 @@ void actor::dispatch_message(message_base* msg) {
     }
 #endif
 
-    // Check for system shutdown message first
-    if (typeid(*msg) == typeid(system_shutdown)) {
+    // Framework messages first. Identified by a virtual call: typeid and
+    // dynamic_cast here cost more than the rest of dispatch put together.
+    const auto kind = msg->cas_framework_kind();
+
+    if (kind == message_base::framework_kind::shutdown) {
         // System shutdown owns this actor's on_shutdown() only if no
         // stop_actor() has claimed it. If one has, that stop runs the hooks
         // (on this thread) and the shutdown message is simply consumed -
@@ -248,10 +259,9 @@ void actor::dispatch_message(message_base* msg) {
         return;
     }
 
-    // Check for ask request (RPC-style call)
-    if (ask_request_base* ask_msg = dynamic_cast<ask_request_base*>(msg)) {
-        // Process ask request (calls handler and sets promise)
-        ask_msg->process(this);
+    // Ask request (RPC-style call): calls the ask handler and sets the promise
+    if (kind == message_base::framework_kind::ask_request) {
+        static_cast<ask_request_base*>(msg)->process(this);
         return;
     }
 
@@ -275,12 +285,10 @@ void actor::dispatch_message(message_base* msg) {
 }
 
 void actor::process_next_message() {
-    std::unique_ptr<message_base> msg;
-
-    // Ask queue first (RPC-like priority semantics), then the regular mailbox.
-    // Both are drained here, on the owning thread, so an ask handler can never
-    // run concurrently with a regular handler on the same actor (INVARIANT 1).
-    if (m_ask_queue.try_dequeue(msg) || m_mailbox.try_dequeue(msg)) {
+    // Delivery order is send order per sender (INVARIANT 3), asks included.
+    // Consumed only here, on the owning thread, so an ask handler never runs
+    // concurrently with a regular handler (INVARIANT 1).
+    if (std::unique_ptr<message_base> msg = m_mailbox.pop()) {
         // Got a message - dispatch it
         actor* prev_context = current_actor_context;
         current_actor_context = this;
@@ -290,14 +298,14 @@ void actor::process_next_message() {
 }
 
 bool actor::has_messages() {
-    // Note: size_approx() is approximate under concurrent producers. Adequate
-    // for polling and metrics; shutdown drain additionally bounds by timeout.
-    return m_ask_queue.size_approx() > 0 || m_mailbox.size_approx() > 0;
+    // Approximate under concurrent producers (see detail::mailbox::size()).
+    // Adequate for polling and metrics; shutdown drain also bounds by timeout.
+    return m_mailbox.size() > 0;
 }
 
 size_t actor::queue_size() const {
-    // Note: approximate - see has_messages().
-    return m_mailbox.size_approx() + m_ask_queue.size_approx();
+    // Approximate - see has_messages().
+    return m_mailbox.size();
 }
 
 actor_state actor::get_state() const {
@@ -323,17 +331,14 @@ bool actor::service_stop_request() {
 }
 
 void actor::discard_pending_messages() {
-    std::unique_ptr<message_base> msg;
-    while (m_ask_queue.try_dequeue(msg)) {
-        // Destroying the request breaks its promise: a blocked ask() caller
-        // gets std::future_error (broken_promise) rather than hanging.
-        report_rejected(msg.get(), true);
-    }
-    while (m_mailbox.try_dequeue(msg)) {
-        // A pending system_shutdown is framework control traffic, not a
-        // message anyone sent this actor - not a dead letter.
-        if (typeid(*msg) != typeid(system_shutdown)) {
-            report_rejected(msg.get(), false);
+    // Destroying an ask request breaks its promise: a blocked ask() caller gets
+    // std::future_error (broken_promise) rather than hanging. A pending
+    // system_shutdown is framework control traffic, not a message anyone sent
+    // this actor - not a dead letter.
+    while (std::unique_ptr<message_base> msg = m_mailbox.pop()) {
+        const auto kind = msg->cas_framework_kind();
+        if (kind != message_base::framework_kind::shutdown) {
+            report_rejected(msg.get(), kind == message_base::framework_kind::ask_request);
         }
     }
 }

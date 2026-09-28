@@ -6,7 +6,49 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Messages from one sender are handled in send order** - now a guarantee
+  (INVARIANT 3): if sending A happens-before sending B to the same actor, A
+  is handled first. That covers one actor messaging another and one thread
+  (including `main()`) messaging an actor; `ask()` is part of the same order.
+  There is still no order between different senders. Earlier documentation
+  first claimed FIFO without the implementation providing it, then said there
+  was no ordering at all.
+- **New actor mailbox** (`cas::detail::mailbox`), adapted from CAF's
+  `lifo_inbox`/`default_mailbox` (BSD-3-Clause; see `THIRD_PARTY_NOTICES.md`):
+  an intrusive lock-free stack that producers push to with one CAS, and that
+  the single consumer takes whole and reverses into send order. It replaces
+  the two `moodycamel::ConcurrentQueue`s per actor. It also carries idle and
+  closed states that the scheduler work builds on. New stress tests in
+  `tests/14_mailbox/`.
+- `benchmarks/latency_benchmark.cpp`: round-trip latency percentiles (p50 to
+  p99.9, max) for pooled and fast actors; and an 8-senders-to-8-receivers
+  scenario in the throughput benchmark.
+- `THIRD_PARTY_NOTICES.md`, covering CAF and moodycamel.
+
+### Changed
+
+- **`ask()` requests no longer jump the queue.** They were kept in a
+  separate priority queue, so an ask could be handled before `tell()`s its
+  sender had sent earlier - `tell(fill)` then `ask(position)` could return a
+  position without the fill. Asks are now delivered in send order with
+  everything else.
+- Messages still queued when a stop completes (for example after a drain
+  timeout) are now counted as dead letters rather than left unprocessed and
+  uncounted.
+- `message_base` is 8 bytes larger (the mailbox link), so some messages move
+  up a pool size class.
+
 ### Fixed
+
+- **A `tell()` racing an actor's stop could be silently lost.** `tell()`
+  checks that the actor is running and then enqueues; if the stop completed
+  between the two, the message sat in a mailbox nobody would read, and was
+  never reported as a dead letter. The mailbox is now closed atomically when
+  a stop completes, so such a push fails and is counted as a dead letter.
+- Message dispatch no longer uses `typeid` and `dynamic_cast` to recognise
+  framework messages (shutdown, ask); a private virtual identifies them.
 
 - **The message pool could hand one block to two owners.** Its free list was
   a hand-rolled lock-free stack whose pop - load head, read `head->next`, CAS

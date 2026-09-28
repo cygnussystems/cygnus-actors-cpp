@@ -2,26 +2,35 @@
 #include <vector>
 #include <algorithm>
 
-// Level 11: message ordering.
+// Level 11: message ordering - INVARIANT 3 (doc/INVARIANTS.md).
 //
-// doc/40_message_passing.md previously promised "guaranteed" FIFO order between
-// a pair of actors. The mailbox is a moodycamel::ConcurrentQueue enqueued
-// without a ProducerToken, which does not provide that guarantee across
-// producers. The documentation has been corrected; this test pins down what is
-// actually true so the doc and the code cannot drift apart again silently.
+// The guarantee: if sending A happens-before sending B, and both go to the
+// same actor, A is handled before B. So messages from one actor, or from one
+// thread, are handled in the order they were sent - asks included. There is
+// no ordering between different senders.
+//
+// History: early docs promised FIFO, but the mailbox was a
+// moodycamel::ConcurrentQueue used without producer tokens, and nothing
+// enforced or tested order; the docs were then corrected to "no guarantee".
+// The mailbox is now an intrusive LIFO stack reversed by its single consumer
+// (cas::detail::mailbox), which orders every push by one CAS - these tests pin
+// the guarantee down so it cannot quietly regress.
 
 namespace ordering_test {
     struct seq_msg : public cas::message_base {
-        int seq = 0;
+        int source = 0;  // which sender
+        int seq = 0;     // position in that sender's sequence
     };
+
+    struct count_op {};
 
     class recorder_actor : public cas::actor {
     private:
-        std::vector<int> m_received;
+        std::vector<std::pair<int, int>> m_received;  // (source, seq)
         mutable std::mutex m_mutex;
 
     public:
-        std::vector<int> received() const {
+        std::vector<std::pair<int, int>> received() const {
             std::lock_guard<std::mutex> lock(m_mutex);
             return m_received;
         }
@@ -36,97 +45,166 @@ namespace ordering_test {
             set_name("recorder");
             handler<seq_msg>([this](const seq_msg& msg) {
                 std::lock_guard<std::mutex> lock(m_mutex);
-                m_received.push_back(msg.seq);
+                m_received.emplace_back(msg.source, msg.seq);
+            });
+            ask_handler<int, count_op>(&recorder_actor::handled_so_far);
+        }
+
+        int handled_so_far() {
+            return static_cast<int>(count());
+        }
+    };
+
+    struct send_sequence : public cas::message_base {
+        cas::actor_ref target;
+        int source = 0;
+        int count = 0;
+    };
+
+    // Sends a numbered sequence from inside a handler - an actor as the sender.
+    class sequence_sender : public cas::actor {
+    protected:
+        void on_start() override {
+            handler<send_sequence>([](const send_sequence& msg) {
+                for (int i = 0; i < msg.count; ++i) {
+                    seq_msg m;
+                    m.source = msg.source;
+                    m.seq = i;
+                    msg.target.tell(m);
+                }
             });
         }
     };
+
+    bool wait_for_count(const recorder_actor& rec, size_t n) {
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (rec.count() < n && std::chrono::steady_clock::now() < deadline) {
+            wait_ms(5);
+        }
+        return rec.count() >= n;
+    }
+
+    // Every sender's messages arrive complete and in increasing seq order.
+    void require_fifo_per_source(const std::vector<std::pair<int, int>>& received,
+                                 int sources, int per_source) {
+        std::vector<int> next(sources, 0);
+        size_t out_of_order = 0;
+        for (auto [source, seq] : received) {
+            if (seq != next[source]) ++out_of_order;
+            next[source] = seq + 1;
+        }
+        REQUIRE(out_of_order == 0);
+        for (int s = 0; s < sources; ++s) {
+            REQUIRE(next[s] == per_source);
+        }
+    }
 }
 
-TEST_CASE("All messages from a single sender are delivered exactly once",
+TEST_CASE("Messages from one thread are handled in send order",
           "[11_concurrency][ordering]") {
     CAS_TEST_GUARD();
     using namespace ordering_test;
 
-    constexpr int kCount = 2000;
+    constexpr int kCount = 5000;
 
     auto rec = cas::system::create<recorder_actor>();
     cas::system::start();
-    wait_ms(50);
-
-    auto ref = cas::actor_registry::get("recorder");
-    REQUIRE(ref.is_valid());
 
     for (int i = 0; i < kCount; ++i) {
         seq_msg msg;
         msg.seq = i;
-        ref.tell(msg);
+        rec.tell(msg);
     }
 
     auto& obj = rec.get_checked<recorder_actor>();
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (obj.count() < static_cast<size_t>(kCount) &&
-           std::chrono::steady_clock::now() < deadline) {
-        wait_ms(10);
-    }
-
+    REQUIRE(wait_for_count(obj, kCount));
     auto received = obj.received();
-
-    // Delivery is reliable: nothing lost, nothing duplicated.
     REQUIRE(received.size() == static_cast<size_t>(kCount));
-
-    std::vector<int> sorted = received;
-    std::sort(sorted.begin(), sorted.end());
-    std::vector<int> expected(kCount);
-    for (int i = 0; i < kCount; ++i) expected[i] = i;
-    REQUIRE(sorted == expected);
-
-    TEST_CLEANUP();
+    for (int i = 0; i < kCount; ++i) {
+        REQUIRE(received[i].second == i);
+    }
 }
 
-TEST_CASE("Concurrent senders all get their messages delivered",
+TEST_CASE("Concurrent threads each keep their own send order",
           "[11_concurrency][ordering]") {
     CAS_TEST_GUARD();
     using namespace ordering_test;
 
-    constexpr int kThreads = 4;
-    constexpr int kPerThread = 500;
+    constexpr int kThreads = 8;
+    constexpr int kPerThread = 2000;
 
     auto rec = cas::system::create<recorder_actor>();
     cas::system::start();
-    wait_ms(50);
-
-    auto ref = cas::actor_registry::get("recorder");
-    REQUIRE(ref.is_valid());
 
     std::vector<std::thread> threads;
     for (int t = 0; t < kThreads; ++t) {
-        threads.emplace_back([ref, t, n = kPerThread]() {
-            for (int i = 0; i < n; ++i) {
+        threads.emplace_back([rec, t]() {
+            for (int i = 0; i < kPerThread; ++i) {
                 seq_msg msg;
-                msg.seq = t * n + i;
-                ref.tell(msg);
+                msg.source = t;
+                msg.seq = i;
+                rec.tell(msg);
             }
         });
     }
     for (auto& th : threads) th.join();
 
     auto& obj = rec.get_checked<recorder_actor>();
-    constexpr int kTotal = kThreads * kPerThread;
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (obj.count() < static_cast<size_t>(kTotal) &&
-           std::chrono::steady_clock::now() < deadline) {
-        wait_ms(10);
+    REQUIRE(wait_for_count(obj, kThreads * kPerThread));
+    auto received = obj.received();
+    REQUIRE(received.size() == static_cast<size_t>(kThreads * kPerThread));
+    // No order is promised between threads; within each thread it is.
+    require_fifo_per_source(received, kThreads, kPerThread);
+}
+
+TEST_CASE("Actors sending to one actor each keep their own send order",
+          "[11_concurrency][ordering]") {
+    CAS_TEST_GUARD();
+    using namespace ordering_test;
+
+    constexpr int kSenders = 8;
+    constexpr int kPerSender = 2000;
+
+    auto rec = cas::system::create<recorder_actor>();
+    std::vector<cas::actor_ref> senders;
+    for (int s = 0; s < kSenders; ++s) {
+        senders.push_back(cas::system::create<sequence_sender>());
+    }
+    cas::system::start();
+
+    for (int s = 0; s < kSenders; ++s) {
+        send_sequence go;
+        go.target = rec;
+        go.source = s;
+        go.count = kPerSender;
+        senders[s].tell(go);
     }
 
-    // No ordering assertion across producers - the queue does not promise it.
-    // What IS guaranteed is that every message arrives exactly once.
+    auto& obj = rec.get_checked<recorder_actor>();
+    REQUIRE(wait_for_count(obj, kSenders * kPerSender));
     auto received = obj.received();
-    REQUIRE(received.size() == static_cast<size_t>(kTotal));
+    REQUIRE(received.size() == static_cast<size_t>(kSenders * kPerSender));
+    require_fifo_per_source(received, kSenders, kPerSender);
+}
 
-    std::vector<int> sorted = received;
-    std::sort(sorted.begin(), sorted.end());
-    auto dup = std::adjacent_find(sorted.begin(), sorted.end());
-    REQUIRE(dup == sorted.end());  // no duplicates
+TEST_CASE("An ask never overtakes messages its sender sent earlier",
+          "[11_concurrency][ordering]") {
+    CAS_TEST_GUARD();
+    using namespace ordering_test;
 
-    TEST_CLEANUP();
+    auto rec = cas::system::create<recorder_actor>();
+    cas::system::start();
+
+    // Each round: tell a burst, then ask how many have been handled. The ask
+    // is delivered after the burst, so the answer always includes all of it.
+    int sent = 0;
+    for (int round = 0; round < 50; ++round) {
+        for (int i = 0; i < 100; ++i) {
+            seq_msg msg;
+            msg.seq = sent++;
+            rec.tell(msg);
+        }
+        const int handled = rec.ask<int>(count_op{});
+        REQUIRE(handled == sent);
+    }
 }

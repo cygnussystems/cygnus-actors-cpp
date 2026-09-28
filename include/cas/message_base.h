@@ -7,6 +7,10 @@
 
 namespace cas {
 
+class actor;
+class system;
+namespace detail { class mailbox; }
+
 // Base struct for all messages
 // Messages inherit from this to get sender information and correlation tracking
 // Uses pooled allocation via overridden operator new/delete for performance
@@ -59,11 +63,37 @@ struct message_base {
     static void operator delete(void* ptr, std::align_val_t alignment) noexcept {
         ::operator delete(ptr, alignment);
     }
+
+protected:
+    // Internal: what the framework does with this message before looking for a
+    // user handler. Identified by a virtual call rather than typeid or
+    // dynamic_cast, which cost far more per message (on MSVC typeid comparison
+    // and hashing work on the type's name). Overridden only by framework types.
+    enum class framework_kind : unsigned char {
+        user,          // dispatch to a registered handler
+        shutdown,      // system_shutdown
+        ask_request    // ask(): processed ahead of other messages
+    };
+
+private:
+    friend class actor;
+    friend class system;
+    friend class detail::mailbox;
+
+    virtual framework_kind cas_framework_kind() const noexcept { return framework_kind::user; }
+
+    // Intrusive link used while the message sits in a mailbox (detail::mailbox).
+    // Overwritten on every push, so a stale value copied along with a message
+    // is harmless.
+    message_base* m_next = nullptr;
 };
 
 // System message sent during shutdown
 // Actors receive this and should call on_shutdown() and stop accepting external messages
-struct system_shutdown : public message_base {};
+struct system_shutdown : public message_base {
+private:
+    framework_kind cas_framework_kind() const noexcept override { return framework_kind::shutdown; }
+};
 
 // System message sent when an actor's queue exceeds threshold
 // Allows system or monitoring actors to react to queue buildup

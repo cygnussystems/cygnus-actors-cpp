@@ -3,6 +3,7 @@
 #include <iostream>
 #include <atomic>
 #include <iomanip>
+#include <vector>
 
 // Global counters for benchmark coordination
 static std::atomic<int64_t> g_received{0};
@@ -128,6 +129,115 @@ double run_throughput_test(const std::string& test_name, int64_t num_messages) {
     return msgs_per_sec;
 }
 
+// --- Many-to-many: actors sending to actors -------------------------------
+//
+// The scenarios above send from main(), a single non-actor thread. Real
+// systems send from actor handlers on many worker threads at once, which is
+// where contention on anything shared per message (counters, reference
+// counts, wakeups) shows up. Here N sender actors each spread their messages
+// across all N receiver actors.
+//
+// Receipts are counted per receiver, on separate cache lines, so the
+// benchmark's own bookkeeping does not add the very contention it measures.
+
+struct alignas(64) padded_counter {
+    std::atomic<int64_t> value{0};
+};
+
+struct start_sending : cas::message_base {
+    std::vector<cas::actor_ref> receivers;
+    int64_t count = 0;
+};
+
+class counting_receiver : public cas::actor {
+public:
+    explicit counting_receiver(padded_counter* counter) : m_counter(counter) {}
+
+protected:
+    void on_start() override {
+        handler<bench_message>(&counting_receiver::on_bench);
+    }
+
+    void on_bench(const bench_message&) {
+        m_counter->value.fetch_add(1, std::memory_order_relaxed);
+    }
+
+private:
+    padded_counter* m_counter;
+};
+
+class spreading_sender : public cas::actor {
+protected:
+    void on_start() override {
+        handler<start_sending>(&spreading_sender::on_start_sending);
+    }
+
+    void on_start_sending(const start_sending& msg) {
+        const size_t n = msg.receivers.size();
+        for (int64_t i = 0; i < msg.count; ++i) {
+            bench_message m;
+            m.sequence = i;
+            msg.receivers[static_cast<size_t>(i) % n].tell(m);
+        }
+    }
+};
+
+double run_many_to_many_test(const std::string& test_name, int actors, int64_t messages_per_sender) {
+    cas::system::reset();  // start from an empty system: earlier scenarios leave actors behind
+
+    std::vector<padded_counter> counters(actors);
+    std::vector<cas::actor_ref> receivers;
+    std::vector<cas::actor_ref> senders;
+    for (int i = 0; i < actors; ++i) receivers.push_back(cas::system::create<counting_receiver>(&counters[i]));
+    for (int i = 0; i < actors; ++i) senders.push_back(cas::system::create<spreading_sender>());
+
+    cas::system::start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    const int64_t expected = messages_per_sender * actors;
+    auto received = [&] {
+        int64_t sum = 0;
+        for (auto& c : counters) sum += c.value.load(std::memory_order_relaxed);
+        return sum;
+    };
+
+    auto start = std::chrono::high_resolution_clock::now();
+
+    for (auto& sender : senders) {
+        start_sending go;
+        go.receivers = receivers;
+        go.count = messages_per_sender;
+        sender.tell(go);
+    }
+
+    auto wait_start = std::chrono::steady_clock::now();
+    while (received() < expected) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (std::chrono::steady_clock::now() - wait_start > std::chrono::seconds(30)) {
+            std::cerr << "TIMEOUT waiting for messages. Received: " << received() << "/" << expected << "\n";
+            break;
+        }
+    }
+
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+    const int64_t total = received();
+    const double msgs_per_sec = total / (duration.count() / 1'000'000.0);
+
+    std::cout << std::fixed << std::setprecision(2);
+    std::cout << test_name << ":\n";
+    std::cout << "  Messages:    " << total << "\n";
+    std::cout << "  Time:        " << duration.count() / 1000.0 << " ms\n";
+    std::cout << "  Throughput:  " << msgs_per_sec / 1'000'000.0 << " M msg/sec\n";
+    std::cout << "\n";
+
+    cas::system::shutdown();
+    cas::system::wait_for_shutdown();
+    cas::system::reset();
+
+    return msgs_per_sec;
+}
+
 int main() {
     std::cout << "=== Cygnus Actor Framework Benchmark ===\n\n";
     std::cout << std::flush;
@@ -146,6 +256,10 @@ int main() {
 
     run_throughput_test<fixed_message>(
         "fixed_string fields (zero alloc)", NUM_MESSAGES);
+
+    // Test 3: Many senders to many receivers, all actors
+    std::cout << "--- Actors to actors (concurrent senders) ---\n\n" << std::flush;
+    run_many_to_many_test("8 senders -> 8 receivers", 8, 500'000);
 
     std::cout << "=== Benchmark Complete ===\n";
 

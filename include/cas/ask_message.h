@@ -55,6 +55,11 @@ struct ask_request_base : public message_base {
     ask_request_base(std::type_index op) : op_type(op) {}
     virtual ~ask_request_base() = default;
 
+private:
+    framework_kind cas_framework_kind() const noexcept override { return framework_kind::ask_request; }
+
+public:
+
     // Process this request by calling the appropriate handler
     // Implemented inline to avoid needing a .cpp file
     virtual void process(actor* target) = 0;

@@ -375,9 +375,20 @@ protected:
 
 ## How Ask Is Processed
 
-An ask request is placed on the target actor's **own ask queue** and executed by
-that actor's worker thread, ahead of its regular mailbox. The calling thread
-blocks on a future until the handler returns.
+An ask request goes into the target actor's mailbox **like any other message**
+and is executed by that actor's worker thread, in order: it is handled after
+every message its sender sent before it (INVARIANT 3). The calling thread blocks
+on a future until the handler returns.
+
+So a caller always sees the effects of its own earlier messages:
+
+```cpp
+position_keeper.tell(fill);                           // handled first
+int qty = position_keeper.ask<int>(position_op{});    // includes the fill
+```
+
+> In 1.0, asks sat in a separate priority queue and could overtake the
+> sender's earlier `tell()`s; the example above could return a stale position.
 
 This means an ask handler is serialised with the actor's regular handlers: they
 never run at the same time on the same actor, so both can touch member state
@@ -571,7 +582,7 @@ for (int i = 0; i < 1000; ++i) {
 | Return value | Yes | No (use callbacks) |
 | Overhead | ~10-50 μs | ~1-10 μs |
 | Runs on | Target actor's worker thread | Target actor's worker thread |
-| Queue | Actor's ask queue (priority) | Actor's mailbox |
+| Queue | Actor's mailbox (in send order) | Actor's mailbox |
 | Timeout support | Yes | No |
 | Use case | Need immediate result | Fire-and-forget |
 
