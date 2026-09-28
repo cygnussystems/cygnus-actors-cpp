@@ -25,7 +25,8 @@ mailbox::~mailbox() {
     };
     message_base* stack = m_stack.load(std::memory_order_acquire);
     free_list(is_tag(stack) ? nullptr : stack);
-    free_list(m_head);
+    free_list(m_asks.head);
+    free_list(m_others.head);
 }
 
 message_base* mailbox::blocked_tag() const noexcept {
@@ -95,39 +96,63 @@ bool mailbox::fetch_more() noexcept {
         return false;
     }
 
-    // The stack is newest-first; reversing it gives push (delivery) order.
-    message_base* first = nullptr;
-    message_base* const last = node;  // the newest becomes the new tail
+    // The stack is newest-first. Reversing it gives push order; asks and other
+    // messages are split into their own caches as we go.
+    message_base* ask_first = nullptr;
+    message_base* ask_last = nullptr;
+    message_base* other_first = nullptr;
+    message_base* other_last = nullptr;
     while (node != nullptr) {
         message_base* next = node->m_next;
-        node->m_next = first;
-        first = node;
+        if (is_ask(*node)) {
+            node->m_next = ask_first;
+            if (ask_first == nullptr) ask_last = node;
+            ask_first = node;
+        } else {
+            node->m_next = other_first;
+            if (other_first == nullptr) other_last = node;
+            other_first = node;
+        }
         node = next;
     }
 
-    if (m_tail == nullptr) {
-        m_head = first;
-    } else {
-        m_tail->m_next = first;
-    }
-    m_tail = last;
+    auto append = [](fifo& q, message_base* first, message_base* last) {
+        if (first == nullptr) return;
+        if (q.tail == nullptr) {
+            q.head = first;
+        } else {
+            q.tail->m_next = first;
+        }
+        q.tail = last;
+    };
+    append(m_asks, ask_first, ask_last);
+    append(m_others, other_first, other_last);
     return true;
 }
 
 std::unique_ptr<message_base> mailbox::pop() noexcept {
-    if (m_head == nullptr && !fetch_more()) {
+    // An ask may be on the stack while ordinary messages are already cached
+    // (a whole backlog is taken in one exchange). Its count is published before
+    // the push, so a queued-but-uncached ask shows up here and we fetch it
+    // before serving another ordinary message.
+    if (m_asks.head == nullptr && m_ask_count.load(std::memory_order_relaxed) > 0) {
+        fetch_more();
+    }
+    if (m_asks.head == nullptr && m_others.head == nullptr && !fetch_more()) {
         return nullptr;
     }
-    message_base* node = m_head;
-    m_head = node->m_next;
-    if (m_head == nullptr) m_tail = nullptr;
+
+    fifo& q = (m_asks.head != nullptr) ? m_asks : m_others;
+    message_base* node = q.head;
+    q.head = node->m_next;
+    if (q.head == nullptr) q.tail = nullptr;
     node->m_next = nullptr;
     count_for(*node).fetch_sub(1, std::memory_order_relaxed);
     return std::unique_ptr<message_base>(node);
 }
 
 bool mailbox::try_block() noexcept {
-    if (m_head != nullptr) {
+    if (m_asks.head != nullptr || m_others.head != nullptr) {
         return false;
     }
     message_base* expected = empty_tag();
@@ -156,8 +181,10 @@ size_t mailbox::close(const std::function<void(message_base&, bool is_ask)>& on_
             node = next;
         }
     };
-    drain(m_head);  // cached messages, oldest first
-    m_head = m_tail = nullptr;
+    drain(m_asks.head);    // cached messages, oldest first
+    m_asks = {};
+    drain(m_others.head);
+    m_others = {};
     drain(stack);   // then anything pushed since (newest first)
     return dropped;
 }

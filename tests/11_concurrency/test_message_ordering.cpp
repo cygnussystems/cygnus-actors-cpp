@@ -6,8 +6,10 @@
 //
 // The guarantee: if sending A happens-before sending B, and both go to the
 // same actor, A is handled before B. So messages from one actor, or from one
-// thread, are handled in the order they were sent - asks included. There is
-// no ordering between different senders.
+// thread, are handled in the order they were sent. There is no ordering
+// between different senders. The one exception is ask(): an ask is handled
+// next, ahead of every ordinary message still queued - including ones its
+// sender sent earlier.
 //
 // History: early docs promised FIFO, but the mailbox was a
 // moodycamel::ConcurrentQueue used without producer tokens, and nothing
@@ -187,24 +189,34 @@ TEST_CASE("Actors sending to one actor each keep their own send order",
     require_fifo_per_source(received, kSenders, kPerSender);
 }
 
-TEST_CASE("An ask never overtakes messages its sender sent earlier",
+TEST_CASE("An ask is handled ahead of messages already queued",
           "[11_concurrency][ordering]") {
     CAS_TEST_GUARD();
     using namespace ordering_test;
 
+    // Queue a backlog, and an ask behind it, before start() - so the only
+    // thing deciding the order is the mailbox. The ask must be handled first:
+    // it reports that nothing else has been handled yet.
     auto rec = cas::system::create<recorder_actor>();
-    cas::system::start();
+    constexpr int backlog = 1000;
+    for (int i = 0; i < backlog; ++i) {
+        seq_msg msg;
+        msg.seq = i;
+        rec.tell(msg);
+    }
 
-    // Each round: tell a burst, then ask how many have been handled. The ask
-    // is delivered after the burst, so the answer always includes all of it.
-    int sent = 0;
-    for (int round = 0; round < 50; ++round) {
-        for (int i = 0; i < 100; ++i) {
-            seq_msg msg;
-            msg.seq = sent++;
-            rec.tell(msg);
-        }
-        const int handled = rec.ask<int>(count_op{});
-        REQUIRE(handled == sent);
+    std::atomic<int> answer{-1};
+    std::thread asker([&] { answer = rec.ask<int>(count_op{}); });  // blocks until handled
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));   // ask is queued
+
+    cas::system::start();
+    asker.join();
+
+    REQUIRE(answer.load() == 0);
+    auto& obj = rec.get_checked<recorder_actor>();
+    REQUIRE(wait_for_count(obj, backlog));  // and the backlog still arrives, in order
+    auto received = obj.received();
+    for (int i = 0; i < backlog; ++i) {
+        REQUIRE(received[i].second == i);
     }
 }

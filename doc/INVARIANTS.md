@@ -80,8 +80,12 @@ and self-deadlocks.
 
 > If sending A happens-before sending B, and both go to the same actor, A is
 > handled before B. Messages from one actor, or from one thread, are therefore
-> handled in the order they were sent — asks included. Every message sent to a
-> live actor is handled exactly once.
+> handled in the order they were sent. Every message sent to a live actor is
+> handled exactly once.
+>
+> **Exception — `ask()`:** an ask is handled *next*, after the handler currently
+> running, ahead of every ordinary message still queued — including messages
+> its own sender sent earlier. Asks are handled in order among themselves.
 
 There is **no** ordering between different senders; that would need a global
 lock. `stateful_actor`'s selective receive reorders by design.
@@ -90,12 +94,19 @@ lock. `stateful_actor`'s selective receive reorders by design.
 adapted from CAF). Producers push onto one intrusive lock-free stack; every push
 is a CAS on a single atomic word, so pushes are totally ordered, and a push that
 happens-before another precedes it in that order. The single consumer takes the
-whole stack and reverses it, delivering in push order. Asks share the mailbox
-with no priority, so an ask never overtakes messages its sender sent earlier.
+whole stack and reverses it into two FIFO caches — asks, and everything else —
+and serves asks first. Before serving each ordinary message it checks for asks
+pushed since (via the ask count), so an ask never waits behind a backlog that
+was already taken off the stack.
+
+**Why asks jump the queue:** `ask()` is the RPC path, and one of its jobs is
+finding out why an actor is slow. An ask stuck behind the backlog it is asking
+about would be useless. The cost is the one documented exception: a caller that
+does `tell(x)` then `ask(...)` may be answered before `x` is handled.
 
 **Reviewer questions:**
-- Does this diff add a second queue, a priority class, or any path that
-  delivers a message other than through `m_mailbox.pop()` in push order?
+- Does this diff add a queue, a priority class, or any path that delivers a
+  message other than through `m_mailbox.pop()` (push order, asks first)?
 - Does it let an actor be consumed by more than one thread (which would
   reorder, as well as break INVARIANT 1)?
 - Does new documentation promise ordering *between* senders?
@@ -103,8 +114,9 @@ with no priority, so an ask never overtakes messages its sender sent earlier.
 **History:** early documentation promised FIFO, but the mailbox was a
 `moodycamel::ConcurrentQueue` used without producer tokens and nothing enforced
 or tested order; the docs were then corrected to "no guarantee". Asks lived in
-a separate priority queue, so an ask could overtake earlier `tell()`s from the
-same sender — a caller could read state that ignored its own earlier messages.
+a separate priority queue, as they still do (now inside the one mailbox). Asks
+were briefly made strictly FIFO; that was reverted because an ask must be
+answerable while the actor is behind.
 
 **Tests:** `tests/11_concurrency/test_message_ordering.cpp`,
 `tests/14_mailbox/test_mailbox.cpp`

@@ -118,9 +118,9 @@ private:
     // Lifecycle state - atomic so it can be checked without locking
     std::atomic<actor_state> m_state{actor_state::running};
 
-    // Mailbox: any thread pushes, only the owning thread consumes. Messages -
-    // asks included - are delivered in the order each sender sent them
-    // (INVARIANT 3).
+    // Mailbox: any thread pushes, only the owning thread consumes. Messages are
+    // delivered in the order each sender sent them, except that asks are
+    // delivered next, ahead of queued ordinary messages (INVARIANT 3).
     // INVARIANT: consumed only by the thread executing this actor, so ask
     // handlers are serialised with regular handlers. See doc/INVARIANTS.md.
     detail::mailbox m_mailbox;

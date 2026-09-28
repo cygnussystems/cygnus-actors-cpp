@@ -173,10 +173,10 @@ void actor::enqueue_ask_message(std::unique_ptr<message_base> msg) {
         return;  // Drop message
     }
 
-    // Ask requests share the mailbox with every other message and are
-    // delivered in order with them (INVARIANT 3): an ask never overtakes
-    // messages its sender sent earlier. Consumed by process_next_message() on
-    // the owning thread, so ask handlers are serialised with regular handlers
+    // Ask requests share the mailbox but are delivered next, ahead of every
+    // queued ordinary message (INVARIANT 3) - an ask must get an answer even
+    // from an actor that is behind. Consumed by process_next_message() on the
+    // owning thread, so ask handlers are serialised with regular handlers
     // (INVARIANT 1). The caller blocks on the request's future until then.
     const detail::push_result pushed = m_mailbox.push(msg);
     if (pushed == detail::push_result::closed) {
@@ -291,7 +291,7 @@ void actor::dispatch_message(message_base* msg) {
 }
 
 void actor::process_next_message() {
-    // Delivery order is send order per sender (INVARIANT 3), asks included.
+    // Delivery order: asks first, then send order per sender (INVARIANT 3).
     // Consumed only here, on the owning thread, so an ask handler never runs
     // concurrently with a regular handler (INVARIANT 1).
     if (std::unique_ptr<message_base> msg = m_mailbox.pop()) {

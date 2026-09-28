@@ -31,9 +31,9 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //
 // Modifications for Cygnus (c) 2026 cygnussystems, MIT License: a single class
-// over cas::message_base with one FIFO cache (no urgent category - asks are
-// delivered in order with everything else); atomic counts so size and metrics
-// can be read from any thread.
+// over cas::message_base; ask requests take CAF's "urgent" role and are served
+// ahead of other messages, including ones already taken from the stack; atomic
+// counts so size and metrics can be read from any thread.
 
 #ifndef CAS_DETAIL_MAILBOX_H
 #define CAS_DETAIL_MAILBOX_H
@@ -61,13 +61,17 @@ enum class push_result {
 /// Producers push onto an intrusive lock-free LIFO stack - one atomic word,
 /// linked through message_base's next pointer, no node allocation. The
 /// consumer (the thread executing the actor) takes the whole stack with one
-/// exchange when its private FIFO cache runs dry and reverses it into that
-/// cache.
+/// exchange and reverses it into two private FIFO caches: ask requests and
+/// everything else.
 ///
-/// Ordering: pushes are totally ordered by the CAS on the stack word, and the
-/// consumer delivers in that order. So if one push happens-before another -
-/// e.g. both made by the same actor or the same thread - the first is
-/// delivered first. This is what INVARIANT 3 (doc/INVARIANTS.md) rests on.
+/// Ordering: pushes are totally ordered by the CAS on the stack word, and each
+/// cache delivers in that order. So among ordinary messages - and among asks -
+/// if one push happens-before another (same actor, same thread), the first is
+/// delivered first (INVARIANT 3). Asks are the exception across the two: an
+/// ask is delivered next, ahead of every ordinary message still queued, even
+/// ones its own sender pushed earlier. pop() checks for newly pushed asks
+/// before serving each ordinary message, so an ask does not wait behind a
+/// batch already taken from the stack.
 ///
 /// The stack word also carries two states, as sentinel values that are never
 /// dereferenced:
@@ -101,7 +105,8 @@ public:
 
     // --- owner (consumer) only ----------------------------------------------
 
-    /// Next message in delivery order; nullptr if there is none.
+    /// Next message: an ask if any is queued, else the oldest ordinary message;
+    /// nullptr if there is none.
     std::unique_ptr<message_base> pop() noexcept;
 
     /// Transition to blocked if there is nothing left to consume. Returns false
@@ -128,9 +133,14 @@ private:
     message_base* closed_tag() const noexcept;
     bool is_tag(message_base* p) const noexcept;
 
-    // Owner-only FIFO cache, oldest first.
-    message_base* m_head = nullptr;
-    message_base* m_tail = nullptr;
+    struct fifo {
+        message_base* head = nullptr;
+        message_base* tail = nullptr;
+    };
+
+    // Owner-only FIFO caches, oldest first (CAF's urgent_queue_/normal_queue_)
+    fifo m_asks;
+    fifo m_others;
 
     // Shared by all producers: the LIFO stack and the counts they update.
     // Kept together on their own cache line, away from the owner's cache.

@@ -505,8 +505,14 @@ target.tell(msg3);
 
 Precisely: if sending A happens-before sending B, and both go to the same actor,
 A is handled before B. That covers messages sent by one actor, and messages sent
-from one thread (including `main()`). `ask()` calls are part of the same order:
-an ask is never handled before messages its sender sent earlier.
+from one thread (including `main()`).
+
+**The exception is `ask()`**: an ask is handled next — right after the handler
+that is currently running — ahead of every ordinary message still queued,
+including ones its own sender sent earlier. That is what lets an ask get an
+answer from an actor that is behind (see [80_ask_pattern.md](80_ask_pattern.md)).
+If you need an ask to see the effect of your earlier `tell()`, make the earlier
+message an ask too, or have the handler answer only once it has seen it.
 
 What is **not** ordered is messages from *different* senders — see below. If
 two senders' messages must be processed in a particular order, have one of them

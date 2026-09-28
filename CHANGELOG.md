@@ -11,8 +11,12 @@ This project follows [Semantic Versioning](https://semver.org/).
 - **Messages from one sender are handled in send order** - now a guarantee
   (INVARIANT 3): if sending A happens-before sending B to the same actor, A
   is handled first. That covers one actor messaging another and one thread
-  (including `main()`) messaging an actor; `ask()` is part of the same order.
-  There is still no order between different senders. Earlier documentation
+  (including `main()`) messaging an actor. There is still no order between
+  different senders. The one exception is `ask()`: an ask is handled next,
+  after the running handler and ahead of every queued ordinary message -
+  including ones its own sender sent earlier - so an actor that is behind can
+  still answer (for example, a query about why it is slow). Asks are ordered
+  among themselves. Earlier documentation
   first claimed FIFO without the implementation providing it, then said there
   was no ordering at all.
 - **New actor mailbox** (`cas::detail::mailbox`), adapted from CAF's
@@ -62,11 +66,10 @@ This project follows [Semantic Versioning](https://semver.org/).
   while the same fields as `fixed_string` are ~2x faster. The likely cause
   is heap contention now that sender and receiver run concurrently; it has
   not yet been profiled.
-- **`ask()` requests no longer jump the queue.** They were kept in a
-  separate priority queue, so an ask could be handled before `tell()`s its
-  sender had sent earlier - `tell(fill)` then `ask(position)` could return a
-  position without the fill. Asks are now delivered in send order with
-  everything else.
+- `ask()` requests keep their priority (as in 1.0), now as a lane inside the
+  single mailbox, and more strictly: an ask pushed while the actor is working
+  through a backlog it has already taken from the mailbox is still handled
+  next, rather than after that backlog.
 - Messages still queued when a stop completes (for example after a drain
   timeout) are now counted as dead letters rather than left unprocessed and
   uncounted.

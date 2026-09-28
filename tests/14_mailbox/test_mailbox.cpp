@@ -16,7 +16,7 @@
 //    a message (a lost wake-up hangs, and fails on the timeout)
 //  - close() racing pushes: every message is consumed, dropped at close, or
 //    handed back to its sender - exactly one of the three, none leaked
-//  - ask requests are delivered in order with other messages (no priority)
+//  - ask requests are served next, ahead of other queued messages
 
 namespace mailbox_test {
 
@@ -180,27 +180,50 @@ TEST_CASE("Mailbox close accounts for every message exactly once", "[14_mailbox]
     }
 }
 
-TEST_CASE("Mailbox keeps ask requests in order with other messages", "[14_mailbox]") {
-    // Asks are not prioritised: an ask must not overtake messages its sender
-    // sent earlier, or a caller could observe state that ignores its own
-    // earlier messages (INVARIANT 3).
+TEST_CASE("Mailbox serves ask requests ahead of other messages", "[14_mailbox]") {
+    // An ask is next in line: ahead of every ordinary message still queued,
+    // and in order with other asks.
     cas::detail::mailbox box;
-    std::unique_ptr<cas::message_base> m0 = std::make_unique<seq_msg>(0, 0);
-    box.push(m0);
+    for (int s = 0; s < 3; ++s) {
+        std::unique_ptr<cas::message_base> m = std::make_unique<seq_msg>(0, s);
+        box.push(m);
+    }
+    for (int i = 0; i < 2; ++i) {
+        std::unique_ptr<cas::message_base> ask =
+            std::make_unique<cas::ask_request<int, probe_op>>(probe_op{});
+        box.push(ask);
+    }
+    REQUIRE(box.ask_size() == 2);
+    REQUIRE(box.other_size() == 3);
+
+    for (int i = 0; i < 2; ++i) {
+        auto m = box.pop();
+        REQUIRE(dynamic_cast<cas::ask_request_base*>(m.get()) != nullptr);
+    }
+    for (int s = 0; s < 3; ++s) {
+        auto m = box.pop();
+        REQUIRE(static_cast<seq_msg&>(*m).seq == s);
+    }
+    REQUIRE(box.pop() == nullptr);
+}
+
+TEST_CASE("Mailbox serves an ask next even behind a backlog it already took", "[14_mailbox]") {
+    // The consumer takes the whole stack at once. An ask pushed after that
+    // must not wait behind the cached backlog.
+    cas::detail::mailbox box;
+    for (int s = 0; s < 100; ++s) {
+        std::unique_ptr<cas::message_base> m = std::make_unique<seq_msg>(0, s);
+        box.push(m);
+    }
+    auto first = box.pop();  // takes all 100 into the cache
+    REQUIRE(static_cast<seq_msg&>(*first).seq == 0);
+
     std::unique_ptr<cas::message_base> ask =
         std::make_unique<cas::ask_request<int, probe_op>>(probe_op{});
     box.push(ask);
-    std::unique_ptr<cas::message_base> m1 = std::make_unique<seq_msg>(0, 1);
-    box.push(m1);
-    REQUIRE(box.ask_size() == 1);
-    REQUIRE(box.other_size() == 2);
 
-    auto first = box.pop();
-    REQUIRE(static_cast<seq_msg&>(*first).seq == 0);
-    auto second = box.pop();
-    REQUIRE(dynamic_cast<cas::ask_request_base*>(second.get()) != nullptr);
-    auto third = box.pop();
-    REQUIRE(static_cast<seq_msg&>(*third).seq == 1);
-    REQUIRE(box.pop() == nullptr);
-    REQUIRE(box.size() == 0);
+    auto next = box.pop();
+    REQUIRE(dynamic_cast<cas::ask_request_base*>(next.get()) != nullptr);
+    auto after = box.pop();
+    REQUIRE(static_cast<seq_msg&>(*after).seq == 1);  // backlog resumes in order
 }

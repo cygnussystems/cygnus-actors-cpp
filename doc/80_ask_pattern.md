@@ -375,20 +375,34 @@ protected:
 
 ## How Ask Is Processed
 
-An ask request goes into the target actor's mailbox **like any other message**
-and is executed by that actor's worker thread, in order: it is handled after
-every message its sender sent before it (INVARIANT 3). The calling thread blocks
-on a future until the handler returns.
+An ask request goes into the target actor's mailbox and is handled **next**:
+right after the handler that is currently running, ahead of every ordinary
+message still queued. Asks are handled in order among themselves. The request is
+executed by the target actor's own worker thread; the calling thread blocks on a
+future until the handler returns.
 
-So a caller always sees the effects of its own earlier messages:
+That is the point of `ask()` beyond returning a value: it gets an answer even
+when the actor is behind — including when the question is *why* it is behind.
 
-```cpp
-position_keeper.tell(fill);                           // handled first
-int qty = position_keeper.ask<int>(position_op{});    // includes the fill
-```
+What "next" does not cover:
 
-> In 1.0, asks sat in a separate priority queue and could overtake the
-> sender's earlier `tell()`s; the example above could return a stale position.
+- **A handler that is already running** is not interrupted; the ask is handled
+  when it returns.
+- **Messages the caller sent earlier** may still be queued, and the ask is
+  handled before them:
+
+  ```cpp
+  position_keeper.tell(fill);
+  int qty = position_keeper.ask<int>(position_op{});  // may not include the fill yet
+  ```
+
+  If the answer must reflect an earlier message, send that message as an ask
+  too (asks are ordered among themselves), or design the handler to account
+  for it.
+- **Other actors on the same worker.** A pooled actor that is waiting for its
+  turn runs after the actors queued ahead of it on that worker, each for at most
+  `system_config::max_messages_per_turn` messages. For an actor that must always
+  answer at once, use a `fast_actor` (its own thread).
 
 This means an ask handler is serialised with the actor's regular handlers: they
 never run at the same time on the same actor, so both can touch member state
@@ -582,7 +596,7 @@ for (int i = 0; i < 1000; ++i) {
 | Return value | Yes | No (use callbacks) |
 | Overhead | ~10-50 μs | ~1-10 μs |
 | Runs on | Target actor's worker thread | Target actor's worker thread |
-| Queue | Actor's mailbox (in send order) | Actor's mailbox |
+| Queue | Actor's mailbox, handled next (ahead of queued messages) | Actor's mailbox, in send order |
 | Timeout support | Yes | No |
 | Use case | Need immediate result | Fire-and-forget |
 
