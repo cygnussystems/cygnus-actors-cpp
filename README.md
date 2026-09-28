@@ -2,13 +2,14 @@
 
 A modern C++20 actor framework built for **speed without sacrificing simplicity**.
 
-Most actor frameworks force you to choose: either raw performance with complex APIs, or clean syntax with overhead. Cygnus was designed to deliver both - **5+ million messages/sec** with an API that feels natural to C++ developers and can be learned in an afternoon.
+Most actor frameworks force you to choose: either raw performance with complex APIs, or clean syntax with overhead. Cygnus was designed to deliver both - **8+ million messages/sec from a single sender, 18 million with actors messaging concurrently, and ~1 µs round trips** - with an API that feels natural to C++ developers and can be learned in an afternoon.
 
 ### Why Cygnus?
 
-- **Fast**: Lock-free message queues, pooled message allocation. 4.6-5.5 M
-  msg/sec on a Turbo-disabled laptop, ~5.9 M on a desktop CPU
-  ([benchmarks](#benchmarks), with the ranges - run it yourself)
+- **Fast**: lock-free mailboxes and scheduling, pooled message allocation.
+  8 M msg/sec from one sender and 18 M with 8 actors messaging 8 others;
+  round trips ~0.7 µs typical, ~3 µs at p99.9 (MSVC, Ryzen 9 5900X -
+  [benchmarks](#benchmarks), with ranges and caveats - run it yourself)
 - **Intuitive API**: Define actors in ~10 lines. No boilerplate, no macros, no inheritance hierarchies
 - **Easy Learning Curve**: If you know C++ lambdas and inheritance, you already know 80% of Cygnus
 - **Production Ready**: Timer scheduling, RPC-style ask pattern, actor supervision, dead letter handling
@@ -823,35 +824,54 @@ protected:
 
 ## Benchmarks
 
-Release build, single producer/consumer, 1M messages per case. Figures are the
-average of five runs, with the observed range in brackets.
+Release builds, measured on an **AMD Ryzen 9 5900X** (desktop, 12 cores / 24
+threads). Figures are the median of five runs, with the observed range in
+brackets. Two programs: `benchmark` (throughput) and `latency_benchmark`
+(round-trip percentiles).
 
-Measured on an **AMD Ryzen 5 PRO 5650U** (mobile, 6 cores, **Turbo Boost
-disabled**) — deliberately modest hardware, so read these as a conservative
-floor:
+**Throughput** - 1M messages per single-sender case, 4M for the actor case:
 
 | Test | MSVC 2022 (Windows) | GCC 13 (WSL Ubuntu) |
 |------|---------------------|---------------------|
-| Minimal message | 4.6 M msg/sec [4.55–4.61] | 5.5 M msg/sec [4.88–5.93] |
-| `std::string` fields | 3.3 M msg/sec [3.06–3.39] | 3.6 M msg/sec [2.48–5.07] |
-| `fixed_string` fields | 3.7 M msg/sec [3.55–3.78] | 3.2 M msg/sec [2.50–3.59] |
+| Minimal message, one sender | 8.0 M msg/sec [7.97–9.17] | 12.7 M msg/sec [12.40–13.71] |
+| `std::string` fields, one sender | 3.4 M msg/sec [3.27–3.43] | 5.7 M msg/sec [5.60–5.76] |
+| `fixed_string` fields, one sender | 8.0 M msg/sec [6.43–7.99] | 11.4 M msg/sec [10.89–13.24] |
+| 8 actors → 8 actors, concurrently | 18.2 M msg/sec [15.89–18.32] | 4.8 M msg/sec [4.66–5.27] * |
 
-An earlier run on a desktop CPU reached ~5.9 M msg/sec (~170 ns) for the minimal
-case, so the numbers above are not a ceiling — expect meaningfully better on
-desktop or server parts with boost clocks enabled.
+**Latency** - ping-pong round trip between two actors, one message in flight:
 
-Two things worth reading off this table rather than glossing over:
+| Path | MSVC 2022: p50 / p99 / p99.9 | GCC 13 (WSL): p50 / p99 / p99.9 |
+|------|------------------------------|---------------------------------|
+| pooled → pooled | 0.7 / 1.7 / 3.7 µs | 0.6 / 1.3 / 14.5 µs |
+| `fast_actor` → `fast_actor` | 0.5 / 1.3 / 3.1 µs | 1.1 / 2.3 / 22.2 µs |
+| pooled → `fast_actor` | 0.5 / 1.4 / 2.6 µs | 1.1 / 1.7 / 20.2 µs |
 
-- **`fixed_string` beats `std::string` on MSVC, but not on GCC.** The benchmark
-  uses short strings, which libstdc++ keeps inline via the small-string
-  optimisation - so `std::string` never reaches the heap and the comparison
-  measures copying, not allocation. `fixed_string` wins where it is supposed to:
-  longer values, and messages whose size you want fixed and predictable.
-- **The GCC ranges are wide** (`std::string` varied 2.48–5.07 across five runs).
-  This is a thermally constrained laptop part. Measure on your own hardware
-  before drawing conclusions about either compiler.
+Worst-case (max) samples are in the hundreds of microseconds on both: that is
+operating-system scheduling on a desktop, not the framework. For
+latency-critical work, pin threads and isolate cores.
 
-Run `./build/benchmark` to measure on your system.
+Worth reading off these tables rather than glossing over:
+
+- **\* WSL sees 6 of the 24 hardware threads**, so the 8-to-8 actor case runs
+  16 busy actors on 6 CPUs there. Compare compilers on the single-sender rows.
+- **`std::string` is the one case that did not improve** with the new scheduler
+  (MSVC: ~4.0 → 3.4 M against 1.0; `fixed_string`, same fields, went 3.8 → 8.0).
+  Each copied `std::string` allocates on the sender's thread and frees on the
+  receiver's; with a much faster receiver the two now run concurrently on the
+  heap. That explanation is a hypothesis, not yet profiled. Either way:
+  keep heap-allocating members off hot paths - use `fixed_string` or a
+  shared payload (see `doc/140_message_pool.md`).
+- **`fixed_string` vs `std::string` depends on the library.** The benchmark's
+  symbol is short enough for the small-string optimisation, so part of that
+  comparison measures copying, not allocation.
+
+1.0.0 measured 4.6 M msg/sec (minimal, MSVC) on a Turbo-disabled 6-core laptop;
+the same code on this desktop measured ~4.7 M, and the concurrent 8-to-8 case
+~2.8 M - the scheduler rewrite is where most of the difference above comes from.
+
+Run `./build/benchmark` and `./build/latency_benchmark` to measure on your
+system. Both take an optional argument: pooled workers' idle spin in
+microseconds (`system_config::worker_idle_spin`).
 
 ## API Reference
 

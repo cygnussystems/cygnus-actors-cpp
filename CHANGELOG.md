@@ -46,6 +46,22 @@ This project follows [Semantic Versioning](https://semver.org/).
 
   Measured on MSVC Release: 8 senders to 8 receivers 2.7 -> 17.2 M msg/s;
   one sender 4.5 -> 6.5 M msg/s; fast-actor round trip p99.9 8.0 -> 2.8 us.
+- **Pooled workers spin briefly before parking**
+  (`system_config::worker_idle_spin`, new, default 20 us, 0 = park at
+  once). Work arriving within the spin is picked up without an OS wake-up.
+  Pooled-to-pooled round trips drop from p50 1.9 / p99 15 / p99.9 24 us
+  (1.0) to 0.7 / 1.7 / 3.7 us, on a par with `fast_actor`. The cost is CPU,
+  roughly spin length x bursts of work per second on each busy worker
+  (20 us x 1000 bursts/s = 2% of a core); idle workers do not spin, and a
+  worker woken by its backstop timeout with nothing to do goes straight
+  back to sleep.
+- The benchmarks section of the README is re-measured, now on a Ryzen 9
+  5900X desktop, adding latency percentiles and the concurrent-actor case.
+  The one regression is recorded there: a single sender of messages with
+  heap-allocating `std::string` members is ~15% slower than 1.0 on MSVC,
+  while the same fields as `fixed_string` are ~2x faster. The likely cause
+  is heap contention now that sender and receiver run concurrently; it has
+  not yet been profiled.
 - **`ask()` requests no longer jump the queue.** They were kept in a
   separate priority queue, so an ask could be handled before `tell()`s its
   sender had sent earlier - `tell(fill)` then `ask(position)` could return a

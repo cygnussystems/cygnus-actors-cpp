@@ -163,6 +163,28 @@ TEST_CASE("Workers that park are always woken: long rally with idle gaps",
     REQUIRE(wait_for([] { return g_volleys.load() == volleys + 1; }, 60'000));
 }
 
+TEST_CASE("Workers that park at once (no idle spin) are always woken",
+          "[11_concurrency][scheduler]") {
+    // worker_idle_spin = 0: every hop of the rally goes through park/wake.
+    CAS_CONFIG_GUARD();
+    cas::system_config config;
+    config.worker_idle_spin = std::chrono::microseconds(0);
+    cas::system::configure(config);
+
+    g_volleys = 0;
+    auto a = cas::system::create<rally_player>();
+    auto b = cas::system::create<rally_player>();
+    cas::system::start();
+
+    constexpr int volleys = 5'000;
+    serve s;
+    s.opponent = b;
+    s.volleys = volleys;
+    a.tell(s);
+
+    REQUIRE(wait_for([] { return g_volleys.load() == volleys + 1; }, 60'000));
+}
+
 TEST_CASE("A busy actor yields its worker after max_messages_per_turn",
           "[11_concurrency][scheduler]") {
     CAS_CONFIG_GUARD();

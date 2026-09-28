@@ -82,6 +82,19 @@ struct system_config {
     // actors on the same worker wait behind it. 0 = no limit.
     size_t max_messages_per_turn = 64;
 
+    // How long a pooled worker keeps polling for more work, after running out,
+    // before it parks. Work arriving within this window is picked up without
+    // an OS wake-up (tens of microseconds on Windows), which keeps
+    // request/response latency between pooled actors low: measured round-trip
+    // p99.9 ~3 us with a spin, ~27 us without.
+    //
+    // Cost: roughly (spin length) x (bursts of work per second) of CPU per
+    // busy worker - e.g. 20 us x 1000 bursts/s = 2% of a core - and at most
+    // one core per worker when bursts arrive just further apart than the
+    // spin. Workers that are idle do not spin. 0 = park at once. For the
+    // lowest latency on a critical path, use fast_actor.
+    std::chrono::microseconds worker_idle_spin{20};
+
     // DEPRECATED and ignored. Ask requests are processed on the target actor's
     // own thread so they serialise with regular handlers; there is no separate
     // ask thread pool. Retained so existing configuration code still compiles.
@@ -212,6 +225,7 @@ private:
     void ensure_workers(size_t count);           // call with m_actors_mutex held
     void run_actor(worker_state& w, std::shared_ptr<actor> target);
     void park_worker(worker_state& w);
+    bool spin_for_work(worker_state& w);         // true if work arrived while spinning
     static void wake_worker(worker_state& w);
     static void activate_after_start(actor* target);  // after on_start(): go idle or schedule
 

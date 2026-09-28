@@ -5,6 +5,7 @@
 #include "cas/fast_actor.h"
 #include "cas/message_base.h"
 #include "cas/actor_ref_impl.h"
+#include "cpu_pause.h"
 #include <iostream>
 #include <stdexcept>
 #include <algorithm>
@@ -527,6 +528,26 @@ void system::wake_worker(worker_state& w) {
     }
 }
 
+bool system::spin_for_work(worker_state& w) {
+    // Poll without sleeping for up to worker_idle_spin. A worker spinning here
+    // has not set `sleeping`, so producers do not signal it - it just sees the
+    // queue fill. The clock is read only every 64 polls.
+    const auto spin = m_config.worker_idle_spin;
+    if (spin.count() <= 0) {
+        return false;
+    }
+    const auto deadline = std::chrono::steady_clock::now() + spin;
+    for (unsigned i = 1;; ++i) {
+        if (w.ready.maybe_nonempty() || m_shutdown_requested.load(std::memory_order_relaxed)) {
+            return true;
+        }
+        CAS_CPU_PAUSE();
+        if ((i & 63) == 0 && std::chrono::steady_clock::now() >= deadline) {
+            return false;
+        }
+    }
+}
+
 void system::park_worker(worker_state& w) {
     w.sleeping.store(true, std::memory_order_relaxed);
     std::atomic_thread_fence(std::memory_order_seq_cst);
@@ -534,8 +555,8 @@ void system::park_worker(worker_state& w) {
         std::unique_lock<std::mutex> lock(w.mutex);
         // The predicate is evaluated under the mutex, and wake_worker notifies
         // under it, so a wake-up cannot fall between the check and the wait.
-        // The timeout is only a backstop.
-        w.cv.wait_for(lock, std::chrono::milliseconds(10), [&] {
+        // The timeout is only a backstop against a bug in that handshake.
+        w.cv.wait_for(lock, std::chrono::milliseconds(100), [&] {
             return w.ready.maybe_nonempty() ||
                    m_shutdown_requested.load(std::memory_order_relaxed);
         });
@@ -598,11 +619,21 @@ void system::worker_thread(size_t thread_id) {
     t_worker_thread_id = thread_id;
     worker_state& w = *m_workers[thread_id];
 
+    // Spin only after doing work: that is when more is likely to follow soon.
+    // A worker that wakes from its backstop timeout with nothing to do goes
+    // straight back to sleep - otherwise every idle worker would burn a full
+    // spin on each backstop wake-up.
+    bool worked = false;
     while (!m_shutdown_requested.load(std::memory_order_relaxed)) {
         if (std::shared_ptr<actor> target = w.ready.pop()) {
             run_actor(w, std::move(target));
+            worked = true;
             continue;
         }
+        if (worked && spin_for_work(w)) {
+            continue;
+        }
+        worked = false;
         park_worker(w);
     }
 }

@@ -22,6 +22,7 @@
 #include <iostream>
 #include <string>
 #include <thread>
+#include <cstdlib>
 #include <vector>
 
 namespace {
@@ -153,8 +154,16 @@ void run_scenario(const std::string& name) {
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
     std::cout << "=== Cygnus Actor Framework Latency Benchmark ===\n\n" << std::flush;
+
+    // Optional: pooled workers' idle spin in microseconds (default: library default)
+    if (argc > 1) {
+        cas::system_config config;
+        config.worker_idle_spin = std::chrono::microseconds(std::atoi(argv[1]));
+        cas::system::configure(config);
+        std::cout << "worker_idle_spin = " << config.worker_idle_spin.count() << " us\n\n";
+    }
 
     run_scenario<cas::actor, cas::actor>("pooled -> pooled");
     run_scenario<cas::fast_actor, cas::fast_actor>("fast -> fast");

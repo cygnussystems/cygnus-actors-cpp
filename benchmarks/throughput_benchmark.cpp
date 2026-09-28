@@ -3,6 +3,7 @@
 #include <iostream>
 #include <atomic>
 #include <iomanip>
+#include <cstdlib>
 #include <vector>
 
 // Global counters for benchmark coordination
@@ -238,8 +239,16 @@ double run_many_to_many_test(const std::string& test_name, int actors, int64_t m
     return msgs_per_sec;
 }
 
-int main() {
+int main(int argc, char** argv) {
     std::cout << "=== Cygnus Actor Framework Benchmark ===\n\n";
+
+    // Optional: pooled workers' idle spin in microseconds (default: library default)
+    if (argc > 1) {
+        cas::system_config config;
+        config.worker_idle_spin = std::chrono::microseconds(std::atoi(argv[1]));
+        cas::system::configure(config);
+        std::cout << "worker_idle_spin = " << config.worker_idle_spin.count() << " us\n\n";
+    }
     std::cout << std::flush;
 
     constexpr int64_t NUM_MESSAGES = 1'000'000;

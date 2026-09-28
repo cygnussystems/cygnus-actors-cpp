@@ -1,21 +1,7 @@
 #include "cas/fast_actor.h"
 #include "cas/message_base.h"
 
-// Cross-platform CPU pause instruction
-#if defined(_MSC_VER)
-    #include <intrin.h>
-    #define CPU_PAUSE() _mm_pause()
-#elif defined(__GNUC__) || defined(__clang__)
-    #if defined(__x86_64__) || defined(__i386__)
-        #define CPU_PAUSE() __builtin_ia32_pause()
-    #elif defined(__aarch64__) || defined(__arm__)
-        #define CPU_PAUSE() __asm__ __volatile__("yield")
-    #else
-        #define CPU_PAUSE() do {} while(0)
-    #endif
-#else
-    #define CPU_PAUSE() do {} while(0)
-#endif
+#include "cpu_pause.h"
 
 namespace cas {
 
@@ -32,7 +18,7 @@ void fast_actor::set_spin_count(int count) {
 }
 
 void fast_actor::cpu_pause() {
-    CPU_PAUSE();
+    CAS_CPU_PAUSE();
 }
 
 void fast_actor::run_dedicated_thread() {
