@@ -98,6 +98,18 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **An exception thrown by a message handler no longer terminates the
+  process.** A `tell()` handler of a pooled, fast or stateful actor that threw
+  unwound out of a framework thread, which calls `std::terminate`: one bad
+  message took down every actor. The exception is now caught, counted
+  (`system::handler_exception_count()`) and passed to the new
+  `system::set_handler_exception_handler()` callback (to stderr when none is
+  set), and the actor handles its next message. The new virtual
+  `actor::on_handler_exception()` can return `exception_action::stop` to stop
+  the actor instead (queued messages become dead letters, watchers get
+  `termination_msg`). Exceptions from `on_shutdown()`/`on_stop()` are reported
+  the same way and no longer abort the stop. `call()` and `inline_actor`
+  handler exceptions still go to the caller/sender.
 - **`call()` deadlock detection is decided by thread, not by actor.** It
   compared the calling actor's worker with the target's, which was wrong
   both ways: a pooled actor calling an `inline_actor` that happened to share

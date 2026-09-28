@@ -243,6 +243,17 @@ cas::system::start();
   sent.)
 - `ask_thread_pool_size` is deprecated and ignored.
 
+### Exceptions in handlers
+
+An exception escaping a message handler of a pooled, fast or stateful actor is
+caught, counted (`cas::system::handler_exception_count()`) and reported to the
+callback set with `cas::system::set_handler_exception_handler()` - or written
+to stderr if none is set - and the actor handles its next message. An actor can
+override `on_handler_exception()` to return `cas::exception_action::stop`
+instead: it is then stopped and its watchers get a `termination_msg`. `call()`
+handler exceptions go to the caller; `inline_actor` handler exceptions
+propagate to the sender. See [Best Practices](doc/120_best_practices.md).
+
 ## Messages
 
 Messages are structs that inherit from `cas::message_base`:
@@ -1027,6 +1038,11 @@ static void clear_dead_letter_handler();
 // Queue threshold alerts (once per breach, re-armed at half the threshold)
 static void set_queue_threshold_handler(queue_threshold_handler handler);
 static void clear_queue_threshold_handler();
+
+// Exceptions escaping handlers / on_shutdown / on_stop (caught, counted, reported)
+static void set_handler_exception_handler(handler_exception_handler handler);
+static void clear_handler_exception_handler();
+static size_t handler_exception_count();
 ```
 
 ### cas::actor
@@ -1036,6 +1052,8 @@ static void clear_queue_threshold_handler();
 virtual void on_start() = 0; // Required: called once when actor starts
 virtual void on_shutdown();  // Called during shutdown (can send messages)
 virtual void on_stop();      // Called after shutdown (no messages)
+// A handler threw (caught by the framework): resume (default) or stop this actor
+virtual cas::exception_action on_handler_exception(const cas::message_base& msg, std::exception_ptr error);
 
 // Handler registration (call in on_start)
 // T must derive from cas::message_base; a type that cannot reach a mailbox

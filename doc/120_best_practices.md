@@ -111,11 +111,43 @@ class io_actor : public cas::fast_actor {
 };
 ```
 
-### 3. Don't Let Exceptions Escape tell() Handlers
+### 3. Handle Exceptions in tell() Handlers
 
-A message handler of a pooled or fast actor runs on a framework thread that
-does not catch exceptions. An exception escaping it terminates the process
-(`std::terminate`). Catch inside the handler:
+An exception escaping a message handler of a pooled, fast or stateful actor is
+caught by the framework: it is counted (`system::handler_exception_count()`),
+reported to the callback set with `system::set_handler_exception_handler()`
+(or written to stderr if none is set), and the actor carries on with its next
+message. Override `on_handler_exception()` to decide per actor:
+
+```cpp
+class order_router : public cas::actor {
+protected:
+    // Called on this actor's thread after a handler threw
+    cas::exception_action on_handler_exception(const cas::message_base& msg,
+                                               std::exception_ptr error) override {
+        // State may be inconsistent after a failed handler: stop, and let
+        // whoever watches this actor (a supervisor) create a fresh one.
+        return cas::exception_action::stop;
+    }
+    // ...
+};
+
+// Once, at startup: route every caught exception to your logging/alerting
+cas::system::set_handler_exception_handler([](const cas::handler_exception_info& info) {
+    // info.actor_name, info.message_type, info.message_id, info.source
+    // ("handler", "on_shutdown", "on_stop"), info.what, info.error, info.action
+    std::cerr << info.actor_name << ": " << info.what << std::endl;
+});
+```
+
+`exception_action::stop` stops the actor with `stop_mode::discard` (its queued
+messages become dead letters) and sends `termination_msg` to its watchers.
+Exceptions from `on_shutdown()` and `on_stop()` are reported the same way, and
+the stop still completes.
+
+The framework catching an exception is a safety net, not error handling: the
+failed handler stopped half-way, and the sender gets no answer. Where you can
+handle an error meaningfully, catch it in the handler:
 
 ```cpp
 void on_request(const request& msg) {

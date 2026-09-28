@@ -273,10 +273,7 @@ void system::wait_for_shutdown() {
         // Cancel any active timers for this actor
         cancel_actor_timers(actor_ptr.get());
 
-        // Set actor context (though on_stop shouldn't send messages)
-        current_actor_context = actor_ptr.get();
-        actor_ptr->on_stop();
-        current_actor_context = nullptr;
+        actor_ptr->run_stop_hook(actor::stop_hook::on_stop);
         actor_ptr->set_state(actor_state::stopped);
     }
 
@@ -318,6 +315,8 @@ void system::reset() {
 
     // Reset instance ID counter
     inst.m_next_instance_id.store(1);
+
+    inst.m_handler_exceptions.store(0);
 
     // Reset thread assignment counter
     inst.m_next_thread_assignment.store(0);
@@ -839,12 +838,10 @@ bool system::service_stop(actor* target) {
         return false;
     }
 
-    // Final hooks, on this - the executing - thread.
-    actor* prev_context = current_actor_context;
-    current_actor_context = target;
-    target->on_shutdown();
-    target->on_stop();
-    current_actor_context = prev_context;
+    // Final hooks, on this - the executing - thread. An exception from
+    // either is reported; the stop still completes.
+    target->run_stop_hook(actor::stop_hook::on_shutdown);
+    target->run_stop_hook(actor::stop_hook::on_stop);
 
     // on_shutdown() may have scheduled timers; the actor is gone, cancel them.
     cancel_actor_timers(target);
@@ -1177,6 +1174,67 @@ void system::clear_dead_letter_handler() {
 
     std::lock_guard<std::mutex> lock(inst.m_dead_letter_handler_mutex);
     inst.m_dead_letter_handler.reset();
+}
+
+void system::set_handler_exception_handler(handler_exception_handler handler) {
+    auto& inst = instance();
+    std::lock_guard<std::mutex> lock(inst.m_handler_exception_handler_mutex);
+    if (handler) {
+        inst.m_handler_exception_handler = std::make_shared<handler_exception_handler>(std::move(handler));
+    } else {
+        inst.m_handler_exception_handler.reset();
+    }
+}
+
+void system::clear_handler_exception_handler() {
+    auto& inst = instance();
+    std::lock_guard<std::mutex> lock(inst.m_handler_exception_handler_mutex);
+    inst.m_handler_exception_handler.reset();
+}
+
+size_t system::handler_exception_count() {
+    return instance().m_handler_exceptions.load(std::memory_order_relaxed);
+}
+
+void system::report_handler_exception(const actor& target, std::type_index message_type,
+                                      uint64_t message_id, const char* source,
+                                      std::exception_ptr error, exception_action action) {
+    auto& inst = instance();
+    inst.m_handler_exceptions.fetch_add(1, std::memory_order_relaxed);
+
+    std::string what = "unknown exception";
+    try {
+        std::rethrow_exception(error);
+    } catch (const std::exception& e) {
+        what = e.what();
+    } catch (...) {
+    }
+
+    // INVARIANT 2: copy the callback under its mutex, call it without
+    std::shared_ptr<handler_exception_handler> handler;
+    {
+        std::lock_guard<std::mutex> lock(inst.m_handler_exception_handler_mutex);
+        handler = inst.m_handler_exception_handler;
+    }
+
+    if (handler && *handler) {
+        handler_exception_info info(target.name(), message_type, message_id, source,
+                                    what, error, action);
+        try {
+            (*handler)(info);
+        } catch (...) {
+            // A throwing reporting callback must not take the worker down either
+        }
+        return;
+    }
+
+    // No callback: never lose it silently (INVARIANT 5)
+    std::cerr << "[CAS] exception in " << source << " of actor '" << target.name() << "'";
+    if (message_type != std::type_index(typeid(void))) {
+        std::cerr << " handling " << message_type.name();
+    }
+    std::cerr << ": " << what
+              << (action == exception_action::stop ? " - stopping the actor" : "") << "\n";
 }
 
 void system::report_invalid_target(std::type_index message_type) {

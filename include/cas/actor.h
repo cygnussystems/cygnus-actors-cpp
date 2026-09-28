@@ -15,6 +15,7 @@
 #include <type_traits>
 #include <tuple>
 #include <thread>
+#include <exception>
 #include "timer.h"
 #include "detail/mailbox.h"
 #include "detail/ready_queue.h"
@@ -66,6 +67,13 @@ concept message_handler_for = std::invocable<Callable, const MessageType&>;
 // handler for message_base itself. Do not tighten this to a proper-base check.
 template<typename MessageType>
 concept message_type = std::derived_from<MessageType, message_base>;
+
+/// What an actor does after one of its message handlers threw
+/// (see actor::on_handler_exception()).
+enum class exception_action {
+    resume,  ///< keep the actor running; handle the next message
+    stop     ///< stop the actor: queued messages become dead letters, watchers are notified
+};
 
 // Actor lifecycle state
 enum class actor_state {
@@ -224,6 +232,19 @@ private:
     // Adding a friend here is a threading-model change - see doc/INVARIANTS.md.
     void dispatch_message(message_base* msg);
 
+    // A tell() handler threw: consult on_handler_exception(), report, and
+    // stop this actor if asked to. Runs on the executing thread.
+    void handle_handler_exception(const message_base& msg, std::exception_ptr error);
+
+protected:
+    // Internal: run a lifecycle hook (on_shutdown / on_stop) with this actor
+    // as the current context; an exception is reported, never propagated,
+    // so a stop always completes. For framework stop paths only.
+    enum class stop_hook { on_shutdown, on_stop };
+    void run_stop_hook(stop_hook hook);
+
+private:
+
 protected:
     // Lifecycle hooks - override these
     // on_start() is required - use it to register message handlers and initialize state
@@ -234,6 +255,16 @@ protected:
     virtual void on_shutdown() {}
 
     virtual void on_stop() {}
+
+    /// Called on the actor's own thread when one of its message handlers (or
+    /// on_unhandled_message()) threw. The exception was caught by the
+    /// framework and reported to system::set_handler_exception_handler().
+    /// Return exception_action::stop to stop this actor (stop_mode::discard:
+    /// queued messages become dead letters; watchers get termination_msg).
+    /// Default: resume. Not called for call() handlers - their exception goes
+    /// to the caller - or for inline_actor handlers - theirs propagates to the
+    /// sender. If this override throws, the actor is stopped.
+    virtual exception_action on_handler_exception(const message_base& msg, std::exception_ptr error);
 
     // Called when a message has no registered handler
     virtual void on_unhandled_message(message_base* /*msg*/) {

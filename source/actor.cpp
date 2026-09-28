@@ -293,7 +293,7 @@ void actor::dispatch_message(message_base* msg) {
         if (!m_stop_phase.compare_exchange_strong(expected, stop_phase::system_shutdown)) {
             return;
         }
-        on_shutdown();
+        run_stop_hook(stop_hook::on_shutdown);
         // The actor no longer accepts messages: timer ticks from here on would
         // only be dead letters. Includes timers on_shutdown() just scheduled,
         // as stop_actor() does. Owning thread, so m_active_timers is safe.
@@ -309,22 +309,76 @@ void actor::dispatch_message(message_base* msg) {
     }
 
     auto it = m_handlers.find(typeid(*msg));
-    if (it != m_handlers.end()) {
-        // Found handler - call it
+    try {
+        if (it != m_handlers.end()) {
+            // Found handler - call it
 #ifdef CAS_DEBUG_LOGGING
-        std::cout << "[DISPATCH:" << name() << "] Handler found, calling...\n" << std::flush;
+            std::cout << "[DISPATCH:" << name() << "] Handler found, calling...\n" << std::flush;
 #endif
-        it->second(msg);
+            it->second(msg);
 #ifdef CAS_DEBUG_LOGGING
-        std::cout << "[DISPATCH:" << name() << "] Handler completed\n" << std::flush;
+            std::cout << "[DISPATCH:" << name() << "] Handler completed\n" << std::flush;
 #endif
-    } else {
-        // No handler registered for this message type
+        } else {
+            // No handler registered for this message type
 #ifdef CAS_DEBUG_LOGGING
-        std::cout << "[DISPATCH:" << name() << "] No handler found!\n" << std::flush;
+            std::cout << "[DISPATCH:" << name() << "] No handler found!\n" << std::flush;
 #endif
-        on_unhandled_message(msg);
+            on_unhandled_message(msg);
+        }
+    } catch (...) {
+        // An inline actor runs on its sender's thread: the sender gets the
+        // exception, as documented. Everywhere else it would unwind out of a
+        // framework thread and terminate the process (issue 014).
+        if (runs_inline()) {
+            throw;
+        }
+        handle_handler_exception(*msg, std::current_exception());
     }
+}
+
+exception_action actor::on_handler_exception(const message_base& /*msg*/, std::exception_ptr /*error*/) {
+    return exception_action::resume;
+}
+
+void actor::handle_handler_exception(const message_base& msg, std::exception_ptr error) {
+    exception_action action = exception_action::resume;
+    try {
+        action = on_handler_exception(msg, error);
+    } catch (...) {
+        action = exception_action::stop;
+    }
+
+    system::report_handler_exception(*this, typeid(msg), msg.message_id, "handler", error, action);
+
+    if (action == exception_action::stop) {
+        if (auto shared = m_self_ref.lock()) {
+            // This thread executes the actor, so this returns at once and the
+            // stop completes after the current handler. Returns false if a
+            // stop or system shutdown is already under way - nothing to do.
+            stop_config config;
+            config.mode = stop_mode::discard;
+            config.wait_for_stop = false;
+            system::stop_actor(actor_ref(shared), config);
+        }
+    }
+}
+
+void actor::run_stop_hook(stop_hook hook) {
+    actor* prev_context = current_actor_context;
+    current_actor_context = this;
+    try {
+        if (hook == stop_hook::on_shutdown) {
+            on_shutdown();
+        } else {
+            on_stop();
+        }
+    } catch (...) {
+        system::report_handler_exception(*this, typeid(void), 0,
+                                         hook == stop_hook::on_shutdown ? "on_shutdown" : "on_stop",
+                                         std::current_exception(), exception_action::resume);
+    }
+    current_actor_context = prev_context;
 }
 
 void actor::process_next_message() {

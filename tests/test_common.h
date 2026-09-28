@@ -62,6 +62,7 @@ struct cas_config_guard {
         try {
             cas::system::clear_queue_threshold_handler();
             cas::system::clear_dead_letter_handler();
+            cas::system::clear_handler_exception_handler();
             cas::system::configure(cas::system_config{});
         } catch (...) {
             // Never propagate from a destructor

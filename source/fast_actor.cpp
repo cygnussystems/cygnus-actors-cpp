@@ -91,10 +91,8 @@ void fast_actor::run_dedicated_thread_started() {
         current_actor_context = nullptr;
     }
 
-    // Call on_stop()
-    current_actor_context = this;
-    on_stop();
-    current_actor_context = nullptr;
+    // Call on_stop(); an exception is reported, not propagated
+    run_stop_hook(stop_hook::on_stop);
 }
 
 } // namespace cas

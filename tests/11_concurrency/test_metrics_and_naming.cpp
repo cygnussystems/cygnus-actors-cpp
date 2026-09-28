@@ -161,6 +161,10 @@ TEST_CASE("name() can be read while the actor renames itself",
             reads += n.size() > 0 ? 1 : 0;
         }
     });
+    // Make the reads overlap the renames: wait for the reader to be running
+    while (reads.load() == 0) {
+        std::this_thread::yield();
+    }
     for (int i = 0; i < 200; ++i) {
         a.rename("renamed_" + std::to_string(i));
     }

@@ -12,6 +12,7 @@
 #include <condition_variable>
 #include <functional>
 #include <typeindex>
+#include <exception>
 #include <set>
 #include "timer.h"
 #include "timer_manager.h"
@@ -32,8 +33,9 @@ enum class threading_model {
     dedicated  // Runs on its own dedicated thread
 };
 
-// Forward declaration of actor_state (defined in actor.h)
+// Forward declarations (defined in actor.h)
 enum class actor_state;
+enum class exception_action;
 
 // Dead letter statistics - always collected (negligible overhead)
 struct dead_letter_stats {
@@ -70,6 +72,28 @@ struct queue_threshold_info {
 // Called once per breach, from the thread that enqueued the message.
 // Keep the handler cheap and non-blocking - it runs on the send path.
 using queue_threshold_handler = std::function<void(const queue_threshold_info&)>;
+
+/// An exception thrown by an actor's message handler or stop hook, caught by
+/// the framework (passed to the handler_exception_handler callback)
+struct handler_exception_info {
+    std::string actor_name;
+    std::type_index message_type;  ///< the message being handled; typeid(void) for a hook
+    uint64_t message_id;           ///< 0 for a hook
+    std::string source;            ///< "handler", "on_shutdown" or "on_stop"
+    std::string what;              ///< what() of a std::exception, else "unknown exception"
+    std::exception_ptr error;      ///< the exception itself, for rethrow-and-inspect
+    exception_action action;       ///< what the actor does next (resume for hooks)
+
+    handler_exception_info(std::string name, std::type_index type, uint64_t id,
+                           std::string src, std::string text, std::exception_ptr err,
+                           exception_action next)
+        : actor_name(std::move(name)), message_type(type), message_id(id), source(std::move(src)),
+          what(std::move(text)), error(std::move(err)), action(next) {}
+};
+
+/// Callback for handler exceptions. Runs on the actor's executing thread,
+/// right after the failed handler; keep it cheap and non-blocking.
+using handler_exception_handler = std::function<void(const handler_exception_info&)>;
 
 // Configuration for the actor system
 struct system_config {
@@ -220,6 +244,11 @@ private:
     // Optional queue threshold callback handler
     std::shared_ptr<queue_threshold_handler> m_queue_threshold_handler;
     std::mutex m_queue_threshold_handler_mutex;
+
+    // Handler exceptions: count, and optional callback
+    std::atomic<size_t> m_handler_exceptions{0};
+    std::shared_ptr<handler_exception_handler> m_handler_exception_handler;
+    std::mutex m_handler_exception_handler_mutex;
 
     // Singleton instance
     static system& instance();
@@ -404,6 +433,20 @@ public:
 
     // Clear the queue threshold handler
     static void clear_queue_threshold_handler();
+
+    /// Set the callback for exceptions thrown by message handlers (pooled,
+    /// fast and stateful actors) and by on_shutdown()/on_stop(). Without one,
+    /// each is written to stderr. Pass an empty function to clear.
+    static void set_handler_exception_handler(handler_exception_handler handler);
+    static void clear_handler_exception_handler();
+
+    /// Handler and stop-hook exceptions caught since start (reset by reset())
+    static size_t handler_exception_count();
+
+    // Internal: report a caught handler / hook exception
+    static void report_handler_exception(const actor& target, std::type_index message_type,
+                                         uint64_t message_id, const char* source,
+                                         std::exception_ptr error, exception_action action);
 
     // Internal: report a dead letter (called by actor::enqueue_message)
     static void report_dead_letter(const std::string& actor_name,

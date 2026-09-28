@@ -202,6 +202,8 @@ modelled on `set_dead_letter_handler()`.
 
 **Test:** `tests/11_concurrency/test_queue_threshold.cpp`
 
+
+Handler exceptions (issue 014) follow the same rule: caught in `actor::dispatch_message()` and the stop hooks, counted (`system::handler_exception_count()`), passed to `set_handler_exception_handler()`, and written to stderr when no callback is set - never silently dropped, never fatal. Test: `tests/11_concurrency/test_handler_exceptions.cpp`.
 ---
 
 ## INVARIANT 6 — `on_start()` runs exactly once, and cannot block
