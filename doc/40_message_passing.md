@@ -320,7 +320,9 @@ target << msg;  // Same as target.tell(msg)
 actor_ref worker1 = cas::actor_registry::get("worker1");
 actor_ref worker2 = cas::actor_registry::get("worker2");
 
-work_request msg{123, "data"};
+work_request msg;  // messages are not aggregates: set fields after construction
+msg.task_id = 123;
+msg.data = "data";
 
 worker1 << msg;
 worker2 << msg;  // Send same message to multiple actors
@@ -750,17 +752,19 @@ struct large_data_msg : public cas::message_base {
 auto data = std::make_shared<std::vector<uint8_t>>(1000000);
 
 // Send to many actors (only pointer copied)
-large_data_msg msg{data};
+large_data_msg msg;
+msg.data = data;
 actor1.tell(msg);  // Fast
 actor2.tell(msg);  // Fast
 actor3.tell(msg);  // Fast
 ```
 
-### Lock-Free Queues
+### Lock-Free Mailboxes
 
-Message sending uses lock-free queues (moodycamel::ConcurrentQueue):
-- No lock contention
-- ~1-10 microsecond latency
+Each actor's mailbox is lock-free (an intrusive stack that senders push to
+with one atomic operation, adapted from CAF - see `THIRD_PARTY_NOTICES.md`):
+- No lock on the send path
+- About 1 µs round trip between actors (see the README's benchmarks)
 - Scales with cores
 
 ### Batch Sending
@@ -770,13 +774,15 @@ When sending many messages:
 ```cpp
 // ✓ GOOD: Send all at once
 for (int i = 0; i < 1000; ++i) {
-    work_msg msg{i};
+    work_msg msg;
+    msg.index = i;
     worker.tell(msg);  // Fast
 }
 
 // ✗ BAD: Don't interleave with slow operations
 for (int i = 0; i < 1000; ++i) {
-    work_msg msg{i};
+    work_msg msg;
+    msg.index = i;
     worker.tell(msg);
     std::this_thread::sleep_for(1ms);  // Slow!
 }

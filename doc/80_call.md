@@ -585,7 +585,9 @@ for (int i = 0; i < 1000; ++i) {
 
 // ✓ GOOD: Use async messages
 for (int i = 0; i < 1000; ++i) {
-    actor.tell(process_msg{i});  // Asynchronous, fast!
+    process_msg m;
+    m.value = i;
+    actor.tell(m);  // Asynchronous, fast!
 }
 ```
 

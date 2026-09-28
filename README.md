@@ -219,6 +219,20 @@ struct order : cas::message_base {
 };
 ```
 
+`message_base` is polymorphic (it has a virtual destructor), so messages are
+not aggregates: `order{"AAPL", 100, 1.5}` does not compile. Construct, set the
+fields, then send:
+
+```cpp
+order o;
+o.symbol = "AAPL";
+o.quantity = 100;
+o.price = 1.5;
+exchange.tell(o);
+
+exchange.tell(heartbeat{});  // empty braces are fine
+```
+
 ### Message Fields (Automatic)
 
 Every message automatically has:
@@ -339,7 +353,9 @@ worker.tell(task{});
 // Look up by name
 auto logger = cas::actor_registry::get("logger");
 if (logger.is_valid()) {
-    logger.tell(log_message{"Something happened"});
+    log_message msg;              // messages are not aggregates: set fields,
+    msg.text = "Something happened";  // then send (see "Messages" above)
+    logger.tell(msg);
 }
 ```
 
@@ -394,13 +410,14 @@ cas::system::start();
 cas::system::stop_actor(worker);
 
 // What happens now?
-worker.tell(some_message{});  // Message is SILENTLY DROPPED
+worker.tell(some_message{});  // Dropped, and counted as a dead letter
 
 // The actor_ref is still valid (points to actor object)
 worker.is_valid();    // true - object exists
 worker.is_running();  // false - actor is stopped
 
-// Safe pattern: check before sending
+// Useful for a decision, not a guarantee: the actor can stop between the
+// check and the tell()
 if (worker.is_running()) {
     worker.tell(msg);
 } else {
@@ -408,7 +425,12 @@ if (worker.is_running()) {
 }
 ```
 
-**Important**: Messages to stopped actors are silently dropped - no exception, no error. Check `is_running()` if you need guaranteed delivery.
+**Important**: a message to a stopped actor is dropped without an exception.
+It is counted as a dead letter (`cas::system::get_dead_letter_stats()`), passed
+to your dead-letter handler if you set one
+(`cas::system::set_dead_letter_handler()`), and logged if
+`system_config::log_dead_letters` is on. If delivery must be confirmed, have
+the receiver reply.
 
 ## Memory Pool
 
@@ -562,7 +584,7 @@ void on_start() override {
     handler<timeout>(&my_actor::on_timeout);
 
     // Fire once after 5 seconds
-    schedule_once<timeout>(std::chrono::seconds(5));
+    schedule_once(std::chrono::seconds(5), timeout{});
 
     // With custom message content
     timeout msg;
@@ -582,7 +604,7 @@ void on_start() override {
     handler<heartbeat>(&my_actor::on_heartbeat);
 
     // Fire every 100ms
-    m_timer_id = schedule_periodic<heartbeat>(std::chrono::milliseconds(100));
+    m_timer_id = schedule_periodic(std::chrono::milliseconds(100), heartbeat{});
 }
 
 void on_heartbeat(const heartbeat& msg) {
@@ -590,21 +612,24 @@ void on_heartbeat(const heartbeat& msg) {
 }
 
 void on_shutdown() override {
-    // Cancel timer during shutdown
+    // Cancel during system shutdown: otherwise it keeps firing until
+    // wait_for_shutdown(), and each tick after this point is a dead letter
     cancel_timer(m_timer_id);
 }
 
-uint64_t m_timer_id;
+cas::timer_id m_timer_id = cas::INVALID_TIMER_ID;
 ```
 
 ### Timer Cancellation
 
 ```cpp
 // Cancel by ID
-uint64_t id = schedule_periodic<tick>(std::chrono::seconds(1));
+cas::timer_id id = schedule_periodic(std::chrono::seconds(1), tick{});
 cancel_timer(id);
 
-// Timers are automatically cancelled when actor stops
+// stop_actor() cancels the actor's timers. On system shutdown they keep
+// running until wait_for_shutdown(), so cancel periodic timers in
+// on_shutdown().
 ```
 
 ## Call (RPC)
@@ -694,7 +719,7 @@ auto ref = cas::system::create<latency_critical>();
 Execute in caller's thread. Zero latency but blocks caller.
 
 ```cpp
-class sync_processor : public cas::inline_actor {
+class sync_processor : public cas::inline_actor<> {  // <false>: single sender, no mutex
     // Handlers run synchronously when tell() is called
 };
 
@@ -925,10 +950,10 @@ template<typename T, typename Callable> void handler(Callable&& callable);
 template<typename R, typename Tag, typename... Args>
 void call_handler(R (Derived::*method)(Args...));
 
-// Timer scheduling
-template<typename T> uint64_t schedule_once(duration delay);
-template<typename T> uint64_t schedule_periodic(duration interval);
-void cancel_timer(uint64_t timer_id);
+// Timer scheduling (the message is copied; each firing delivers a copy)
+template<typename T> cas::timer_id schedule_once(std::chrono::milliseconds delay, T msg);
+template<typename T> cas::timer_id schedule_periodic(std::chrono::milliseconds interval, T msg);
+void cancel_timer(cas::timer_id id);
 
 // Identity
 void set_name(const std::string& name);
@@ -941,9 +966,12 @@ actor_ref self();
 // Send a message (non-blocking)
 template<typename T> void tell(const T& msg) const;
 
-// Synchronous call (blocking, with timeout)
+// Synchronous call (blocking). Argument types must match the handler's
+// parameter types exactly; a mismatch throws cas::call_type_error.
 template<typename R, typename Tag, typename... Args>
-std::optional<R> call(Args&&... args, duration timeout);
+R call(Tag op, Args&&... args);
+template<typename R, typename Tag, typename... Args>
+std::optional<R> call(Tag op, std::chrono::milliseconds timeout, Args&&... args);
 
 // State queries
 bool is_valid() const;    // Points to an actor

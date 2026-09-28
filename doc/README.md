@@ -173,33 +173,17 @@ When adding new features or documentation:
 
 ## Version History
 
-### Version 0.2.0 (Current)
-- ✅ Dynamic actor creation and removal
-- ✅ Watch pattern for termination notifications
-- ✅ Synchronous and asynchronous stop modes
-- ✅ Drain and discard message handling
-- ✅ ZeroMQ relay actor for inter-process communication
-
-### Version 0.1.0
-- ✅ Core actor system
-- ✅ Message passing with sender tracking
-- ✅ Actor registry
-- ✅ Lifecycle hooks
-- ✅ Ask pattern (RPC) - now `call()`
-- ✅ Timers (one-shot and periodic)
-- ✅ Fast actors
-- ✅ Inline actors
-- ✅ Stateful actors
+See [CHANGELOG.md](../CHANGELOG.md) for the full record. Current release: **1.0.0**
+(2026-08-04); unreleased changes are listed there under *Unreleased*.
 
 ## License
 
-[Add license information here]
+MIT - see [LICENSE](../LICENSE). Third-party code included in the library is
+listed in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
 
 ## Support
 
-- **Issues**: [GitHub Issues](https://github.com/your-repo/cygnus/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/your-repo/cygnus/discussions)
-- **Email**: your-email@example.com
+- **Issues**: [GitHub Issues](https://github.com/cygnussystems/cygnus-actors-cpp/issues)
 
 ## Next Steps
 

@@ -251,9 +251,13 @@ protected:
 
 ## Timer Lifecycle
 
-### Automatic Cleanup on Shutdown
+### Automatic Cleanup on Stop
 
-Timers are **automatically cancelled** when actors stop:
+`stop_actor()` cancels the actor's timers. Whole-system shutdown does not
+cancel them until `wait_for_shutdown()`: between an actor's `on_shutdown()`
+and then, its timers keep firing, and since the actor is no longer accepting
+messages each tick is rejected and counted as a dead letter. Cancel periodic
+timers in `on_shutdown()` to avoid that noise:
 
 ```cpp
 class auto_cleanup : public cas::actor {
@@ -272,16 +276,20 @@ protected:
     }
 
     void on_shutdown() override {
-        // Timer automatically cancelled - no need to call cancel_timer()
-        std::cout << "Shutting down (timer auto-cancelled)" << std::endl;
+        // During system shutdown the timer would keep firing until
+        // wait_for_shutdown(), each tick becoming a dead letter
+        cancel_timer(m_timer);
     }
 };
 ```
 
 **Behavior:**
-- System shutdown → all timers cancelled
-- Individual actor stop → that actor's timers cancelled
-- No timer fires after actor stops
+- `stop_actor()` → that actor's timers cancelled
+- System shutdown → timers cancelled in `wait_for_shutdown()`; ticks before
+  that are rejected (dead letters) once the actor has run `on_shutdown()`
+- No timer message is *handled* after the actor stops
+- A tick already fired cannot be recalled: `cancel_timer()` stops future
+  firings, but a message already queued is still delivered
 
 ### Manual Cleanup in on_shutdown()
 
@@ -668,7 +676,8 @@ struct efficient_message : public cas::message_base {
 };
 
 auto data = std::make_shared<std::vector<uint8_t>>(large_data);
-efficient_message msg{data};
+efficient_message msg;  // messages are not aggregates: set fields after construction
+msg.data = data;
 
 schedule_periodic(interval, msg);  // Only pointer copied
 ```
@@ -725,19 +734,17 @@ void on_complete(const complete& msg) {
 ```cpp
 // ✗ BAD: Creating many one-shot timers
 for (int i = 0; i < 1000; ++i) {
-    schedule_once(
-        std::chrono::milliseconds(i),
-        task{i}
-    );
+    task t;
+    t.id = i;
+    schedule_once(std::chrono::milliseconds(i), t);
 }
 
 // ✓ GOOD: Use one timer and schedule sequentially
 void on_task_complete(const task_complete& msg) {
     if (m_current_task < 1000) {
-        schedule_once(
-            std::chrono::milliseconds(1),
-            task{m_current_task++}
-        );
+        task t;
+        t.id = m_current_task++;
+        schedule_once(std::chrono::milliseconds(1), t);
     }
 }
 ```
@@ -784,7 +791,9 @@ void on_tick(const tick& msg) {
 }
 
 void on_shutdown() override {
-    std::cout << "Timers auto-cancelled on shutdown" << std::endl;
+    // Timers are cancelled at wait_for_shutdown(); cancel here to stop
+    // ticks from turning into dead letters in the meantime
+    std::cout << "Shutting down" << std::endl;
 }
 ```
 

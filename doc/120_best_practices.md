@@ -63,8 +63,9 @@ protected:
 ```cpp
 void on_request(const request& msg) {
     // ✓ Fast processing
-    auto result = calculate(msg.data);
-    msg.sender.tell(response{result});
+    response r;
+    r.result = calculate(msg.data);
+    msg.sender.tell(r);
 }
 ```
 
@@ -94,15 +95,18 @@ void on_request(const request& msg) {
 
 // Option 2: Use timers for delays
 void on_request(const request& msg) {
-    schedule_once(std::chrono::seconds(5), delayed_msg{msg.data});
+    delayed_msg delayed;
+    delayed.data = msg.data;
+    schedule_once(std::chrono::seconds(5), delayed);
 }
 
 // Option 3: Use fast_actor for tight loops with yielding
 class io_actor : public cas::fast_actor {
     void on_read(const read& msg) {
         // Fast actor can do I/O without blocking pool threads
-        auto data = read_file(msg.filename);
-        msg.sender.tell(data_msg{data});
+        data_msg reply;
+        reply.data = read_file(msg.filename);
+        msg.sender.tell(reply);
     }
 };
 ```
@@ -149,8 +153,8 @@ public:
         // ✗ WRONG: Registry not ready yet
         m_dependency = cas::actor_registry::get("dependency");  // Returns invalid!
 
-        // ✗ WRONG: System not started
-        set_name("service");  // May not work correctly
+        // ✗ WRONG: not created by the system yet
+        set_name("service");  // Sets the name but does not register it - call it in on_start()
     }
 };
 ```
@@ -176,10 +180,18 @@ void on_stop() override {
 ```
 
 **DON'T:** Send messages in `on_stop()`
+
+During system shutdown every actor is stopping, so messages sent from
+`on_stop()` become dead letters (counted, and delivered to the dead-letter
+handler if one is set). After `stop_actor()` the rest of the system is still
+running and they are delivered - but don't rely on that in code that also runs
+at shutdown.
 ```cpp
 void on_stop() override {
-    // ✗ WRONG: Messages will be dropped
-    m_logger.tell(log_msg{"Stopped"});  // Silently dropped!
+    // ✗ WRONG: During shutdown this becomes a dead letter
+    log_msg entry;
+    entry.text = "Stopped";
+    m_logger.tell(entry);  // Not processed - the logger is stopping too
 
     // ✓ GOOD: Use stdout instead
     std::cout << "Actor stopped" << std::endl;
@@ -260,8 +272,15 @@ struct result : public cas::message_base {
 };
 
 class worker : public cas::actor {
+private:
+    std::string m_name;
+
+public:
+    explicit worker(std::string name) : m_name(std::move(name)) {}
+
 protected:
     void on_start() override {
+        set_name(m_name);  // each actor names itself
         handler<task>(&worker::on_task);
     }
 
@@ -291,9 +310,9 @@ protected:
 
         // Create worker pool
         for (int i = 0; i < 4; ++i) {
-            auto worker = cas::system::create<worker>();
-            worker.get_checked<::worker>().set_name("worker_" + std::to_string(i));
-            m_workers.push_back(cas::actor_registry::get("worker_" + std::to_string(i)));
+            // Pass the name to the constructor; the worker sets it in its own on_start()
+            m_workers.push_back(
+                cas::system::create<worker>("worker_" + std::to_string(i)));
         }
     }
 
@@ -341,7 +360,8 @@ struct event : public cas::message_base {
 
 class event_bus : public cas::actor {
 private:
-    std::map<std::string, std::set<cas::actor_ref>> m_subscribers;
+    // actor_ref has only == / != (no operator< or hash), so use a vector
+    std::map<std::string, std::vector<cas::actor_ref>> m_subscribers;
 
 protected:
     void on_start() override {
@@ -352,11 +372,15 @@ protected:
     }
 
     void on_subscribe(const subscribe& msg) {
-        m_subscribers[msg.topic].insert(msg.sender);
+        auto& subs = m_subscribers[msg.topic];
+        if (std::find(subs.begin(), subs.end(), msg.sender) == subs.end()) {
+            subs.push_back(msg.sender);
+        }
     }
 
     void on_unsubscribe(const unsubscribe& msg) {
-        m_subscribers[msg.topic].erase(msg.sender);
+        auto& subs = m_subscribers[msg.topic];
+        subs.erase(std::remove(subs.begin(), subs.end(), msg.sender), subs.end());
     }
 
     void on_publish(const publish& msg) {
@@ -487,9 +511,9 @@ protected:
     }
 
     void create_worker(int id) {
-        auto worker = cas::system::create<worker_actor>();
-        worker.get_checked<worker_actor>().set_name("worker_" + std::to_string(id));
-        auto worker_ref = cas::actor_registry::get("worker_" + std::to_string(id));
+        // worker_actor takes its name as a constructor argument and calls
+        // set_name(name) in its own on_start()
+        auto worker_ref = cas::system::create<worker_actor>("worker_" + std::to_string(id));
 
         // Watch for termination
         cas::system::watch(self(), worker_ref);
@@ -504,7 +528,7 @@ protected:
         m_workers.erase(
             std::remove_if(m_workers.begin(), m_workers.end(),
                 [&](const cas::actor_ref& ref) {
-                    return ref.instance_id() == msg.instance_id;
+                    return ref.get<cas::actor>()->instance_id() == msg.instance_id;
                 }),
             m_workers.end());
 
@@ -608,8 +632,9 @@ protected:
 ```cpp
 void on_request(const request& msg) {
     // ✗ Blocks entire actor (and pool thread)
-    auto result = expensive_calculation();  // Takes 5 seconds
-    msg.sender.tell(response{result});
+    response r;
+    r.result = expensive_calculation();  // Takes 5 seconds
+    msg.sender.tell(r);
 }
 ```
 
@@ -627,15 +652,18 @@ void on_process_chunk(const process_chunk& msg) {
         schedule_once(std::chrono::milliseconds(0), process_chunk{});
     } else {
         // Done
-        m_current_work.sender.tell(response{get_result()});
+        response r;
+        r.result = get_result();
+        m_current_work.sender.tell(r);
     }
 }
 
 // Option 2: Use fast_actor with yielding
 class compute_actor : public cas::fast_actor {
     void on_request(const request& msg) {
-        auto result = expensive_calculation();  // OK on dedicated thread
-        msg.sender.tell(response{result});
+        response r;
+        r.result = expensive_calculation();  // OK on dedicated thread
+        msg.sender.tell(r);
     }
 };
 ```
@@ -764,7 +792,7 @@ void on_query(const query& msg) {
     response.value = lookup(msg.key);
 
     // ✗ Forgot to check sender validity
-    msg.sender.tell(response);  // May crash if sender invalid!
+    msg.sender.tell(response);  // Invalid sender: tell() does nothing - reply silently lost (not counted)
 }
 ```
 
@@ -897,12 +925,21 @@ actor_ref.tell(msg);  // 1 queue operation
 **Avoid:**
 ```cpp
 // ✗ Synchronous call from actor (blocks)
+// The database registers: call_handler<query_response, query_op>(&database::lookup);
+// with query_response lookup(const std::string& key);  (see Call, 80_call.md)
 void on_request(const request& msg) {
-    auto result = m_database.call<query, query_response>(
-        query{"key"},
-        std::chrono::seconds(1));  // Blocks actor thread!
+    // Argument types must match the handler's parameters exactly:
+    // pass std::string, not a string literal (that throws cas::call_type_error)
+    auto result = m_database.call<query_response>(
+        query_op{},
+        std::chrono::seconds(1),
+        std::string("key"));  // Blocks actor thread!
 
-    msg.sender.tell(response{result.value});
+    if (result) {
+        response r;
+        r.value = result->value;
+        msg.sender.tell(r);
+    }
 }
 ```
 
@@ -910,20 +947,24 @@ void on_request(const request& msg) {
 ```cpp
 // ✓ Async request-response pattern
 void on_request(const request& msg) {
-    // Store original sender
-    m_pending_requests[next_id()] = msg.sender;
+    // Store original sender under a request id
+    uint64_t id = next_id();
+    m_pending_requests[id] = msg.sender;
 
-    // Send async query
+    // Send async query; the database copies correlation_id into its reply
     query q;
     q.key = "key";
+    q.correlation_id = id;
     m_database.tell(q);  // Non-blocking
 }
 
 void on_query_response(const query_response& msg) {
     // Find original requester
-    auto it = m_pending_requests.find(msg.request_id);
+    auto it = m_pending_requests.find(msg.correlation_id);
     if (it != m_pending_requests.end()) {
-        it->second.tell(response{msg.value});
+        response r;
+        r.value = msg.value;
+        it->second.tell(r);
         m_pending_requests.erase(it);
     }
 }
@@ -937,7 +978,7 @@ void on_query_response(const query_response& msg) {
 class my_actor : public cas::actor {
 public:
     my_actor() {
-        handler<msg>(&my_actor::on_msg);  // System not ready!
+        handler<msg>(&my_actor::on_msg);  // Register in on_start(): not yet registered/named here
     }
 };
 ```
@@ -1059,7 +1100,9 @@ TEST_CASE("Actor cleans up on shutdown") {
     auto ref = cas::actor_registry::get("file");
 
     // Open file
-    ref.tell(open_file{"test.txt"});
+    open_file open;
+    open.path = "test.txt";
+    ref.tell(open);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
     // Shutdown

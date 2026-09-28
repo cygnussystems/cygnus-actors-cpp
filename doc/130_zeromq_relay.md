@@ -22,52 +22,85 @@ Inter-process actor communication via ZeroMQ. The `zeromq_relay_actor` enables a
 
 ## Quick Example
 
+Messages derive from `cas::message_base`, which is polymorphic, so they are not
+aggregates: set fields after construction (empty braces `T{}` are fine).
+
 ```cpp
 #include "cas/cas.h"
+#include <atomic>
+#include <chrono>
+#include <thread>
+
+std::atomic<bool> g_running{true};  // cleared by your signal handler (e.g. Ctrl+C)
 
 // Server process (ROUTER mode)
 void run_server() {
     auto relay = cas::system::create<cas::zeromq_relay_actor>();
     auto handler = cas::system::create<message_handler>();
-    
+
     cas::system::start();
-    
+
+    // Route incoming messages first: errors (e.g. a failed bind) are only
+    // delivered to route targets, so a relay without routes loses them
+    cas::msg::zeromq_route route;
+    route.message_type = "tick";
+    route.target = handler;
+    relay.tell(route);
+
     // Bind to endpoint
-    relay.tell(cas::msg::zeromq_bind{"tcp://*:5555"});
-    
-    // Route incoming messages
-    relay.tell(cas::msg::zeromq_route{
-        .message_type = "tick",
-        .target = handler
-    });
-    
+    cas::msg::zeromq_bind bind;
+    bind.endpoint = "tcp://*:5555";
+    relay.tell(bind);
+
+    // Keep the process alive. Do not call wait_for_shutdown() yet: it stops the
+    // timer manager, and the relay polls its socket from a periodic timer
+    while (g_running) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    cas::system::shutdown();
     cas::system::wait_for_shutdown();
 }
 
 // Client process (DEALER mode)
 void run_client() {
     auto relay = cas::system::create<cas::zeromq_relay_actor>();
-    
+    auto handler = cas::system::create<message_handler>();
+
     cas::system::start();
-    
+
+    // Default route (incoming messages and errors) before connecting
+    cas::msg::zeromq_route route;
+    route.target = handler;
+    relay.tell(route);
+
     // Connect to server
-    relay.tell(cas::msg::zeromq_connect{
-        .endpoint = "tcp://localhost:5555",
-        .identity = "client1"
-    });
-    
+    cas::msg::zeromq_connect connect;
+    connect.endpoint = "tcp://localhost:5555";
+    connect.identity = "client1";
+    relay.tell(connect);
+
     // Send FIX message
     std::string fix = "8=FIX.4.2|35=D|55=ES|44=5700.25|";
-    relay.tell(cas::msg::zeromq_send{
-        .correlation_id = 1,
-        .data = {fix.begin(), fix.end()},
-        .content_type = "fix",
-        .message_type = "NewOrderSingle"
-    });
-    
+    cas::msg::zeromq_send send;
+    send.correlation_id = 1;  // not tracked: sent from main(), not an actor
+    send.data.assign(fix.begin(), fix.end());
+    send.content_type = "fix";
+    send.message_type = "NewOrderSingle";
+    relay.tell(send);
+
+    while (g_running) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    cas::system::shutdown();
     cas::system::wait_for_shutdown();
 }
 ```
+
+Every relay calls `set_name("zeromq_relay")` in `on_start()`, so with two relays
+in one process the registry name refers to the last one started. Hold the
+`actor_ref` returned by `create()` instead of looking relays up by name.
 
 ## ZeroMQ Patterns
 
@@ -145,12 +178,12 @@ struct zeromq_route : public cas::message_base {
 
 // Configuration
 struct zeromq_config : public cas::message_base {
-    int poll_interval_ms = 10;
+    int poll_interval_ms = 10;      // Poll timer period (see Performance)
     int send_timeout_ms = 1000;
-    int recv_timeout_ms = 1000;
+    int recv_timeout_ms = 1000;     // Currently unused: receives are non-blocking
     int max_message_size = 1048576; // 1MB
-    bool auto_reconnect = true;
-    int reconnect_delay_ms = 1000;
+    bool auto_reconnect = true;     // Currently unused
+    int reconnect_delay_ms = 1000;  // Currently unused
 };
 
 // Status query/response
@@ -162,7 +195,8 @@ struct zeromq_status : public cas::message_base {
     size_t route_count = 0;
 };
 
-// Error notification
+// Error notification - sent to every route target and the default route;
+// errors raised while no route exists are lost
 struct zeromq_error : public cas::message_base {
     std::string message;
     std::string endpoint;
@@ -181,12 +215,12 @@ The relay is payload-agnostic - it transports raw bytes. Application code handle
 ```cpp
 // Send FIX message
 std::string fix = "8=FIX.4.2|35=D|55=ES|44=5700.25|10=123|";
-relay.tell(cas::msg::zeromq_send{
-    .target = "broker",
-    .data = {fix.begin(), fix.end()},
-    .content_type = "fix",
-    .message_type = "D"  // NewOrderSingle
-});
+cas::msg::zeromq_send send;
+send.target = "broker";
+send.data.assign(fix.begin(), fix.end());
+send.content_type = "fix";
+send.message_type = "D";  // NewOrderSingle
+relay.tell(send);
 
 // Receive FIX message
 void on_zeromq_recv(const cas::msg::zeromq_recv& msg) {
@@ -208,11 +242,11 @@ nlohmann::json j = {
     {"exchange", "CME"}
 };
 std::string json_str = j.dump();
-relay.tell(cas::msg::zeromq_send{
-    .data = {json_str.begin(), json_str.end()},
-    .content_type = "json",
-    .message_type = "subscribe"
-});
+cas::msg::zeromq_send send;
+send.data.assign(json_str.begin(), json_str.end());
+send.content_type = "json";
+send.message_type = "subscribe";
+relay.tell(send);
 
 // Receive JSON
 void on_zeromq_recv(const cas::msg::zeromq_recv& msg) {
@@ -232,11 +266,11 @@ MyMessage proto;
 proto.set_symbol("ES");
 proto.set_price(5700.25);
 std::string serialized = proto.SerializeAsString();
-relay.tell(cas::msg::zeromq_send{
-    .data = {serialized.begin(), serialized.end()},
-    .content_type = "protobuf",
-    .message_type = "tick"
-});
+cas::msg::zeromq_send send;
+send.data.assign(serialized.begin(), serialized.end());
+send.content_type = "protobuf";
+send.message_type = "tick";
+relay.tell(send);
 ```
 
 ## Routing
@@ -245,25 +279,25 @@ relay.tell(cas::msg::zeromq_send{
 
 ```cpp
 // Route by message_type field
-relay.tell(cas::msg::zeromq_route{
-    .message_type = "tick",
-    .target = tick_handler
-});
+cas::msg::zeromq_route tick_route;
+tick_route.message_type = "tick";
+tick_route.target = tick_handler;
+relay.tell(tick_route);
 
-relay.tell(cas::msg::zeromq_route{
-    .message_type = "order",
-    .target = order_handler
-});
+cas::msg::zeromq_route order_route;
+order_route.message_type = "order";
+order_route.target = order_handler;
+relay.tell(order_route);
 ```
 
 ### Default Route
 
 ```cpp
 // Empty message_type = default route for unmatched messages
-relay.tell(cas::msg::zeromq_route{
-    .message_type = "",  // Empty = default
-    .target = default_handler
-});
+cas::msg::zeromq_route route;
+route.message_type = "";  // Empty = default
+route.target = default_handler;
+relay.tell(route);
 ```
 
 ### Correlation-Based Routing
@@ -271,16 +305,22 @@ relay.tell(cas::msg::zeromq_route{
 For request/reply patterns, messages with matching `correlation_id` are routed to the original sender:
 
 ```cpp
-// Send request
-relay.tell(cas::msg::zeromq_send{
-    .correlation_id = 12345,
-    .data = request_data,
-    .message_type = "query"
-});
+// Send request (from inside an actor, so the sender is valid)
+cas::msg::zeromq_send request;
+request.correlation_id = 12345;
+request.data = request_data;
+request.message_type = "query";
+m_relay.tell(request);
 
 // Reply comes back with same correlation_id
-// Automatically routed to original sender
+// Automatically routed to this actor
 ```
+
+A request is tracked only if the `zeromq_send` came from inside an actor (valid
+`sender`) and `correlation_id != 0`. Sends from `main()` or with
+`correlation_id == 0` are not tracked; their replies go through the normal
+routes. Pending entries never expire: an entry whose reply never arrives stays
+until the relay closes its socket.
 
 ## Endpoints
 
@@ -288,43 +328,52 @@ relay.tell(cas::msg::zeromq_send{
 
 ```cpp
 // Server (bind to all interfaces)
-relay.tell(cas::msg::zeromq_bind{"tcp://*:5555"});
+cas::msg::zeromq_bind bind;
+bind.endpoint = "tcp://*:5555";
+relay.tell(bind);
 
 // Client (connect to specific host)
-relay.tell(cas::msg::zeromq_connect{"tcp://192.168.1.100:5555"});
+cas::msg::zeromq_connect connect;
+connect.endpoint = "tcp://192.168.1.100:5555";
+relay.tell(connect);
 ```
 
-### IPC (Unix Domain Sockets / Named Pipes)
+### IPC (Unix Domain Sockets)
 
 ```cpp
 // Linux/macOS
-relay.tell(cas::msg::zeromq_bind{"ipc:///tmp/cygnus-relay"});
+cas::msg::zeromq_bind bind;
+bind.endpoint = "ipc:///tmp/cygnus-relay";
+relay.tell(bind);
 
-// Windows (uses named pipes internally)
-relay.tell(cas::msg::zeromq_bind{"ipc://cygnus-relay"});
+// Windows: check your libzmq version's ipc:// support on Windows
 ```
 
 ### In-Process
 
-```cpp
-// Same process, different threads - fastest option
-relay.tell(cas::msg::zeromq_bind{"inproc://my-relay"});
-```
+`inproc://` only works between sockets that share one ZeroMQ context, and each
+relay creates its own `zmq::context_t`. Two relays therefore cannot talk over
+`inproc://`; use `ipc://` or `tcp://` (e.g. `tcp://127.0.0.1:port`) even within
+one process - or, better, plain actor messages.
 
 ## Configuration
 
 ```cpp
-// Configure before connecting
+// Configure before connecting (poll_interval_ms is read when bind/connect
+// starts the poll timer)
 cas::msg::zeromq_config config;
 config.poll_interval_ms = 5;       // Fast polling for low latency
 config.send_timeout_ms = 500;      // Fail fast on send
-config.recv_timeout_ms = 500;      // Fail fast on tell
+config.recv_timeout_ms = 500;      // Currently unused (receives are non-blocking)
 config.max_message_size = 10 * 1024 * 1024;  // 10MB max
-config.auto_reconnect = true;       // Auto-reconnect on disconnect
-config.reconnect_delay_ms = 100;    // Quick reconnect
+config.auto_reconnect = true;       // Currently unused
+config.reconnect_delay_ms = 100;    // Currently unused
 
 relay.tell(config);
-relay.tell(cas::msg::zeromq_connect{"tcp://server:5555"});
+
+cas::msg::zeromq_connect connect;
+connect.endpoint = "tcp://server:5555";
+relay.tell(connect);
 ```
 
 ## Thread Safety
@@ -339,7 +388,10 @@ ZeroMQ sockets are NOT thread-safe. The relay actor solves this:
 
 ```cpp
 #include "cas/cas.h"
+#include <atomic>
+#include <chrono>
 #include <iostream>
+#include <thread>
 
 // FIX message handler
 class fix_handler : public cas::actor {
@@ -352,18 +404,23 @@ protected:
         
         // Create relay actor
         m_relay = cas::system::create<cas::zeromq_relay_actor>();
-        
+
+        // Route FIX message types before binding, so bind errors reach us
+        for (const char* type : {"D",    // NewOrderSingle
+                                 "8",    // ExecutionReport
+                                 "0",    // Heartbeat
+                                 ""}) {  // Default route for unknown types
+            cas::msg::zeromq_route route;
+            route.message_type = type;
+            route.target = self();
+            m_relay.tell(route);
+        }
+
         // Bind as ROUTER (server)
-        m_relay.tell(cas::msg::zeromq_bind{"tcp://*:5555"});
-        
-        // Route FIX message types
-        m_relay.tell(cas::msg::zeromq_route{"D", self()});  // NewOrderSingle
-        m_relay.tell(cas::msg::zeromq_route{"8", self()});  // ExecutionReport
-        m_relay.tell(cas::msg::zeromq_route{"0", self()});  // Heartbeat
-        
-        // Default route for unknown types
-        m_relay.tell(cas::msg::zeromq_route{"", self()});
-        
+        cas::msg::zeromq_bind bind;
+        bind.endpoint = "tcp://*:5555";
+        m_relay.tell(bind);
+
         // Handle received messages
         handler<cas::msg::zeromq_recv>([this](const auto& msg) {
             on_fix_message(msg);
@@ -391,36 +448,50 @@ protected:
         
         // Send execution report back
         std::string exec_report = "8=FIX.4.2|35=8|55=ES|44=5700.25|";
-        m_relay.tell(cas::msg::zeromq_send{
-            .target = source,  // ROUTER: send to specific client
-            .correlation_id = 0,
-            .data = {exec_report.begin(), exec_report.end()},
-            .content_type = "fix",
-            .message_type = "8"
-        });
+        cas::msg::zeromq_send send;
+        send.target = source;  // ROUTER: send to specific client
+        send.correlation_id = 0;
+        send.data.assign(exec_report.begin(), exec_report.end());
+        send.content_type = "fix";
+        send.message_type = "8";
+        m_relay.tell(send);
     }
     
     void handle_heartbeat(const std::string& fix, const std::string& source) {
         // Respond to heartbeat
         std::string heartbeat = "8=FIX.4.2|35=0|";
-        m_relay.tell(cas::msg::zeromq_send{
-            .target = source,
-            .data = {heartbeat.begin(), heartbeat.end()},
-            .content_type = "fix",
-            .message_type = "0"
-        });
+        cas::msg::zeromq_send send;
+        send.target = source;
+        send.data.assign(heartbeat.begin(), heartbeat.end());
+        send.content_type = "fix";
+        send.message_type = "0";
+        m_relay.tell(send);
     }
 };
+
+std::atomic<bool> g_running{true};  // cleared by your signal handler
 
 int main() {
     auto handler = cas::system::create<fix_handler>();
     cas::system::start();
+
+    // Keep running; wait_for_shutdown() alone would stop the relay's poll timer
+    while (g_running) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    cas::system::shutdown();
     cas::system::wait_for_shutdown();
     return 0;
 }
 ```
 
 ## Error Handling
+
+`zeromq_error` is sent only to registered route targets (and the default
+route). Errors raised before any route exists - such as a bind or connect
+failure - are lost, so add a route before sending `zeromq_bind` /
+`zeromq_connect`.
 
 ```cpp
 // Register error handler
@@ -467,16 +538,27 @@ ZeroMQ support is controlled by `CAS_ENABLE_ZEROMQ` compile definition:
 
 ## Performance Considerations
 
-| Transport | Typical Latency | Use Case |
-|-----------|-----------------|----------|
-| **inproc://** | ~1μs | Same process, different threads |
-| **ipc://** | ~10-50μs | Same machine, different processes |
-| **tcp://** | ~50-500μs+ | Different machines (depends on network) |
+The relay reads its socket in `poll()`, which receives at most one ZeroMQ
+(multipart) message each time the relay processes an actor message. The relay
+is woken by its periodic poll timer (`poll_interval_ms`, default 10 ms) or by
+other messages sent to it. So:
 
-For lowest latency:
-- Use `inproc://` when possible
-- Set `poll_interval_ms` low (1-5ms)
-- Consider fast_actor for relay if high throughput
+- **Inbound latency** is up to `poll_interval_ms`, not microseconds.
+- **Inbound throughput** is bounded: when the relay is otherwise idle, roughly
+  one message per tick (~100 msg/s at the default 10 ms).
+
+Outbound sends go to the socket as soon as the relay processes the `zeromq_send`.
+
+| Transport | Use Case |
+|-----------|----------|
+| **ipc://** | Same machine, different processes |
+| **tcp://** | Different machines (latency depends on network) |
+
+The raw transport latency is small next to the poll interval, which dominates
+inbound latency.
+
+For lower inbound latency and higher inbound throughput:
+- Set `poll_interval_ms` low (1-5ms) in a `zeromq_config` sent before bind/connect
 
 ## See Also
 

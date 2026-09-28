@@ -190,7 +190,7 @@ struct my_message : public cas::message_base {
 
 ## License
 
-[Add your license information here]
+MIT - see [LICENSE](../LICENSE).
 
 ## Next Steps
 

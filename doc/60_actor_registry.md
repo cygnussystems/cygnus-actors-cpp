@@ -77,8 +77,11 @@ protected:
 **Rules:**
 - Must be called in `on_start()` (not constructor)
 - Name should be unique (duplicate names: last one wins)
-- Name persists until actor stops
-- Actor automatically unregistered on stop
+- Name persists until the actor is stopped with `stop_actor()`, which
+  unregisters it (only if the name still refers to that actor - a replacement
+  that took the name keeps it)
+- Whole-system shutdown does **not** unregister: the registry keeps its
+  entries (and references to the actors) until `system::reset()`
 
 ### Auto-Generated Names
 
@@ -221,14 +224,20 @@ void on_start() override {
          │
          ▼
 ┌─────────────────┐
-│ Actor stops     │  Actor auto-unregistered
+│ stop_actor()    │  Name unregistered
 └─────────────────┘
 ```
 
 **Key points:**
-- Registry only populated **after** `system::start()`
-- All `on_start()` hooks run **before** any messages processed
-- Safe to lookup actors in `on_start()` (all registered by then)
+- A name exists only once that actor's `on_start()` has run (`set_name()`
+  registers it). For actors created before `start()`, that is during
+  `start()`; for actors created later, before `create()` returns.
+- The order in which different actors' `on_start()` run is **unspecified** (it
+  is not creation order), and a `fast_actor`'s `on_start()` runs on its own
+  thread, possibly after `start()` has returned.
+- So looking up *another* actor inside `on_start()` can fail. Resolve peers
+  lazily (on first use), pass `actor_ref`s through constructors, or have peers
+  announce themselves with a message.
 
 ### Lookup Before Start
 
@@ -244,13 +253,15 @@ int main() {
 
     // ✓ GOOD: Lookup after start
     ref = cas::actor_registry::get("my_actor");
-    // Returns VALID - on_start() has completed
+    // Returns VALID for a pooled actor - its on_start() ran inside start().
+    // (A fast_actor's on_start() runs on its own thread and may not have run
+    // yet: prefer the actor_ref that create() returned.)
 }
 ```
 
 ### Automatic Unregistration
 
-Actors are automatically removed from registry when stopped:
+Actors stopped with `stop_actor()` are removed from the registry:
 
 ```cpp
 auto actor = cas::system::create<my_actor>();
@@ -663,7 +674,7 @@ set_name("api.handler.v1");  // Legacy version 1
 
 Registry lookup is fast but not free:
 
-- Lookup time: O(log n) - uses hash map
+- Lookup time: O(1) on average (hash map), under a mutex
 - Memory: ~64 bytes per registered actor
 - Thread-safe: Uses mutex for registry access
 

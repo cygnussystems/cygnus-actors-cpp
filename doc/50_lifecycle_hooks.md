@@ -26,7 +26,7 @@ Actors have a well-defined lifecycle with three hooks that give you precise cont
        │
        ▼
 ┌──────────────┐
-│ on_shutdown()│  Shutdown initiated, can still send messages
+│ on_shutdown()│  Shutdown initiated, can still send messages (see caveat below)
 └──────┬───────┘
        │
        ▼
@@ -43,6 +43,10 @@ Actors have a well-defined lifecycle with three hooks that give you precise cont
 ┌──────────────┐
 │   Stopped    │  Actor terminated
 └──────────────┘
+
+This is the order for whole-system shutdown. `stop_actor()` drains (or
+discards) first and then runs `on_shutdown()` and `on_stop()` together - see
+[Call Order Guarantees](#call-order-guarantees).
 ```
 
 ## The Three Hooks
@@ -288,7 +292,8 @@ protected:
         // Log final state (to stdout, NOT to other actors)
         std::cout << "File processor stopped" << std::endl;
 
-        // DON'T send messages here - they will be dropped!
+        // Don't rely on messages sent from here: during system shutdown every
+        // actor is stopping, so they become dead letters.
     }
 };
 ```
@@ -301,7 +306,10 @@ protected:
 - ✓ Final cleanup
 
 **What You CANNOT Do:**
-- ✗ Send messages (will be silently dropped)
+- ✗ Rely on messages sent from here being handled: during system shutdown
+  every actor is already stopping, so they become (counted) dead letters.
+  After `stop_actor()` the rest of the system is running and they are
+  delivered - but send final messages from `on_shutdown()` instead.
 - ✗ Expect other actors to be available
 - ✗ Block (should complete quickly)
 
@@ -311,19 +319,29 @@ protected:
 
 When `system::shutdown()` is called:
 
-1. **All actors tell shutdown signal**
-2. **All `on_shutdown()` hooks called** (can send messages to each other)
-3. **Message draining period** (remaining messages processed)
-4. **All `on_stop()` hooks called** (no message sending)
-5. **Threads joined and system stopped**
+1. **Every running actor is sent a shutdown message**, from the thread that
+   called `shutdown()`.
+2. **Each actor runs `on_shutdown()` when it reaches that message** in its
+   mailbox - after the messages that thread sent it earlier - and then stops
+   accepting new messages (they become dead letters). Actors do this
+   independently; there is no order *between* actors.
+3. **Draining:** messages already queued are still handled, until every
+   mailbox is empty or `drain_timeout` expires.
+4. **`wait_for_shutdown()`** joins the worker threads and runs `on_stop()` for
+   every pooled actor on the calling thread (fast actors run theirs on their
+   own thread).
 
 ```cpp
-cas::system::shutdown();        // 1. Signal shutdown
-                                // 2. All on_shutdown() called
-                                // 3. Messages drained
-cas::system::wait_for_shutdown(); // 4. All on_stop() called
-                                // 5. Threads joined
+cas::system::shutdown();          // 1-3: shutdown sent, on_shutdown() runs, queues drain
+cas::system::wait_for_shutdown(); // 4: threads joined, on_stop() called
 ```
+
+**Caveat - messages from `on_shutdown()` to other actors:** such a message is
+handled only if the receiving actor has not yet reached its own shutdown
+message; otherwise it is a dead letter. Since actors shut down in no particular
+order, do not rely on it. If teardown must happen in a particular order (for
+example, stop the order router before the risk engine it reports to), stop the
+actors in that order with `stop_actor()` before calling `shutdown()`.
 
 ### Individual Actor Stop
 
@@ -371,8 +389,8 @@ After draining:
 
 **During draining:**
 - Existing messages are processed
-- New messages are **rejected** (dropped)
-- Actor can send messages from `on_shutdown()`
+- New messages are **rejected**, and counted as dead letters
+- Actor can send messages from `on_shutdown()` (see the caveat above)
 - Actor processes messages normally
 - Timeout prevents infinite waiting
 
@@ -431,9 +449,11 @@ cas::system::shutdown(config);
 ```
 
 If timeout is reached:
-- Remaining messages are **discarded**
-- Shutdown proceeds
-- Warning logged
+- Shutdown proceeds; messages still queued are **never handled**
+- Each actor that still had messages is listed in
+  `cas::system::get_shutdown_log()` ("Actor 'x' has N unprocessed messages at
+  shutdown")
+- They are not counted as dead letters
 
 ## Lifecycle Best Practices
 
@@ -499,8 +519,11 @@ void on_stop() override {
 
 ```cpp
 void on_stop() override {
-    // ✗ BAD: Messages will be dropped
-    m_logger.tell(log_msg{"Stopping"});  // DROPPED!
+    // ✗ BAD: during system shutdown the logger is stopping too - this is a
+    // dead letter. Send final messages from on_shutdown() instead.
+    log_msg m;
+    m.text = "Stopping";
+    m_logger.tell(m);
 
     // ✓ GOOD: Use stdout for logging
     std::cout << "Actor stopping" << std::endl;
