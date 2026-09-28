@@ -98,6 +98,11 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`stop_actor()` on a stateful actor returned before its held messages were
+  reported.** Held messages were dropped (as dead letters) only after the
+  actor was marked stopped, so a caller waiting in `stop_actor()` could see
+  the dead-letter count before they were counted. They are now dropped
+  before the stop completes, like the rest of the mailbox.
 - **An exception thrown by a message handler no longer terminates the
   process.** A `tell()` handler of a pooled, fast or stateful actor that threw
   unwound out of a framework thread, which calls `std::terminate`: one bad

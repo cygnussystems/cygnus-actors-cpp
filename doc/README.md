@@ -9,7 +9,7 @@ Documentation files are numbered for easy ordering and insertion of new topics.
 ### Getting Started
 - **[10_overview.md](10_overview.md)** - Framework overview, architecture, and core concepts
 - **[20_getting_started.md](20_getting_started.md)** - Quick start guide with complete examples
-- **[../tutorials/](../tutorials/)** - Fourteen runnable, self-checking programs,
+- **[../tutorials/](../tutorials/)** - Sixteen runnable, self-checking programs,
   ordered from a first actor to fast and inline actors. Every one is built and
   run by `ctest`, so unlike the prose here it cannot silently go stale.
 
