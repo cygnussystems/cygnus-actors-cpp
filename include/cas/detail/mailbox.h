@@ -81,6 +81,12 @@ enum class push_result {
 ///
 /// Not subject to ABA: producers only push, and the consumer never pops a
 /// single node by CAS - it takes the entire stack (see take_head()).
+// The alignas(64) below is deliberate (producer-side atomics on their own
+// cache line); MSVC /W4 warns (C4324) that the class is padded for it.
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable: 4324)
+#endif
 class mailbox {
 public:
     mailbox() noexcept;
@@ -148,6 +154,9 @@ private:
     std::atomic<size_t> m_call_count{0};
     std::atomic<size_t> m_other_count{0};
 };
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 } // namespace detail
 } // namespace cas

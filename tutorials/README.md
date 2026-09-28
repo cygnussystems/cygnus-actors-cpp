@@ -67,6 +67,12 @@ the examples cannot quietly go stale.
 | 13 | `fast_actor` | A dedicated thread, for latency-critical work |
 | 14 | `inline_actor` | Synchronous dispatch in the sender's thread |
 
+**Putting it together.**
+
+| # | Tutorial | Teaches |
+|---|----------|---------|
+| 15 | `trading_manager` | A manager that creates actors at runtime (a trading system plus one stream per subscriber), watches them, and retires everything that belonged to a trading system when it completes or fails |
+
 Each assumes the ones before it and does not repeat their explanations.
 
 ## Not covered

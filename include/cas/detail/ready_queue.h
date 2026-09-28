@@ -34,6 +34,12 @@ namespace detail {
 /// idle-to-busy transition, or by the worker that is running it. While queued,
 /// the actor holds a strong reference to itself (handed back by pop()), so it
 /// cannot be destroyed in the queue.
+// The alignas(64) below is deliberate (producer-side atomics on their own
+// cache line); MSVC /W4 warns (C4324) that the class is padded for it.
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable: 4324)
+#endif
 class ready_queue {
 public:
     ready_queue() noexcept = default;
@@ -64,6 +70,9 @@ private:
     // Shared: newest-first stack of pushed actors
     alignas(64) std::atomic<actor*> m_stack{nullptr};
 };
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 } // namespace detail
 } // namespace cas

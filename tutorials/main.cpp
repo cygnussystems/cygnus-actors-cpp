@@ -60,6 +60,9 @@ const tutorial_entry g_tutorials[] = {
     {14, "inline_actor",
      "Synchronous dispatch in the sender's thread.",
      run_inline_actor},
+    {15, "trading_manager",
+     "Launching and retiring actors at runtime: a manager, its trading systems and their streams.",
+     run_trading_manager},
 };
 
 const int g_tutorial_count =

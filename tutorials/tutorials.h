@@ -49,6 +49,7 @@ bool run_fixed_string();      // 11
 bool run_message_pool();      // 12
 bool run_fast_actor();        // 13
 bool run_inline_actor();      // 14
+bool run_trading_manager();   // 15
 
 // The registry. Defined in main.cpp.
 extern const tutorial_entry g_tutorials[];

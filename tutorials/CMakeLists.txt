@@ -21,6 +21,7 @@ set(TUTORIAL_SOURCES
     12_message_pool.cpp
     13_fast_actor.cpp
     14_inline_actor.cpp
+    15_trading_manager.cpp
 )
 
 add_executable(tutorials ${TUTORIAL_SOURCES})
@@ -54,6 +55,7 @@ set(TUTORIAL_NAMES
     message_pool
     fast_actor
     inline_actor
+    trading_manager
 )
 
 set(TUTORIAL_INDEX 1)

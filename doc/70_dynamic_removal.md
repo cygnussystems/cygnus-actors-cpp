@@ -355,6 +355,10 @@ reused until `system::reset()`.
 
 ### Example: Trading Systems and Their Streams
 
+> **Runnable version:** `tutorials/15_trading_manager.cpp` — run `tutorials 15`.
+> It adds a subscriber leaving mid-run and a trading system whose handler
+> throws (`on_handler_exception()` returning `stop`), and checks every step.
+
 ```cpp
 struct launch_trading_system : public cas::message_base {
     std::string system_id;
