@@ -91,6 +91,22 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **User code that called back into the system during shutdown
+  deadlocked.** `wait_for_shutdown()` ran every pooled actor's `on_stop()`
+  while holding the system-wide actor-list mutex. `shutdown()` held the
+  list mutexes while enqueueing `system_shutdown`, which can run user code
+  on the calling thread: an `inline_actor`'s `on_shutdown()`, and the
+  queue-threshold and dead-letter callbacks. Any of those calling back into
+  the system - even `system::actor_count()` - re-took the same mutex, which is
+  undefined behaviour: typically a hang, and on MSVC `std::mutex` detects it
+  and throws, aborting the program. Both functions
+  now work on snapshots of the actor lists and call nothing with a
+  framework lock held (INVARIANT 2). Regression tests in
+  `tests/11_concurrency/test_shutdown_callbacks.cpp`.
+- The test runner no longer lets a crashing test raise a Windows dialog
+  ("abort() has been called", error reporting). The CRT's messages go to
+  the console and the run continues to its failure report - on a desktop a
+  dialog looked like the machine crashing, and on CI it would hang the job.
 - **An actor created while the system was running could receive messages
   while its `on_start()` was still executing.** It was listed on its worker
   before `on_start()` ran on the creating thread, so a reply to something

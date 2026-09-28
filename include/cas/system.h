@@ -229,6 +229,11 @@ private:
     static void wake_worker(worker_state& w);
     static void activate_after_start(actor* target);  // after on_start(): go idle or schedule
 
+    // INVARIANT 2: copies of the actor lists, taken under their mutex and
+    // returned after it is released, for code paths that call into actors.
+    static std::vector<std::shared_ptr<actor>> snapshot_pooled_actors();
+    static std::vector<std::shared_ptr<actor>> snapshot_fast_actors();
+
     // Stop protocol helpers (see stop_actor())
     static void run_stop_to_completion(actor* target);
     static void complete_pending_stops();

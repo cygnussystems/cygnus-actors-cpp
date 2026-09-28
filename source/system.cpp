@@ -146,26 +146,20 @@ void system::shutdown(const shutdown_config& config) {
     }
 
     // Phase 1: Inject shutdown message into all actors
-    // Actors will call on_shutdown() and set state=stopping when they process this message
-    {
-        std::lock_guard<std::mutex> lock(inst.m_actors_mutex);
-        for (auto& thread_actors : inst.m_actors_per_thread) {
-            for (auto& actor_ptr : thread_actors) {
-                // An actor mid-stop_actor() is already stopping; sending it
-                // system_shutdown would only register a spurious dead letter.
-                if (actor_ptr->get_state() != actor_state::running) continue;
-                auto shutdown_msg = std::make_unique<system_shutdown>();
-                actor_ptr->enqueue_message(std::move(shutdown_msg));
-            }
-        }
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(inst.m_fast_actors_mutex);
-        for (auto& actor_ptr : inst.m_fast_actors) {
+    // Actors will call on_shutdown() and set state=stopping when they process this message.
+    //
+    // INVARIANT 2: enqueueing can run user code on this thread - an
+    // inline_actor dispatches system_shutdown (so its on_shutdown()) right
+    // here, and any enqueue may fire the queue-threshold or dead-letter
+    // callback. So work on snapshots, never under the list mutexes: user code
+    // that calls back into the system (actor_count(), create(), ...) would
+    // re-take them and deadlock.
+    for (const auto& list : {snapshot_pooled_actors(), snapshot_fast_actors()}) {
+        for (const auto& actor_ptr : list) {
+            // An actor mid-stop_actor() is already stopping; sending it
+            // system_shutdown would only register a spurious dead letter.
             if (actor_ptr->get_state() != actor_state::running) continue;
-            auto shutdown_msg = std::make_unique<system_shutdown>();
-            actor_ptr->enqueue_message(std::move(shutdown_msg));
+            actor_ptr->enqueue_message(std::make_unique<system_shutdown>());
         }
     }
 
@@ -174,31 +168,16 @@ void system::shutdown(const shutdown_config& config) {
     auto deadline = start_time + config.drain_timeout;
 
     while (std::chrono::steady_clock::now() < deadline) {
+        // has_messages() is virtual: checked on snapshots, not under the locks.
         bool all_empty = true;
-
-        // Check pooled actors
-        {
-            std::lock_guard<std::mutex> lock(inst.m_actors_mutex);
-            for (auto& thread_actors : inst.m_actors_per_thread) {
-                for (auto& actor_ptr : thread_actors) {
-                    if (actor_ptr->has_messages()) {
-                        all_empty = false;
-                        break;
-                    }
-                }
-                if (!all_empty) break;
-            }
-        }
-
-        // Check fast actors
-        if (all_empty) {
-            std::lock_guard<std::mutex> lock(inst.m_fast_actors_mutex);
-            for (auto& actor_ptr : inst.m_fast_actors) {
+        for (const auto& list : {snapshot_pooled_actors(), snapshot_fast_actors()}) {
+            for (const auto& actor_ptr : list) {
                 if (actor_ptr->has_messages()) {
                     all_empty = false;
                     break;
                 }
             }
+            if (!all_empty) break;
         }
 
         if (all_empty) {
@@ -208,36 +187,23 @@ void system::shutdown(const shutdown_config& config) {
         std::this_thread::sleep_for(config.check_interval);
     }
 
-    // Phase 3: Check for undrained actors and log warnings
-    {
-        std::lock_guard<std::mutex> lock(inst.m_actors_mutex);
-        for (auto& thread_actors : inst.m_actors_per_thread) {
-            for (auto& actor_ptr : thread_actors) {
-                size_t remaining = actor_ptr->queue_size();
-                if (remaining > 0) {
-                    std::string warning = "Actor '" + actor_ptr->name() +
-                                        "' has " + std::to_string(remaining) +
-                                        " unprocessed messages at shutdown";
-                    std::lock_guard<std::mutex> log_lock(inst.m_shutdown_log_mutex);
-                    inst.m_shutdown_log.push_back(warning);
-                }
-            }
-        }
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(inst.m_fast_actors_mutex);
-        for (auto& actor_ptr : inst.m_fast_actors) {
+    // Phase 3: Check for undrained actors and log warnings (on snapshots:
+    // queue_size() is virtual)
+    auto log_undrained = [&inst](const std::vector<std::shared_ptr<actor>>& list,
+                                 const char* kind) {
+        for (const auto& actor_ptr : list) {
             size_t remaining = actor_ptr->queue_size();
             if (remaining > 0) {
-                std::string warning = "Fast actor '" + actor_ptr->name() +
-                                    "' has " + std::to_string(remaining) +
-                                    " unprocessed messages at shutdown";
+                std::string warning = std::string(kind) + " '" + actor_ptr->name() +
+                                      "' has " + std::to_string(remaining) +
+                                      " unprocessed messages at shutdown";
                 std::lock_guard<std::mutex> log_lock(inst.m_shutdown_log_mutex);
                 inst.m_shutdown_log.push_back(warning);
             }
         }
-    }
+    };
+    log_undrained(snapshot_pooled_actors(), "Actor");
+    log_undrained(snapshot_fast_actors(), "Fast actor");
 
     // Phase 4: Signal worker threads to stop, then wake any that are parked
     inst.m_shutdown_requested = true;
@@ -298,21 +264,20 @@ void system::wait_for_shutdown() {
         }
     }
 
-    // Call on_stop on all pooled actors and mark them as stopped
-    {
-        std::lock_guard<std::mutex> lock(inst.m_actors_mutex);
-        for (auto& thread_actors : inst.m_actors_per_thread) {
-            for (auto& actor_ptr : thread_actors) {
-                // Cancel any active timers for this actor
-                cancel_actor_timers(actor_ptr.get());
+    // Call on_stop on all pooled actors and mark them as stopped.
+    // INVARIANT 2: on_stop() is user code and may call back into the system
+    // (actor_count(), create(), ...), which takes m_actors_mutex - so never
+    // call it with that mutex held. The workers are joined, so this thread is
+    // the only one touching the actors.
+    for (const auto& actor_ptr : snapshot_pooled_actors()) {
+        // Cancel any active timers for this actor
+        cancel_actor_timers(actor_ptr.get());
 
-                // Set actor context (though on_stop shouldn't send messages)
-                current_actor_context = actor_ptr.get();
-                actor_ptr->on_stop();
-                current_actor_context = nullptr;
-                actor_ptr->set_state(actor_state::stopped);
-            }
-        }
+        // Set actor context (though on_stop shouldn't send messages)
+        current_actor_context = actor_ptr.get();
+        actor_ptr->on_stop();
+        current_actor_context = nullptr;
+        actor_ptr->set_state(actor_state::stopped);
     }
 
     // Note: m_running was already set to false at the start of this function
@@ -913,20 +878,26 @@ void system::run_stop_to_completion(actor* target) {
     }
 }
 
-void system::complete_pending_stops() {
+std::vector<std::shared_ptr<actor>> system::snapshot_pooled_actors() {
     auto& inst = instance();
+    std::vector<std::shared_ptr<actor>> copy;
+    std::lock_guard<std::mutex> lock(inst.m_actors_mutex);
+    for (const auto& thread_actors : inst.m_actors_per_thread) {
+        copy.insert(copy.end(), thread_actors.begin(), thread_actors.end());
+    }
+    return copy;
+}
 
-    std::vector<std::shared_ptr<actor>> candidates;
-    {
-        std::lock_guard<std::mutex> lock(inst.m_actors_mutex);
-        for (auto& thread_actors : inst.m_actors_per_thread) {
-            candidates.insert(candidates.end(), thread_actors.begin(), thread_actors.end());
-        }
-    }
-    {
-        std::lock_guard<std::mutex> lock(inst.m_fast_actors_mutex);
-        candidates.insert(candidates.end(), inst.m_fast_actors.begin(), inst.m_fast_actors.end());
-    }
+std::vector<std::shared_ptr<actor>> system::snapshot_fast_actors() {
+    auto& inst = instance();
+    std::lock_guard<std::mutex> lock(inst.m_fast_actors_mutex);
+    return inst.m_fast_actors;
+}
+
+void system::complete_pending_stops() {
+    std::vector<std::shared_ptr<actor>> candidates = snapshot_pooled_actors();
+    const auto fast = snapshot_fast_actors();
+    candidates.insert(candidates.end(), fast.begin(), fast.end());
 
     for (auto& actor_ptr : candidates) {
         if (actor_ptr->m_stop_phase.load(std::memory_order_acquire) == actor::stop_phase::requested &&

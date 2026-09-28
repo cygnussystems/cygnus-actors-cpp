@@ -52,7 +52,18 @@ return to the original design. Do not reintroduce a separate ask thread.
 no lock at all: it pops ready actors from its lock-free ready queue. A worker's
 mutex is used only to park and be woken, never around a handler.
 `system::notify_watchers_internal()` copies the watcher set under lock and sends
-outside it.
+outside it. `system::shutdown()` and `wait_for_shutdown()` work on snapshots of
+the actor lists (`snapshot_pooled_actors()` / `snapshot_fast_actors()`) taken
+under the list mutexes and used after releasing them: enqueueing
+`system_shutdown` can run user code on the caller's thread (an `inline_actor`'s
+`on_shutdown()`, queue-threshold and dead-letter callbacks), and
+`wait_for_shutdown()` calls every pooled actor's `on_stop()`.
+
+**Test:** `tests/11_concurrency/test_shutdown_callbacks.cpp` (on_stop, inline
+on_shutdown and a threshold callback each calling `actor_count()` during
+shutdown). Before the fix all three deadlocked - on MSVC as a
+`resource_deadlock_would_occur` exception from `std::mutex`, which the test
+catches and reports.
 
 **History:** the worker loop used to take `m_actors_mutex` - a single
 system-wide mutex - on every iteration to copy its actor list. First it held it

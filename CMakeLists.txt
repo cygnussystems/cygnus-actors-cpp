@@ -155,6 +155,7 @@ if(BUILD_TESTS)
         tests/11_concurrency/test_runtime_actor_start.cpp
         tests/11_concurrency/test_on_start_contract.cpp
         tests/11_concurrency/test_scheduler.cpp
+        tests/11_concurrency/test_shutdown_callbacks.cpp
         # Level 13: Message pool correctness (see doc/140_message_pool.md)
         tests/13_message_pool/test_message_pool.cpp
         # Level 14: Actor mailbox (lock-free, adapted from CAF)
