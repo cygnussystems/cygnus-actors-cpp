@@ -9,6 +9,7 @@
 #define NOMINMAX
 #include <windows.h>
 #include <crtdbg.h>
+#include <cstdio>
 #include <cstdlib>
 #endif
 
@@ -19,8 +20,22 @@
 // - 03_lifecycle: Lifecycle management
 // - 04_advanced: Complex scenarios
 
+#if defined(_WIN32)
+// Last-chance handler for crashes (access violations and the like): print the
+// exception code and end the process, instead of letting Windows error
+// reporting or the Just-In-Time debugger prompt put a window on the desktop.
+static LONG WINAPI report_crash_and_exit(EXCEPTION_POINTERS* info) {
+    std::fprintf(stderr, "\nCRASH: unhandled exception 0x%08lX at %p - test run aborted\n",
+                 info->ExceptionRecord->ExceptionCode,
+                 info->ExceptionRecord->ExceptionAddress);
+    std::fflush(stderr);
+    return EXCEPTION_EXECUTE_HANDLER;  // terminate silently
+}
+#endif
+
 int main(int argc, char* argv[]) {
 #if defined(_WIN32)
+    SetUnhandledExceptionFilter(&report_crash_and_exit);
     // Never show a modal dialog. A crashing or aborting test must fail in the
     // console output, not stop the run until someone clicks a window - on a
     // developer's desktop that looks like the machine is crashing, and on CI

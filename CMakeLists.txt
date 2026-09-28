@@ -141,6 +141,7 @@ if(BUILD_TESTS)
         # Level 7: Dynamic actor removal
         tests/07_dynamic_removal/test_basic_removal.cpp
         tests/07_dynamic_removal/test_stop_semantics.cpp
+        tests/07_dynamic_removal/test_watch.cpp
         # Level 8: ZeroMQ relay (optional - requires CAS_ENABLE_ZEROMQ)
         tests/08_zeromq_relay/test_zeromq_relay.cpp
         # Level 9: Fixed types (zero-allocation)

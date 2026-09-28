@@ -308,6 +308,14 @@ void system::reset() {
     // Clear actor registry
     actor_registry::clear();
 
+    // Forget all watches. Instance ids restart below, so a stale entry would
+    // attach an old watcher to a new actor that gets the same id.
+    {
+        std::lock_guard<std::mutex> lock(inst.m_watchers_mutex);
+        inst.m_watchers.clear();
+        inst.m_watching.clear();
+    }
+
     // Reset instance ID counter
     inst.m_next_instance_id.store(1);
 
@@ -844,9 +852,9 @@ bool system::service_stop(actor* target) {
         actor_registry::unregister_actor(actor_name, target);
     }
 
-    if (target->m_stop_notify_watchers) {
-        notify_watchers_internal(target);
-    }
+    // Notify watchers (if requested), and in any case remove every watch this
+    // actor is part of - as watched and as watcher.
+    end_watches(target, target->m_stop_notify_watchers);
 
     // Remove pooled actors from their worker's list. Fast actors stay listed
     // until their thread is joined (reap_stopped_fast_actors()): this may be
@@ -975,74 +983,109 @@ bool system::is_actor_running(actor_ref ref) {
 void system::watch(actor_ref watcher, actor_ref watched) {
     auto& inst = instance();
 
-    // Get raw pointers
-    actor* watcher_ptr = watcher.get<actor>();
+    std::shared_ptr<actor> watcher_ptr = watcher.get_actor();
     actor* watched_ptr = watched.get<actor>();
-
-    // Validate both actors exist
     if (!watcher_ptr || !watched_ptr) {
         return;  // Invalid reference
     }
+    // A stopped actor will never stop again, and a stopped watcher would never
+    // be told: registering either would only leave an entry nobody removes.
+    if (watched_ptr->get_state() == actor_state::stopped ||
+        watcher_ptr->get_state() == actor_state::stopped) {
+        return;
+    }
 
-    // Add watcher to watchers set for watched actor
+    const size_t watcher_id = watcher_ptr->instance_id();
+    const size_t watched_id = watched_ptr->instance_id();
     std::lock_guard<std::mutex> lock(inst.m_watchers_mutex);
-    inst.m_watchers[watched_ptr].insert(watcher_ptr);
+    inst.m_watchers[watched_id][watcher_id] = watcher_ptr;  // a repeat watch is one entry
+    inst.m_watching[watcher_id].insert(watched_id);
 }
 
 void system::unwatch(actor_ref watcher, actor_ref watched) {
     auto& inst = instance();
 
-    // Get raw pointers
     actor* watcher_ptr = watcher.get<actor>();
     actor* watched_ptr = watched.get<actor>();
-
-    // Validate both actors exist
     if (!watcher_ptr || !watched_ptr) {
         return;  // Invalid reference
     }
 
-    // Remove watcher from watchers set
+    const size_t watcher_id = watcher_ptr->instance_id();
+    const size_t watched_id = watched_ptr->instance_id();
     std::lock_guard<std::mutex> lock(inst.m_watchers_mutex);
 
-    auto it = inst.m_watchers.find(watched_ptr);
+    auto it = inst.m_watchers.find(watched_id);
     if (it != inst.m_watchers.end()) {
-        it->second.erase(watcher_ptr);
-
-        // Clean up empty entry
-        if (it->second.empty()) {
-            inst.m_watchers.erase(it);
-        }
+        it->second.erase(watcher_id);
+        if (it->second.empty()) inst.m_watchers.erase(it);
+    }
+    auto rit = inst.m_watching.find(watcher_id);
+    if (rit != inst.m_watching.end()) {
+        rit->second.erase(watched_id);
+        if (rit->second.empty()) inst.m_watching.erase(rit);
     }
 }
 
 void system::notify_watchers_internal(actor* stopped_actor) {
-    auto& inst = instance();
+    end_watches(stopped_actor, true);
+}
 
-    // Copy the watcher set while holding lock (to release lock quickly)
-    std::unordered_set<actor*> watchers_copy;
+void system::end_watches(actor* stopped_actor, bool notify) {
+    auto& inst = instance();
+    const size_t id = stopped_actor->instance_id();
+
+    // Under the lock: take this actor's watchers out of the table, and remove
+    // it as a watcher of everything it watched. Send only after releasing it
+    // (INVARIANT 2): tell() can run user code, e.g. a dead-letter handler.
+    std::vector<std::shared_ptr<actor>> to_notify;
     {
         std::lock_guard<std::mutex> lock(inst.m_watchers_mutex);
 
-        auto it = inst.m_watchers.find(stopped_actor);
+        auto it = inst.m_watchers.find(id);
         if (it != inst.m_watchers.end()) {
-            watchers_copy = it->second;
-            // Remove entry from map (watched actor is stopping)
+            for (auto& [watcher_id, weak_watcher] : it->second) {
+                // The reverse entry goes either way
+                auto rit = inst.m_watching.find(watcher_id);
+                if (rit != inst.m_watching.end()) {
+                    rit->second.erase(id);
+                    if (rit->second.empty()) inst.m_watching.erase(rit);
+                }
+                if (auto watcher = weak_watcher.lock()) {
+                    to_notify.push_back(std::move(watcher));
+                }
+                // else: destroyed before this actor stopped - nothing to tell
+            }
             inst.m_watchers.erase(it);
+        }
+
+        auto wit = inst.m_watching.find(id);
+        if (wit != inst.m_watching.end()) {
+            for (size_t watched_id : wit->second) {
+                auto entry = inst.m_watchers.find(watched_id);
+                if (entry != inst.m_watchers.end()) {
+                    entry->second.erase(id);
+                    if (entry->second.empty()) inst.m_watchers.erase(entry);
+                }
+            }
+            inst.m_watching.erase(wit);
         }
     }
 
-    // Send termination_msg to each watcher (without holding lock)
-    for (actor* watcher_ptr : watchers_copy) {
+    if (!notify) {
+        return;
+    }
+    for (const auto& watcher : to_notify) {
+        // A watcher that has stopped (but is still referenced somewhere) would
+        // only turn the notification into a dead letter.
+        if (watcher->get_state() != actor_state::running) {
+            continue;
+        }
         termination_msg msg;
         msg.actor_name = stopped_actor->name();
-        msg.instance_id = stopped_actor->instance_id();
+        msg.instance_id = id;
         msg.type_name = stopped_actor->type_name();
-
-        // Create actor_ref and send message
-        actor_ref watcher_ref(watcher_ptr->m_self_ref.lock());
-        if (watcher_ref.is_valid()) {
-            watcher_ref.tell(msg);
-        }
+        actor_ref(watcher).tell(msg);
     }
 }
 

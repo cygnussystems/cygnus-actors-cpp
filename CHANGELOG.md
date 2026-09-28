@@ -91,6 +91,17 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The watch pattern could use a destroyed actor.** The watch table held
+  raw actor pointers, keyed by the watched actor's address. A watcher
+  destroyed before the actor it watched was dereferenced when that actor
+  stopped (a crash, reproduced by the new tests). A watcher that had stopped
+  but was still referenced was sent a `termination_msg` that became a
+  spurious dead letter. `reset()` kept the table, so watches from one run
+  could fire in the next. Entries for stopped watchers were never removed.
+  Watches are now keyed by instance id and hold watchers weakly. Stopped or
+  destroyed watchers are skipped, a stopping actor is removed from
+  everything it watched, and `reset()` clears the table. The watch pattern
+  had no unit tests; `tests/07_dynamic_removal/test_watch.cpp` adds seven.
 - **User code that called back into the system during shutdown
   deadlocked.** `wait_for_shutdown()` ran every pooled actor's `on_stop()`
   while holding the system-wide actor-list mutex. `shutdown()` held the
@@ -104,9 +115,10 @@ This project follows [Semantic Versioning](https://semver.org/).
   framework lock held (INVARIANT 2). Regression tests in
   `tests/11_concurrency/test_shutdown_callbacks.cpp`.
 - The test runner no longer lets a crashing test raise a Windows dialog
-  ("abort() has been called", error reporting). The CRT's messages go to
-  the console and the run continues to its failure report - on a desktop a
-  dialog looked like the machine crashing, and on CI it would hang the job.
+  ("abort() has been called", error reporting, the Just-In-Time debugger
+  prompt). CRT messages go to the console, and an unhandled crash prints its
+  exception code and ends the run - on a desktop a dialog looked like the
+  machine crashing, and on CI it would hang the job.
 - **An actor created while the system was running could receive messages
   while its `on_start()` was still executing.** It was listed on its worker
   before `on_start()` ran on the creating thread, so a reply to something

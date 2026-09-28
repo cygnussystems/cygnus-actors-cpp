@@ -277,7 +277,8 @@ Monitor other actors for termination using the watch pattern:
 void cas::system::watch(actor_ref watcher, actor_ref watched);
 ```
 
-Register `watcher` to tell notification when `watched` stops.
+Register `watcher` to receive a `termination_msg` when `watched` is stopped with
+`stop_actor()`. Watching the same actor twice is one watch.
 
 ### Unwatch an Actor
 
@@ -287,9 +288,23 @@ void cas::system::unwatch(actor_ref watcher, actor_ref watched);
 
 Remove watch relationship.
 
+### What is guaranteed
+
+- Each live watcher receives **exactly one** `termination_msg` per watched actor
+  that is stopped with `stop_actor()` (unless `stop_config::notify_watchers` is
+  `false`).
+- **Watches do not keep actors alive.** A watcher destroyed before the actor it
+  watches is skipped; a watcher that has already stopped is not sent anything.
+- **A stopping actor's own watches end too**: it is removed from everything it
+  was watching, so short-lived watchers of a long-lived actor do not pile up.
+- Watching an actor that has already stopped registers nothing and sends
+  nothing - check `is_running()` first if you need to know.
+- Whole-system shutdown (`system::shutdown()`) does not send termination
+  messages, and `system::reset()` forgets all watches.
+
 ### Termination Message
 
-When a watched actor stops, watchers tell `cas::termination_msg`:
+When a watched actor stops, each watcher receives `cas::termination_msg`:
 
 ```cpp
 struct termination_msg : public cas::message_base {
@@ -333,7 +348,7 @@ protected:
 
     void stop_worker() {
         cas::system::stop_actor(m_worker);
-        // Will tell termination_msg when worker stops
+        // on_worker_terminated() is called once the worker has stopped
     }
 };
 ```

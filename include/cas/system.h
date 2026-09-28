@@ -196,7 +196,15 @@ private:
     std::vector<std::unique_ptr<worker_state>> m_workers;
 
     // Watch pattern - maps watched_actor -> set of watcher actors
-    std::unordered_map<actor*, std::unordered_set<actor*>> m_watchers;
+    // Watch pattern (system::watch). Keyed by instance id, not address: a new
+    // actor can reuse a destroyed actor's memory. Watchers are held weakly, so
+    // one destroyed before the actor it watches is simply skipped.
+    //   m_watchers: watched id -> (watcher id -> watcher)
+    //   m_watching: watcher id -> ids it watches (reverse index, so a stopping
+    //               actor can be removed from everything it was watching)
+    // Both are cleared by reset(): instance ids restart there.
+    std::unordered_map<size_t, std::unordered_map<size_t, std::weak_ptr<actor>>> m_watchers;
+    std::unordered_map<size_t, std::unordered_set<size_t>> m_watching;
     std::mutex m_watchers_mutex;
 
     // Dead letter tracking (always-on statistics)
@@ -354,7 +362,11 @@ public:
     // Unwatch an actor
     static void unwatch(actor_ref watcher, actor_ref watched);
 
-    // Internal: notify watchers when actor stops
+    // Internal: when an actor stops - send termination_msg to its watchers (if
+    // `notify`) and remove every watch it is part of, as watcher or watched.
+    static void end_watches(actor* stopped_actor, bool notify);
+
+    // Internal: equivalent to end_watches(stopped_actor, true).
     static void notify_watchers_internal(actor* stopped_actor);
 
     // Internal: advance a stop requested by stop_actor(). Called only by the
