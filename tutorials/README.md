@@ -73,13 +73,15 @@ the examples cannot quietly go stale.
 |---|----------|---------|
 | 15 | `trading_manager` | A manager that creates actors at runtime (a trading system plus one stream per subscriber), watches them, and retires everything that belonged to a trading system when it completes or fails |
 | 16 | `stateful_actor` | Selective receive: an exchange session that holds orders, in order, until it is logged in; `stateful_fast_actor` |
+| 17 | `zeromq_relay` | Talking to other processes: a server and a client relay, routing by message type, request/reply by correlation id, pushes, errors, status. Built only with ZeroMQ (`ENABLE_ZEROMQ`, vcpkg `cppzmq`) |
 
 Each assumes the ones before it and does not repeat their explanations.
 
 ## Not covered
 
-**The ZeroMQ relay** — needs `cppzmq`, which the default build does not
-enable. See [doc/130_zeromq_relay.md](../doc/130_zeromq_relay.md).
+Everything in the framework has a tutorial. Tutorial 17 (the ZeroMQ relay) is
+built only when the framework is built with ZeroMQ; see
+[doc/130_zeromq_relay.md](../doc/130_zeromq_relay.md).
 
 ## Conventions
 

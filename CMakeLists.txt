@@ -200,10 +200,11 @@ if(BUILD_TESTS)
     # expected to die; the test passes when the report is in its output.
     add_executable(fatal_probe tests/15_failure_modes/fatal_probe.cpp)
     target_link_libraries(fatal_probe ${PROJECT_NAME})
-    add_test(NAME test_fatal_on_start COMMAND fatal_probe)
-    set_tests_properties(test_fatal_on_start PROPERTIES
-        PASS_REGULAR_EXPRESSION "exception in on_start of actor .*probe on_start failure"
-        TIMEOUT 30)
+    add_test(NAME test_fatal_on_start
+        COMMAND ${CMAKE_COMMAND}
+            -DPROBE_EXE=$<TARGET_FILE:fatal_probe>
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/15_failure_modes/check_fatal_probe.cmake
+    )
 endif()
 
 # Runnable tutorials (see tutorials/README.md)

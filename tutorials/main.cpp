@@ -66,6 +66,11 @@ const tutorial_entry g_tutorials[] = {
     {16, "stateful_actor",
      "Selective receive: an exchange session that holds orders until it is logged in.",
      run_stateful_actor},
+#ifdef CAS_ENABLE_ZEROMQ
+    {17, "zeromq_relay",
+     "Talking to other processes: relays, routing, request/reply, errors.",
+     run_zeromq_relay},
+#endif
 };
 
 const int g_tutorial_count =

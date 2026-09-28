@@ -25,6 +25,12 @@ set(TUTORIAL_SOURCES
     16_stateful_actor.cpp
 )
 
+# Needs the framework built with ZeroMQ (ENABLE_ZEROMQ, vcpkg cppzmq).
+# Last in the list, so its number is the same whether it is built or not.
+if(ENABLE_ZEROMQ)
+    list(APPEND TUTORIAL_SOURCES 17_zeromq_relay.cpp)
+endif()
+
 add_executable(tutorials ${TUTORIAL_SOURCES})
 
 target_link_libraries(tutorials PRIVATE ${PROJECT_NAME})
@@ -59,6 +65,9 @@ set(TUTORIAL_NAMES
     trading_manager
     stateful_actor
 )
+if(ENABLE_ZEROMQ)
+    list(APPEND TUTORIAL_NAMES zeromq_relay)
+endif()
 
 set(TUTORIAL_INDEX 1)
 foreach(TUTORIAL_NAME IN LISTS TUTORIAL_NAMES)

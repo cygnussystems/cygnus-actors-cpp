@@ -51,6 +51,9 @@ bool run_fast_actor();        // 13
 bool run_inline_actor();      // 14
 bool run_trading_manager();   // 15
 bool run_stateful_actor();    // 16
+#ifdef CAS_ENABLE_ZEROMQ
+bool run_zeromq_relay();      // 17 - only with ZeroMQ
+#endif
 
 // The registry. Defined in main.cpp.
 extern const tutorial_entry g_tutorials[];
