@@ -111,7 +111,38 @@ class io_actor : public cas::fast_actor {
 };
 ```
 
-### 3. Use Lifecycle Hooks Correctly
+### 3. Don't Let Exceptions Escape tell() Handlers
+
+A message handler of a pooled or fast actor runs on a framework thread that
+does not catch exceptions. An exception escaping it terminates the process
+(`std::terminate`). Catch inside the handler:
+
+```cpp
+void on_request(const request& msg) {
+    try {
+        response r;
+        r.result = calculate(msg.data);
+        msg.sender.tell(r);
+    } catch (const std::exception& e) {
+        std::cerr << "request failed: " << e.what() << std::endl;
+        // reply with an error message if the sender expects an answer
+    }
+}
+```
+
+The exceptions are `call()` handlers, whose exceptions are passed to the
+caller, and `inline_actor` handlers, whose exceptions propagate to the sender's
+`tell()` - and from there, unless caught, into the sender's own handler.
+
+### 4. Know What Order Is Guaranteed
+
+Messages from one sender (one actor, or one thread such as `main()`) are
+handled in send order; there is no order between different senders. A `call()`
+is the exception: it is handled next, ahead of queued messages - including
+ones its own sender sent earlier. Don't `tell()` and then `call()` to observe
+the effect of the `tell()`. See [Call](80_call.md#how-call-is-processed).
+
+### 5. Use Lifecycle Hooks Correctly
 
 **DO:** Initialize in `on_start()`
 ```cpp
@@ -150,8 +181,8 @@ private:
 
 public:
     service() {
-        // ✗ WRONG: Registry not ready yet
-        m_dependency = cas::actor_registry::get("dependency");  // Returns invalid!
+        // ✗ WRONG: depends on creation order, and this actor is not registered yet
+        m_dependency = cas::actor_registry::get("dependency");
 
         // ✗ WRONG: not created by the system yet
         set_name("service");  // Sets the name but does not register it - call it in on_start()
@@ -532,10 +563,15 @@ protected:
                 }),
             m_workers.end());
 
-        // Restart if needed
+        // Restart if needed, under the dead worker's name. (Not
+        // create_worker(m_workers.size()): after worker_0 dies that would
+        // create a second "worker_2".) The stopped worker's name is already
+        // unregistered when termination_msg arrives, so it can be reused.
         if (m_restarts < 10) {
             m_restarts++;
-            create_worker(m_workers.size());
+            auto worker_ref = cas::system::create<worker_actor>(msg.actor_name);
+            cas::system::watch(self(), worker_ref);
+            m_workers.push_back(worker_ref);
             std::cout << "Restarted worker" << std::endl;
         }
     }
@@ -558,7 +594,6 @@ private:
 protected:
     void on_start() override {
         handler<connect>(&protocol_handler::on_connect);
-        handler<auth>(&protocol_handler::on_auth);
         handler<auth_response>(&protocol_handler::on_auth_response);
         handler<command>(&protocol_handler::on_command);
         handler<disconnect>(&protocol_handler::on_disconnect);
@@ -845,7 +880,7 @@ class logger : public cas::actor {
 
 // ✓ Use fast_actor for latency-critical paths
 class market_feed : public cas::fast_actor {
-    // High-frequency ticks, sub-μs latency needed
+    // High-frequency ticks: tightest tail latency, never queued behind other actors
 };
 
 // ✓ Use inline_actor for synchronous services
@@ -856,6 +891,11 @@ class validator : public cas::inline_actor<true> {
 // ✓ Use stateful_actor for state machines
 class connection : public cas::stateful_actor {
     // States: disconnected, connecting, connected
+};
+
+// ✓ Use stateful_fast_actor for latency-critical state machines
+class exchange_session : public cas::stateful_fast_actor {
+    // Holds orders (in order) until logged in, on a dedicated thread
 };
 ```
 
@@ -970,7 +1010,7 @@ void on_query_response(const query_response& msg) {
 }
 ```
 
-### 5. Optimize Handler Registration
+### 5. Keep Handler Registration in on_start()
 
 **Avoid:**
 ```cpp
@@ -978,7 +1018,7 @@ void on_query_response(const query_response& msg) {
 class my_actor : public cas::actor {
 public:
     my_actor() {
-        handler<msg>(&my_actor::on_msg);  // Register in on_start(): not yet registered/named here
+        handler<msg>(&my_actor::on_msg);  // Works, but keep all registration in on_start() by convention
     }
 };
 ```
@@ -1006,6 +1046,12 @@ void register_handlers() {
 ## Testing Best Practices
 
 ### 1. Test Actor Isolation
+
+Reading an actor's members from the test thread (`get_checked<T>()`) while
+the system runs is a data race, and a sleep does not make it safe. The examples
+below keep the sleeps for brevity; for a race-free check, query state with a
+`call_handler` - remembering that a call is handled ahead of messages the test
+sent earlier - or read members after `wait_for_shutdown()`.
 
 ```cpp
 TEST_CASE("Actor processes messages correctly") {

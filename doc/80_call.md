@@ -1,6 +1,6 @@
 # Call (RPC-Style Messaging)
 
-The call provides synchronous request-response messaging, similar to remote procedure calls (RPC). Unlike regular asynchronous messages, call calls **block** until the result is ready, making them ideal for operations that need immediate results.
+The call provides synchronous request-response messaging, similar to remote procedure calls (RPC). Unlike regular asynchronous messages, `call()` **blocks** until the result is ready, making them ideal for operations that need immediate results.
 
 ## Quick Example
 
@@ -48,6 +48,10 @@ call_handler<ReturnType, OperationTag>(&ActorClass::method);
 - `ReturnType` - Type of value returned
 - `OperationTag` - Empty struct identifying the operation
 - `method` - Member function that handles the request
+
+The method must be a **non-const member function** of the actor
+(`ReturnType (Actor::*)(Args...)`). There is no lambda overload, and a `const`
+method does not bind.
 
 **Example:**
 ```cpp
@@ -125,6 +129,15 @@ std::optional<ReturnType> result = actor_ref.call<ReturnType>(
 **Returns:**
 - `std::optional<ReturnType>` with value if completed
 - `std::nullopt` if timeout occurred
+
+The timeout only replaces *waiting too long* with `std::nullopt`. Everything
+else is still an exception: handler exceptions, `cas::call_type_error`, the
+missing-handler `std::runtime_error`, `cas::call_deadlock_error` and
+`cas::on_start_violation`.
+
+A timeout does **not** cancel the request. The handler still runs when the
+actor gets to it, and its side effects happen even though the caller already
+got `std::nullopt`.
 
 **Example:**
 ```cpp
@@ -293,6 +306,28 @@ try {
 }
 ```
 
+### Invalid, Stopping or Stopped Target
+
+- **Invalid `actor_ref`:** the plain form throws
+  `std::runtime_error("Cannot call on invalid actor_ref")`. The timeout form
+  returns `std::nullopt` and counts the request in
+  `dead_letter_stats::dropped_to_invalid`.
+- **Target stopping or stopped:** the request is dropped as a dead letter
+  (counted in `dead_letter_stats::dropped_ask`) and the caller gets
+  `std::future_error` (broken promise), with or without a timeout.
+
+### Calling Yourself
+
+An actor that calls itself always gets `cas::call_deadlock_error` (inline
+actors included): call the method directly instead.
+
+### Calling from on_start()
+
+`call()` from inside `on_start()` throws `cas::on_start_violation` (a
+`std::logic_error`): no worker is guaranteed to service the request yet. Use
+`tell()` and handle the reply in a message handler. See
+[Lifecycle Hooks](50_lifecycle_hooks.md).
+
 ### Type Mismatch
 
 If the arguments or `ReturnType` do not match the registered handler exactly,
@@ -355,11 +390,16 @@ protected:
     }
 
     void on_request(const request& msg) {
-        // Call backend synchronously
-        auto result = m_backend.call<std::string>(
-            process_op{},
-            msg.data
-        );
+        // Call backend synchronously. msg.data must have exactly the type of
+        // the process_op handler's parameter.
+        std::string result;
+        try {
+            result = m_backend.call<std::string>(process_op{}, msg.data);
+        } catch (const cas::call_deadlock_error&) {
+            // backend shares this actor's worker thread - fall back to
+            // tell() with a reply message (see below)
+            return;
+        }
 
         std::cout << "Backend returned: " << result << std::endl;
 
@@ -378,8 +418,9 @@ protected:
 A call request goes into the target actor's mailbox and is handled **next**:
 right after the handler that is currently running, ahead of every ordinary
 message still queued. Calls are handled in order among themselves. The request is
-executed by the target actor's own worker thread; the calling thread blocks on a
-future until the handler returns.
+executed by the thread that runs the target - its pooled worker, a fast actor's
+dedicated thread or, for an `inline_actor`, the calling thread itself; the
+calling thread blocks on a future until the handler returns.
 
 That is the point of `call()` beyond returning a value: it gets an answer even
 when the actor is behind — including when the question is *why* it is behind.
@@ -467,10 +508,11 @@ outside the actor system (main thread, test code, request handlers).
 ### Performance Comparison
 
 ```cpp
-// Call (synchronous) - ~10-50 microseconds overhead
+// Call (synchronous) - one round trip (sub-µs to a few µs, see the README's
+// Benchmarks) plus a promise/future, and the caller is blocked meanwhile
 int result = actor.call<int>(op{}, arg);  // Blocks
 
-// Regular message (asynchronous) - ~1-10 microseconds overhead
+// Regular message (asynchronous) - enqueue only
 actor.tell(msg);  // Returns immediately
 ```
 
@@ -489,18 +531,22 @@ protected:
     }
 
     std::string handle_get_request(const std::string& user_id) {
-        // Synchronous database query
+        // Synchronous database query. The handler returns std::optional<user>
+        // (empty = not found); the timeout form wraps that in another optional
+        // (empty = timed out).
         auto user_data = m_database.call<std::optional<user>>(
             query_user_op{},
             std::chrono::seconds(5),  // Timeout
             user_id
         );
 
-        if (user_data.has_value()) {
-            return serialize_to_json(user_data.value());
-        } else {
-            return "{\"error\": \"User not found or timeout\"}";
+        if (!user_data) {
+            return "{\"error\": \"timeout\"}";
         }
+        if (!*user_data) {
+            return "{\"error\": \"User not found\"}";
+        }
+        return serialize_to_json(**user_data);
     }
 };
 ```
@@ -599,13 +645,31 @@ for (int i = 0; i < 1000; ++i) {
 }
 ```
 
+## Migrating from 1.0 (`ask`)
+
+`call()` was called `ask()` in 1.0. The old names still compile and forward to
+the new ones, with a deprecation warning that names the replacement:
+
+| 1.0 name | Current name |
+|----------|--------------|
+| `actor_ref::ask()` | `actor_ref::call()` |
+| `ask_handler()` | `call_handler()` |
+| `cas::ask_deadlock_error` | `cas::call_deadlock_error` |
+| `cas::ask_type_error` | `cas::call_type_error` |
+| `ask_queue_high_water_mark()` | `call_queue_high_water_mark()` |
+| `cas/ask_message.h` | `cas/call_message.h` |
+
+The header `cas/ask_message.h` only includes `cas/call_message.h` and gives no
+warning. `dead_letter_stats::dropped_ask` keeps its name (a struct field cannot
+be aliased).
+
 ## Comparison: Call vs Regular Messages
 
 | Feature | Call | Regular Messages |
 |---------|------------|------------------|
 | Execution | Synchronous (blocks) | Asynchronous (returns immediately) |
 | Return value | Yes | No (use callbacks) |
-| Overhead | ~10-50 μs | ~1-10 μs |
+| Overhead | One round trip + blocking | Enqueue only |
 | Runs on | Target actor's worker thread | Target actor's worker thread |
 | Queue | Actor's mailbox, handled next (ahead of queued messages) | Actor's mailbox, in send order |
 | Timeout support | Yes | No |

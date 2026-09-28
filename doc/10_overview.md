@@ -11,20 +11,20 @@ Cygnus is a modern C++20 actor framework designed for high-performance concurren
 - **Type-safe message passing** - Compile-time type checking for all messages
 - **Actor registry** - Name-based actor discovery and lookup
 - **Lifecycle hooks** - Controlled initialization and cleanup
-- **Graceful shutdown** - All messages processed before termination
+- **Graceful shutdown** - Queued messages are drained, up to `shutdown_config::drain_timeout` (default 5 s); any left are reported by `system::get_shutdown_log()`
 - **Dynamic actor management** - Create and stop actors at runtime
 
 ### Advanced Features
-- **Call (RPC)** - Synchronous request-response calls
+- **Call (RPC)** - Synchronous request-response calls (named `ask()` in 1.0; the old names still compile, with a deprecation warning)
 - **Timers** - One-shot and periodic message scheduling
 - **Fast actors** - Dedicated threads for low-latency processing
 - **Inline actors** - Zero-latency synchronous execution
-- **Stateful actors** - State-based message filtering
+- **Stateful actors** - Selective receive (`stateful_actor`, or `stateful_fast_actor` on a dedicated thread)
 
 ### Performance
-- **Lock-free queues** - High-throughput message delivery using moodycamel::ConcurrentQueue
+- **Lock-free mailboxes** - An intrusive lock-free MPSC mailbox per actor (adapted from CAF); pooled actors are scheduled from per-worker lock-free ready queues
 - **Thread affinity** - Each actor bound to one thread (no context switching)
-- **Zero-copy messages** - Messages moved, not copied
+- **Pooled messages** - Each send copies the message once into a size-class pool block (see [Message Pool](140_message_pool.md))
 - **Minimal overhead** - Lightweight actor references
 
 ## Architecture
@@ -59,7 +59,7 @@ Cygnus is a modern C++20 actor framework designed for high-performance concurren
 ### Actors
 Self-contained units of computation with:
 - Private state (no shared memory)
-- Message mailbox (lock-free queue)
+- Message mailbox (lock-free; handled in send order per sender, calls first)
 - Message handlers (process incoming messages)
 - Lifecycle hooks (initialization and cleanup)
 
@@ -139,6 +139,9 @@ int main() {
 - Actors assigned to thread pool in round-robin fashion
 - Each actor pinned to one thread (thread affinity)
 - Multiple actors per thread
+- A worker runs only actors on its ready queue - an actor is queued when a message finds it idle; workers never scan all their actors
+- An actor handles up to `system_config::max_messages_per_turn` (default 64) messages per turn, then other ready actors on its worker get a turn
+- An idle worker spins for `system_config::worker_idle_spin` (default 20 µs) before parking, so work arriving meanwhile needs no OS wake-up
 - Good for most use cases
 
 ### Fast Actors
@@ -151,6 +154,7 @@ int main() {
 - Execute in caller's thread
 - Zero latency (no queuing)
 - Thread-safe and non-thread-safe variants
+- A handler may tell its own inline actor: the message is handled right after the current handler, before the outer `tell()` returns
 - Ideal for synchronous operations
 
 ## Message Delivery Guarantees
@@ -158,7 +162,7 @@ int main() {
 - **Exactly once to a live actor** - Nothing lost, nothing duplicated
 - **Send order per sender** - Messages from A to B are handled in the order A sent them; an `call()` is handled next, ahead of queued messages
 - **No global ordering** - Messages from different senders may interleave
-- **Dead letters** - Messages to stopped actors are dropped and counted (see dead-letter handling)
+- **Dead letters** - Messages to stopping or stopped actors, or sent through an invalid `actor_ref`, are dropped and counted (`system::get_dead_letter_stats()`, optional handler via `system::set_dead_letter_handler()`)
 
 ## Naming Conventions
 
@@ -173,13 +177,16 @@ Example:
 ```cpp
 class my_actor : public cas::actor {
 private:
-    std::string m_name;  // Member variable
-    int m_counter;       // Member variable
+    int m_threshold = 0;  // Member variable
+    int m_counter = 0;    // Member variable
+
+protected:
+    void on_start() override {}
 
 public:
     // Property-style accessor
-    std::string name() const { return m_name; }
-    void name(const std::string& n) { m_name = n; }
+    int threshold() const { return m_threshold; }
+    void threshold(int t) { m_threshold = t; }
 };
 
 struct my_message : public cas::message_base {
@@ -190,7 +197,7 @@ struct my_message : public cas::message_base {
 
 ## License
 
-MIT - see [LICENSE](../LICENSE).
+MIT - see [LICENSE](../LICENSE). Third-party code (CAF, moodycamel) - see [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
 
 ## Next Steps
 

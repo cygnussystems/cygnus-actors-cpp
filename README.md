@@ -30,6 +30,7 @@ class greeter : public cas::actor {
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [System Lifecycle](#system-lifecycle)
+- [Configuration](#configuration)
 - [Messages](#messages)
 - [Actors](#actors)
 - [Actor Communication](#actor-communication)
@@ -170,7 +171,7 @@ Understanding the correct sequence of operations is critical:
 
 ### Important Rules
 
-1. **Create actors before `start()`** - Actors created after start() work but may miss early messages
+1. **Create actors before or after `start()`** - after start, `create()` runs the actor's `on_start()` before returning, so it is ready at once
 2. **Call `shutdown()` before `wait_for_shutdown()`** - wait blocks until shutdown is initiated
 3. **Don't send messages after `shutdown()`** - Messages to stopped actors are dropped
 4. **Actors can create other actors** - Use `cas::system::create<T>()` from within an actor
@@ -193,19 +194,54 @@ int main() {
 
     // Phase 4: Initiate shutdown
     cas::system::shutdown();
-    // At this point:
-    // - No new external messages accepted
-    // - Each actor receives system_shutdown message
-    // - Actors finish processing their queues
-    // - on_shutdown() called, then on_stop()
+    // shutdown() blocks until the queues drain (or drain_timeout expires):
+    // - Each actor receives system_shutdown behind the messages already queued
+    // - When it handles it: on_shutdown() runs, its timers are cancelled, and
+    //   from then on messages to it are dead letters
+    // - Messages still queued at drain_timeout are never handled; they are
+    //   listed in cas::system::get_shutdown_log()
 
     // Phase 5: Wait for completion
     cas::system::wait_for_shutdown();
-    // All actors have stopped, safe to exit
+    // Workers joined, on_stop() has run for every actor - safe to exit
 
     return 0;
 }
 ```
+
+## Configuration
+
+Pass a `cas::system_config` **before creating the first actor** - the pool
+width and queue threshold are read when actors are created:
+
+```cpp
+cas::system_config cfg;
+cfg.thread_pool_size = 4;                             // 0 = hardware concurrency
+cfg.max_messages_per_turn = 64;                       // per pooled actor turn; 0 = unlimited
+cfg.worker_idle_spin = std::chrono::microseconds(20); // 0 = park at once
+cfg.queue_threshold = 1000;                           // queue-size alert; 0 = off
+cfg.log_dead_letters = false;                         // also log dead letters to stderr
+cas::system::init(cfg);  // or configure(cfg), which throws if the system is running
+
+auto a = cas::system::create<my_actor>();
+cas::system::start();
+```
+
+- **`max_messages_per_turn`** (default 64): a pooled actor is put on its
+  worker's ready queue when a message finds it idle, and handles up to this
+  many messages before other ready actors on that worker get a turn. Higher
+  favours a busy actor's throughput; lower bounds how long its neighbours wait.
+- **`worker_idle_spin`** (default 20 µs): how long an idle pooled worker keeps
+  polling before it parks. Work arriving within the spin needs no OS wake-up,
+  which keeps pooled round trips around 1 µs. The cost is CPU: roughly spin
+  length x bursts of work per second on each busy worker (20 µs x 1000/s = 2%
+  of a core); idle workers do not spin.
+- **`queue_threshold`** (default 1000): when an actor's queue exceeds it, the
+  handler set with `cas::system::set_queue_threshold_handler()` is called on the
+  sending thread - once per breach; it re-arms when the queue is back to half
+  the threshold. (`cas::queue_threshold_warning` is deprecated: it was never
+  sent.)
+- `ask_thread_pool_size` is deprecated and ignored.
 
 ## Messages
 
@@ -239,7 +275,7 @@ Every message automatically has:
 ```cpp
 struct message_base {
     actor_ref sender;        // Who sent this (set by framework)
-    uint64_t message_id;     // Unique ID (set by framework)
+    uint64_t message_id;     // Unique ID (set by tell()/call() and per timer firing)
     uint64_t correlation_id; // For request/response tracking
 };
 ```
@@ -336,6 +372,10 @@ if (processor.is_valid()) {
 }
 ```
 
+The registry holds weak references: it never keeps an actor alive, and a
+destroyed actor's name reads as absent. Calling `set_name()` again releases the
+old name.
+
 ## Actor Communication
 
 ### Direct Reference (Preferred)
@@ -424,7 +464,8 @@ if (worker.is_running()) {
 }
 ```
 
-**Important**: a message to a stopped actor is dropped without an exception.
+**Important**: a message to a stopped actor - or sent through an invalid
+`actor_ref` (counted in `dropped_to_invalid`) - is dropped without an exception.
 It is counted as a dead letter (`cas::system::get_dead_letter_stats()`), passed
 to your dead-letter handler if you set one
 (`cas::system::set_dead_letter_handler()`), and logged if
@@ -490,11 +531,12 @@ struct fast_message : cas::message_base {
 
 **Be honest about when this wins.** Both major standard libraries keep short
 strings inline (the small-string optimisation - roughly 15 characters), so for
-values that short `std::string` does not allocate either, and the
-[benchmarks](#benchmarks) show the two within noise of each other. `fixed_string`
-earns its place when values are longer than the SSO buffer, when you need a
-message whose size is fixed and known at compile time, or when you want the
-guarantee rather than a heuristic that depends on your standard library.
+values that short `std::string` does not allocate either. Even so, in the
+[benchmarks](#benchmarks) `fixed_string` fields are about 2x faster than
+`std::string` fields (see the notes there). `fixed_string` also earns its place
+when values are longer than the SSO buffer, when you need a message whose size
+is fixed and known at compile time, or when you want the guarantee rather than
+a heuristic that depends on your standard library.
 
 `fixed_string<N>` API:
 ```cpp
@@ -628,6 +670,7 @@ cancel_timer(id);
 // An actor's timers are cancelled once its on_shutdown() has run, whether it
 // was stopped with stop_actor() or by system shutdown. While stopping, an
 // actor cannot schedule new timers (schedule_* returns INVALID_TIMER_ID).
+// Each firing delivers a copy of the message with its own message_id.
 ```
 
 ## Call (RPC)
@@ -718,7 +761,8 @@ auto ref = cas::system::create<latency_critical>();
 Execute in caller's thread. Zero latency but blocks caller.
 
 ```cpp
-class sync_processor : public cas::inline_actor<> {  // <false>: single sender, no mutex
+// inline_actor<> = thread-safe (mutex); inline_actor<false> = single sender, no mutex
+class sync_processor : public cas::inline_actor<> {
     // Handlers run synchronously when tell() is called
 };
 
@@ -726,13 +770,47 @@ auto ref = cas::system::create<sync_processor>();
 ref.tell(msg);  // Blocks until handler completes
 ```
 
+A handler may `tell()` its own inline actor: the message is handled right after
+the current handler, before the outer `tell()` returns. A `call()` back into an
+inline actor that is mid-handler throws `call_deadlock_error`.
+
+### Stateful Actors
+
+Selective receive for state machines: in each state the actor accepts only some
+message types; the others stay queued, in order, until a later state accepts
+them. Calls and system shutdown are never held back.
+
+```cpp
+struct login : cas::message_base { cas::fixed_string<16> user; };
+struct new_order : cas::message_base { int quantity = 0; };
+
+class session : public cas::stateful_actor {  // or cas::stateful_fast_actor
+protected:
+    void on_start() override {
+        handler<login>(&session::on_login);
+        handler<new_order>(&session::on_order);
+        reject_all_message_types();
+        accept_message_type<login>();   // orders wait until logged in
+    }
+
+    void on_login(const login&) { accept_all_message_types(); }
+    void on_order(const new_order&) { /* ... */ }
+};
+```
+
+`stateful_actor` runs on the pool; `stateful_fast_actor` has the same API on a
+dedicated thread. Call `accept_*`/`reject_*` only from the actor's own
+`on_start()` or handlers.
+
 ### Comparison
 
-| Type | Threading | Latency | Use Case |
-|------|-----------|---------|----------|
-| `cas::actor` | Shared pool | Low (~200ns) | General purpose |
-| `cas::fast_actor` | Dedicated thread | Ultra-low (<100ns) | Trading, real-time |
-| `cas::inline_actor` | Caller's thread | Zero | Synchronous transforms |
+| Type | Threading | Round trip (p50, MSVC) | Use Case |
+|------|-----------|------------------------|----------|
+| `cas::actor` | Shared pool | ~0.7 µs | General purpose |
+| `cas::fast_actor` | Dedicated thread | ~0.5 µs, no worker sharing | Trading, real-time |
+| `cas::inline_actor` | Caller's thread | None (no queue) | Synchronous transforms |
+| `cas::stateful_actor` | Shared pool | as `cas::actor` | State machines (selective receive) |
+| `cas::stateful_fast_actor` | Dedicated thread | as `cas::fast_actor` | Latency-critical state machines |
 
 ## Common Patterns
 
@@ -913,31 +991,49 @@ microseconds (`system_config::worker_idle_spin`).
 ### cas::system
 
 ```cpp
-// Create an actor (call before or after start)
-template<typename T> static actor_ref create();
+// Configure (before the first create())
+static void init(const system_config& config = {});
+static void configure(const system_config& config);  // throws if running
+
+// Create an actor (call before or after start); args go to T's constructor
+template<typename T, typename... Args> static actor_ref create(Args&&... args);
 
 // Start the system (call once)
 static void start();
 
-// Initiate shutdown (non-blocking)
-static void shutdown();
+// Initiate shutdown; blocks until queues drain or config.drain_timeout
+// (default 5 s) expires
+static void shutdown(const shutdown_config& config = {});
 
 // Wait for all actors to stop (blocking)
 static void wait_for_shutdown();
+static std::vector<std::string> get_shutdown_log();  // e.g. actors left with messages
 
 // Stop a specific actor
 static bool stop_actor(actor_ref ref, const stop_config& config = {});
 static bool stop_actor(const std::string& name, const stop_config& config = {});
+static bool is_actor_running(actor_ref ref);
 
 // Watch for actor termination
 static void watch(actor_ref watcher, actor_ref target);
+static void unwatch(actor_ref watcher, actor_ref target);
+
+// Dead letters (dropped_tell, dropped_ask, dropped_to_invalid)
+static dead_letter_stats get_dead_letter_stats();
+static void reset_dead_letter_stats();
+static void set_dead_letter_handler(dead_letter_handler handler);
+static void clear_dead_letter_handler();
+
+// Queue threshold alerts (once per breach, re-armed at half the threshold)
+static void set_queue_threshold_handler(queue_threshold_handler handler);
+static void clear_queue_threshold_handler();
 ```
 
 ### cas::actor
 
 ```cpp
 // Lifecycle hooks (override these)
-virtual void on_start();     // Called when actor starts
+virtual void on_start() = 0; // Required: called once when actor starts
 virtual void on_shutdown();  // Called during shutdown (can send messages)
 virtual void on_stop();      // Called after shutdown (no messages)
 
@@ -949,14 +1045,20 @@ template<typename T, typename Callable> void handler(Callable&& callable);
 template<typename R, typename Tag, typename... Args>
 void call_handler(R (Derived::*method)(Args...));
 
-// Timer scheduling (the message is copied; each firing delivers a copy)
+// Timer scheduling (the message is copied; each firing delivers a copy with its own message_id)
 template<typename T> cas::timer_id schedule_once(std::chrono::milliseconds delay, T msg);
 template<typename T> cas::timer_id schedule_periodic(std::chrono::milliseconds interval, T msg);
 void cancel_timer(cas::timer_id id);
 
 // Identity
-void set_name(const std::string& name);
+void set_name(const std::string& name);   // releases any previous registry name
+const std::string& name() const;
 actor_ref self();
+
+// Queue metrics
+size_t mailbox_high_water_mark() const;
+size_t call_queue_high_water_mark() const;
+size_t total_high_water_mark() const;     // largest combined queue seen
 ```
 
 ### cas::actor_ref

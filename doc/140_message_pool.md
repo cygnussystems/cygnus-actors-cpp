@@ -31,14 +31,13 @@ cause no page faults after warm-up.
   private array. Allocating pops from it and freeing pushes to it, with no atomic
   operations — the common case.
 - **Shared free list.** One per size class, a lock-free MPMC queue
-  (`moodycamel::ConcurrentQueue`, the same structure as the mailboxes). Caches
-  refill from it and flush to it **16 blocks at a time**, so it is touched once
-  per 16 allocations. Messages usually flow one way — allocated on the sender's
+  (`moodycamel::ConcurrentQueue`). Caches refill from it and flush to it
+  **16 blocks at a time**, so it is touched once per 16 allocations. Messages usually flow one way — allocated on the sender's
   thread, freed on the receiver's — and batching is what makes that cheap.
 - A thread's cached blocks go back to the shared list when the thread exits.
 
 A consequence: right after start, blocks freed by a receiver sit in its cache
-until 16 accumulate, so the first workload in a size class takes a few more pool
+until the cache is full (32), and only then do 16 move to the shared list, so the first workload in a size class takes a few more pool
 misses than it otherwise would. Call `prewarm()` if the first messages after start
 are latency-sensitive — prewarmed blocks go straight to the shared lists.
 
@@ -93,7 +92,7 @@ struct my_msg : public cas::message_base {
 // With the 16-byte header: 16 + 128 = 144 -> 256-byte class
 ```
 
-Either way you consume a 256-byte block to carry a 128-byte message — roughly
+You consume a 256-byte block to carry a 128-byte message — roughly
 double the memory you budgeted for. If you are sizing hot messages to fit a class,
 you must account for the header.
 
@@ -123,8 +122,9 @@ static_assert(sizeof(tick_msg) <= cas::message_pool::max_payload_for_class(128),
               "tick_msg no longer fits the 128-byte size class");
 ```
 
-Note that `sizeof(cas::message_base)` is itself 40 bytes (an `actor_ref` plus two
-`uint64_t` plus a vtable pointer), so your own members start from that baseline.
+Note that `sizeof(cas::message_base)` is itself 48 bytes on x64 (an `actor_ref`,
+two `uint64_t`, a vtable pointer and the mailbox link), so your own members start
+from that baseline.
 
 ---
 
@@ -223,6 +223,8 @@ cas::message_pool::set_max_pool_size(10000);  // per size class; 0 = unlimited
 
 Default is 10,000 blocks per class (roughly 25 MB across all five classes if every
 class fills). Beyond the cap, `deallocate` frees to the OS instead of pooling.
+The cap covers the shared free lists only: blocks held in per-thread caches (up
+to 32 per size class per thread) are not counted against it.
 
 ---
 

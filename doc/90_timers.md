@@ -286,7 +286,8 @@ protected:
   still draining during system shutdown)
 - No timer message is *handled* after the actor stops
 - A tick already fired cannot be recalled: `cancel_timer()` stops future
-  firings, but a message already queued is still delivered
+  firings, but a message already queued is still delivered - and a tick
+  already fired when the actor stops arrives as a dead letter
 
 ### Manual Cleanup in on_shutdown()
 
@@ -312,7 +313,21 @@ Actors internally track active timers:
 std::set<timer_id> m_active_timers;  // All active timers for this actor
 ```
 
-When actor stops, framework cancels all timers in this set.
+Right after `on_shutdown()` - in either stop path - the framework cancels every
+timer in this set. Finished one-shot ids are pruned periodically, so an actor
+that schedules many timeouts does not grow the set without bound.
+
+### Timer Messages
+
+- Each firing is a new message with a fresh `message_id`.
+- Timer messages have no sender (`msg.sender` is invalid), so reply through a
+  stored `actor_ref`.
+- Ticks come from the timer thread, a separate sender, so they are not ordered
+  against other senders' messages.
+- `schedule_once()`, `schedule_periodic()` and `cancel_timer()` must be called
+  from the actor's own code (`on_start()`, handlers, `on_shutdown()`), never
+  from another thread.
+- A stopping actor gets `INVALID_TIMER_ID` and nothing is scheduled.
 
 ## Common Patterns
 
@@ -430,8 +445,8 @@ protected:
             return;
         }
 
-        // Exponential backoff: 1s, 2s, 4s, 8s, 16s
-        auto delay = std::chrono::seconds(1 << msg.attempt);
+        // Exponential backoff: 1s, 2s, 4s, 8s
+        auto delay = std::chrono::seconds(1 << (msg.attempt - 1));
 
         std::cout << "Attempt " << msg.attempt << " failed, "
                   << "retrying in " << delay.count() << "s" << std::endl;
@@ -608,7 +623,8 @@ schedule_periodic(std::chrono::seconds(1), msg);          // 1s
 schedule_periodic(std::chrono::milliseconds(1), msg);     // May be inaccurate
 
 // ✗ BAD: Sub-millisecond (use fast_actor instead)
-schedule_periodic(std::chrono::microseconds(500), msg);   // Not supported
+schedule_periodic(std::chrono::microseconds(500), msg);   // Does not compile - the
+                                                          // API takes std::chrono::milliseconds
 ```
 
 ### Timer Resolution
@@ -710,7 +726,7 @@ schedule_once(std::chrono::seconds(5), msg);       // 5 second delay
 schedule_periodic(std::chrono::milliseconds(100), msg);  // 10 Hz
 
 // ✗ BAD: Unrealistic timing
-schedule_periodic(std::chrono::microseconds(10), msg);   // Too fast
+schedule_periodic(std::chrono::microseconds(10), msg);   // Does not compile (milliseconds API)
 schedule_once(std::chrono::hours(1000), msg);           // Unreasonably long
 ```
 

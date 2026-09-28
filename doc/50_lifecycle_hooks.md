@@ -43,23 +43,28 @@ Actors have a well-defined lifecycle with three hooks that give you precise cont
 ┌──────────────┐
 │   Stopped    │  Actor terminated
 └──────────────┘
+```
 
 This is the order for whole-system shutdown. `stop_actor()` drains (or
 discards) first and then runs `on_shutdown()` and `on_stop()` together - see
 [Call Order Guarantees](#call-order-guarantees).
-```
 
 ## The Three Hooks
 
 ### on_start()
 
-Called once per actor, before it processes any messages.
+Called once per actor, before it handles any message.
 
-- Actors created **before** `system::start()` are started by `start()`.
-- Actors created **after** the system is running are started by `create()`, before
-  it returns — so the actor is ready to receive messages immediately.
+- Pooled actors created **before** `system::start()` are started by `start()`,
+  on the thread that calls it, before any worker thread exists. A `fast_actor`
+  created before `start()` runs `on_start()` on its own dedicated thread, which
+  may be after `start()` has returned.
+- Actors created **after** the system is running - pooled or fast - are started
+  inside `create()`, on the creating thread, before it returns. Messages sent to
+  the new actor meanwhile are queued; none is handled until `on_start()` returns.
 
-Either way `on_start()` runs exactly once.
+Either way `on_start()` runs exactly once. See
+[Creating and removing actors at runtime](70_dynamic_removal.md#creating-and-removing-actors-at-runtime).
 
 **Signature:**
 ```cpp
@@ -111,10 +116,11 @@ handle the reply in a normal message handler. That keeps initialisation
 non-blocking, which is what lets the whole system come up.
 
 > **Registry ordering:** `actor_registry::get()` only finds actors whose
-> `on_start()` has already run, since `set_name()` is what registers them. Actors
-> are started in creation order, so a lookup for an actor created *after* this one
-> will fail at startup. Prefer passing an `actor_ref` through the constructor when
-> the dependency is known, or do the lookup lazily in a handler.
+> `on_start()` has already run, since `set_name()` is what registers them. The
+> order in which actors' `on_start()` runs is unspecified (it is not creation
+> order, and fast actors start on their own threads), so a lookup of any other
+> actor from `on_start()` may fail. Prefer passing an `actor_ref` through the
+> constructor when the dependency is known, or do the lookup lazily in a handler.
 
 **Example:**
 ```cpp
@@ -238,7 +244,12 @@ protected:
 
 ### on_stop()
 
-Called after message draining is complete, just before actor is destroyed.
+Called last. After `stop_actor()` it runs on the actor's own thread, right after
+draining and `on_shutdown()`. In a system shutdown it is called from
+`wait_for_shutdown()`: for pooled actors on the thread calling
+`wait_for_shutdown()`, after the workers are joined; fast actors run it on their
+own thread. The actor object is destroyed only when the last `actor_ref` to it
+is released.
 
 **Signature:**
 ```cpp
@@ -251,7 +262,8 @@ protected:
 - Close file handles
 - Free memory
 - Log final state
-- **NO message sending** (messages will be dropped)
+- Don't rely on sending messages: during system shutdown they become dead
+  letters (see below)
 
 **Example:**
 ```cpp
@@ -325,12 +337,18 @@ When `system::shutdown()` is called:
    mailbox - after the messages that thread sent it earlier - and then stops
    accepting new messages (they become dead letters) and its timers are
    cancelled. Actors do this
-   independently; there is no order *between* actors.
+   independently; there is no order *between* actors. An `inline_actor`
+   handles the shutdown message synchronously, so its `on_shutdown()` runs on
+   the thread that called `shutdown()`. Actors already being stopped with
+   `stop_actor()` are skipped; `wait_for_shutdown()` completes their stop.
 3. **Draining:** messages already queued are still handled, until every
    mailbox is empty or `drain_timeout` expires.
 4. **`wait_for_shutdown()`** joins the worker threads and runs `on_stop()` for
    every pooled actor on the calling thread (fast actors run theirs on their
    own thread).
+
+System shutdown does not unregister names, does not send `termination_msg` to
+watchers, and leaves the actors in the system until `system::reset()`.
 
 ```cpp
 cas::system::shutdown();          // 1-3: shutdown sent, on_shutdown() runs, queues drain
@@ -349,18 +367,24 @@ actors in that order with `stop_actor()` before calling `shutdown()`.
 When `system::stop_actor()` is called:
 
 1. **Actor state set to `stopping`** (on the calling thread; new messages are dead letters)
-2. **Timers cancelled**
-3. **Message draining or discarding** (per `stop_config::mode`)
-4. **`on_shutdown()` called**
-5. **`on_stop()` called**
-6. **Actor removed from system**
+2. **Timers cancelled**; with `stop_mode::discard`, queued messages are dropped
+   as dead letters
+3. **Draining** (`stop_mode::drain`): queued messages are handled until the
+   queue is empty or `drain_timeout` expires
+4. **`on_shutdown()`, then `on_stop()` called**
+5. **Timers scheduled by the hooks cancelled**; the mailbox is closed and
+   anything still in it is a dead letter
+6. **Name unregistered** (only if it still maps to this actor), **watchers
+   notified**, actor removed from its worker, state set to `stopped`
 
 Steps 2-6 run on the actor's own thread, never concurrently with one of its
 handlers. See [Dynamic Removal](70_dynamic_removal.md#lifecycle-during-removal).
 
 ```cpp
 cas::system::stop_actor(actor_ref);
-// 1-6 happen synchronously if wait_for_stop=true
+// Blocks until on_stop() has returned if wait_for_stop=true - except when
+// called from the actor itself, from its worker thread, from a fast actor's
+// own thread, or after shutdown(); those complete asynchronously.
 ```
 
 ## Message Draining
@@ -417,12 +441,12 @@ protected:
 };
 
 int main() {
-    auto counter = cas::system::create<counter>();
+    auto counter_ref = cas::system::create<counter>();
     cas::system::start();
 
     // Send 10 messages
     for (int i = 0; i < 10; ++i) {
-        counter.tell(increment{});
+        counter_ref.tell(increment{});
     }
 
     // Shutdown immediately
@@ -483,8 +507,9 @@ private:
 
 public:
     bad_actor() {
-        // Registry not ready yet!
-        m_dependency = cas::actor_registry::get("other");  // Returns invalid ref
+        // Too early: peers may not have registered yet, and self() is not
+        // available until the system has taken the actor
+        m_dependency = cas::actor_registry::get("other");
     }
 };
 ```
@@ -636,7 +661,7 @@ protected:
 ### State Persistence
 
 ```cpp
-class stateful_actor : public cas::actor {
+class persistent_actor : public cas::actor {
 private:
     std::map<std::string, int> m_state;
     std::string m_state_file;
@@ -648,7 +673,7 @@ protected:
         // Load persisted state
         load_state_from_file(m_state_file);
 
-        handler<update>(&stateful_actor::on_update);
+        handler<update>(&persistent_actor::on_update);
     }
 
     void on_update(const update& msg) {
@@ -682,15 +707,25 @@ private:
 
 ### Coordinated Shutdown
 
+Teardown that must happen in order is done **before** `system::shutdown()`:
+during system shutdown the workers may already be stopping (so `stop_actor()`
+returns `false`), the coordinator stops accepting messages as soon as its own
+`on_shutdown()` returns, and no `termination_msg` is sent.
+
 ```cpp
+struct begin_teardown : public cas::message_base {};
+struct teardown_complete : public cas::message_base {};
+
 class coordinator : public cas::actor {
 private:
     std::vector<cas::actor_ref> m_workers;
-    int m_workers_stopped = 0;
+    cas::actor_ref m_requester;
+    size_t m_workers_stopped = 0;
 
 protected:
     void on_start() override {
-        handler<worker_stopped>(&coordinator::on_worker_stopped);
+        handler<begin_teardown>(&coordinator::on_begin_teardown);
+        handler<cas::termination_msg>(&coordinator::on_worker_stopped);
 
         // Create workers and watch them
         for (int i = 0; i < 5; ++i) {
@@ -700,10 +735,14 @@ protected:
         }
     }
 
-    void on_shutdown() override {
-        // Tell all workers to stop
+    void on_begin_teardown(const begin_teardown& msg) {
+        m_requester = msg.sender;
+
+        // Don't block this worker thread: completion arrives as termination_msg
+        cas::stop_config config;
+        config.wait_for_stop = false;
         for (auto& worker : m_workers) {
-            cas::system::stop_actor(worker);
+            cas::system::stop_actor(worker, config);
         }
     }
 
@@ -712,12 +751,15 @@ protected:
         std::cout << "Worker " << msg.actor_name << " stopped ("
                   << m_workers_stopped << "/" << m_workers.size() << ")" << std::endl;
 
-        if (m_workers_stopped == m_workers.size()) {
-            std::cout << "All workers stopped" << std::endl;
+        if (m_workers_stopped == m_workers.size() && m_requester.is_valid()) {
+            m_requester.tell(teardown_complete{});
         }
     }
 };
 ```
+
+The code that sends `begin_teardown` (for example another actor) calls
+`system::shutdown()` once it receives `teardown_complete`.
 
 ## Debugging Lifecycle Issues
 

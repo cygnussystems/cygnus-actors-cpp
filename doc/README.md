@@ -72,15 +72,16 @@ Documentation files are numbered for easy ordering and insertion of new topics.
 ### Core Actor System
 - Actor-based concurrency (no locks, no shared state)
 - Type-safe message passing
-- Lock-free message queues (moodycamel::ConcurrentQueue)
+- Lock-free intrusive actor mailbox (adapted from CAF); per-worker ready queues
 - Thread affinity (actors pinned to threads)
 - Actor registry (name-based lookup)
 - Graceful shutdown with message draining
-- **NEW:** Dynamic actor creation and removal at runtime
+- Dynamic actor creation and removal at runtime
 
 ### Message Patterns
 - Asynchronous fire-and-forget messaging
 - Request-response with sender tracking
+- Per-sender send order (a `call()` is handled next, ahead of queued messages)
 - **Call** for synchronous RPC-style calls
 - Call with timeout support
 - Message correlation IDs
@@ -93,9 +94,10 @@ Documentation files are numbered for easy ordering and insertion of new topics.
 - **Watch pattern** for termination notifications
 
 ### Advanced Actor Types
-- **Fast Actors** - Dedicated threads, <1μs latency
+- **Fast Actors** - Dedicated threads, lowest tail latency
 - **Inline Actors** - Zero-latency synchronous execution
 - **Stateful Actors** - State-based message filtering
+- **Stateful Fast Actors** - Selective receive on a dedicated thread
 
 ### Timing & Scheduling
 - One-shot timers (`schedule_once`)
@@ -107,8 +109,9 @@ Documentation files are numbered for easy ordering and insertion of new topics.
 - Pooled actors (default) - Thread pool with affinity
 - Fast actors - One dedicated thread per actor
 - Inline actors - Execute in caller's thread
-- Call - Runs on the target actor's own thread, serialised with its
-  regular handlers (see [INVARIANTS.md](INVARIANTS.md))
+- Call - Runs on the target actor's own thread (for an inline actor: the
+  caller's thread), serialised with its regular handlers (see
+  [INVARIANTS.md](INVARIANTS.md))
 
 ### Inter-Process Communication
 - **ZeroMQ relay actor** - ROUTER/DEALER patterns for cross-process messaging
@@ -118,13 +121,17 @@ Documentation files are numbered for easy ordering and insertion of new topics.
 ## Examples
 
 All documentation includes complete, runnable examples. Additional examples can be found in:
-- `tests/example_usage.cpp` - Complete ping-pong example
+- `tutorials/` - 14 self-checking programs, built and run by `ctest` (the most reliable examples)
 - `tests/00_basic/` - Basic usage patterns
 - `tests/02_interactions/` - Actor communication
-- `tests/05_ask_pattern/` - RPC-style messaging
+- `tests/05_call/` - RPC-style messaging
 - `tests/06_timers/` - Timer usage
 - `tests/07_dynamic_removal/` - Dynamic actor management
 - `tests/08_zeromq_relay/` - ZeroMQ inter-process communication
+- `tests/09_fixed_types/` - `fixed_string`
+- `tests/10_dead_letters/` - Dead-letter reporting
+- `tests/11_concurrency/` - Threading regression tests
+- `tests/13_message_pool/` - Message pool, including stress tests
 
 ## Coding Conventions
 

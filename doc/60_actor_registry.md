@@ -75,17 +75,26 @@ protected:
 ```
 
 **Rules:**
-- Must be called in `on_start()` (not constructor)
+- Call it in `on_start()` or from a handler. Called from the constructor it
+  sets the name but does not register it, because the actor is not yet owned by
+  the system
+- Renaming releases the old name (unless another actor has taken it since)
 - Name should be unique (duplicate names: last one wins)
 - Name persists until the actor is stopped with `stop_actor()`, which
   unregisters it (only if the name still refers to that actor - a replacement
   that took the name keeps it)
-- Whole-system shutdown does **not** unregister: the registry keeps its
-  entries (and references to the actors) until `system::reset()`
+- Whole-system shutdown does **not** unregister. Entries stay until
+  `system::reset()` and still resolve to the (stopped) actors, so a `tell()`
+  through them is a dead letter
+- The registry holds **weak** references: it never keeps an actor alive, and a
+  name whose actor has been destroyed reads as absent
 
 ### Auto-Generated Names
 
-If you don't call `set_name()`, actors get auto-generated names:
+If you don't call `set_name()`, actors get auto-generated names. The default
+name is assigned at creation and returned by `name()`, but it is **not
+registered**: `actor_registry::get("worker_1")` does not find it. Only
+`set_name()` registers.
 
 ```cpp
 class worker : public cas::actor {
@@ -100,12 +109,15 @@ auto w = cas::system::create<worker>();
 cas::system::start();
 
 std::cout << w.name() << std::endl;
-// Output: "worker_1" (typename_instanceId format)
+// e.g. "worker_1": type name + instance id. Ids are shared by all actor
+// types, so the number is not predictable. On GCC/Clang the type name
+// includes namespaces.
 ```
 
 **Auto-generated format:** `typename_instanceId`
 - `typename` - Class name (e.g., "worker", "manager")
-- `instanceId` - Unique sequential ID (1, 2, 3, ...)
+- `instanceId` - Unique sequential ID across all actors (1, 2, 3, ...; restarts
+  at `system::reset()`)
 
 ### Custom Names with Parameters
 
@@ -233,8 +245,9 @@ void on_start() override {
   registers it). For actors created before `start()`, that is during
   `start()`; for actors created later, before `create()` returns.
 - The order in which different actors' `on_start()` run is **unspecified** (it
-  is not creation order), and a `fast_actor`'s `on_start()` runs on its own
-  thread, possibly after `start()` has returned.
+  is not creation order). For a `fast_actor` created before `start()`,
+  `on_start()` runs on its own thread, possibly after `start()` has returned
+  (one created later runs `on_start()` inside `create()`).
 - So looking up *another* actor inside `on_start()` can fail. Resolve peers
   lazily (on first use), pass `actor_ref`s through constructors, or have peers
   announce themselves with a message.
@@ -261,7 +274,11 @@ int main() {
 
 ### Automatic Unregistration
 
-Actors stopped with `stop_actor()` are removed from the registry:
+Actors stopped with `stop_actor()` are removed from the registry - but only if
+the name still refers to that actor. A replacement registered under the same
+name (for example by a supervisor reacting to `termination_msg`) keeps it, so
+restarting an actor under its old name is safe. See
+[Creating and removing actors at runtime](70_dynamic_removal.md#creating-and-removing-actors-at-runtime).
 
 ```cpp
 auto actor = cas::system::create<my_actor>();
@@ -323,7 +340,11 @@ protected:
 
 ### Worker Pool Pattern
 
-Named workers for load balancing:
+Named workers for load balancing. Caution: this looks the workers up in
+`on_start()`, which fails for any worker whose `on_start()` has not run yet (the
+order is unspecified - see [Registration Timing](#registration-timing)). In
+real code pass the refs through the constructor, or do the lookup on the first
+`task`.
 
 ```cpp
 class worker_pool_manager : public cas::actor {
@@ -544,7 +565,8 @@ void on_start() override {
     }
 
     // ✗ BAD: Assume it exists
-    // db.tell(msg);  // May fail if invalid!
+    // db.tell(msg);  // on an invalid ref: dropped, counted in
+    //                   // dead_letter_stats::dropped_to_invalid
 }
 ```
 
@@ -610,11 +632,13 @@ public:
 ```cpp
 // ✗ BAD: Duplicate names (last one wins)
 auto w1 = cas::system::create<worker>();  // set_name("worker")
-auto w2 = cas::system::create<worker>();  // set_name("worker") - overwrites w1!
+auto w2 = cas::system::create<worker>();  // set_name("worker") - one overwrites the other
 
 cas::system::start();
 
-auto w = cas::actor_registry::get("worker");  // Returns w2, not w1!
+auto w = cas::actor_registry::get("worker");
+// Returns whichever registered last - unspecified. When one of them is
+// stopped, the name is removed only if it still refers to that actor.
 
 // ✓ GOOD: Unique names
 class worker : public cas::actor {
@@ -666,6 +690,19 @@ Examples:
 ```cpp
 set_name("api.handler.v2");  // Version 2 API
 set_name("api.handler.v1");  // Legacy version 1
+```
+
+## Unregistering and Clearing
+
+```cpp
+// Remove a name unconditionally
+cas::actor_registry::unregister_actor("cache");
+
+// Remove a name only if it still refers to this actor (what stop_actor() uses)
+cas::actor_registry::unregister_actor("cache", cache_ref.get_actor().get());
+
+// Remove every entry (system::reset() does this)
+cas::actor_registry::clear();
 ```
 
 ## Performance Considerations

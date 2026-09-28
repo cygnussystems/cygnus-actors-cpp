@@ -271,6 +271,11 @@ protected:
     }
 };
 
+// Note: the lookup in ping_actor::on_start() relies on "pong"'s on_start()
+// (which calls set_name) having run first. start() does not guarantee an
+// order between actors' on_start() calls; in real code pass the actor_ref in
+// (e.g. as a constructor argument) or look it up when it is first needed.
+
 int main() {
     auto pong_ref = cas::system::create<pong_actor>();
     auto ping_ref = cas::system::create<ping_actor>();
@@ -300,7 +305,7 @@ int main() {
 - Handler signature: `void on_msg(const MessageType& msg)`
 
 ### System Lifecycle
-1. `system::create<T>()` - Create actors (before start)
+1. `system::create<T>()` - Create actors (before or after start; after start, `create()` runs `on_start()` before returning)
 2. `system::start()` - Start system and call all `on_start()` hooks
 3. Send messages - Actors process messages asynchronously
 4. `system::shutdown()` - Initiate graceful shutdown
@@ -393,12 +398,14 @@ target_link_libraries(my_app CygnusActorFramework)
 **Actors not processing messages:**
 - Did you call `system::start()`?
 - Did you register handlers in `on_start()`?
-- Did you wait long enough before shutdown?
+- Were messages still queued when `shutdown_config::drain_timeout` (default 5 s) expired? Those are never handled; `system::get_shutdown_log()` lists the actors that had them
 
 **Registry lookup fails:**
 - Did you call `set_name()` in `on_start()`?
 - Did you lookup after `system::start()`?
 - Is the name spelled correctly?
+- Was the actor renamed? `set_name()` releases the old name
+- Has the actor been destroyed? The registry holds weak references, so a destroyed actor's name reads as absent
 
 **Crash on shutdown:**
 - Did you call both `shutdown()` AND `wait_for_shutdown()`?

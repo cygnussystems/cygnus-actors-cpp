@@ -41,7 +41,12 @@ if (stopped) {
 bool cas::system::stop_actor(actor_ref ref, const stop_config& config = {});
 ```
 
-Stops a single actor gracefully. Returns `true` if successful, `false` if actor not found or already stopped.
+Stops a single actor gracefully. Returns `true` if this call started the stop.
+When it returns without waiting (see
+[When `stop_actor()` does not block](#when-stop_actor-does-not-block)), the stop
+may still be in progress. Returns `false` if the ref is invalid, or the actor is
+already stopping or stopped - including by system shutdown or a concurrent
+`stop_actor()`.
 
 **Example:**
 ```cpp
@@ -101,7 +106,9 @@ Configure how actors are stopped using `cas::stop_config`:
 ```cpp
 struct stop_config {
     stop_mode mode = stop_mode::drain;        // drain or discard
-    std::chrono::milliseconds drain_timeout{1000};  // Max wait time
+    std::chrono::milliseconds drain_timeout{1000};  // Drain budget, measured from the
+                                                    // stop_actor() call; does not bound a
+                                                    // running handler or the hooks
     bool wait_for_stop{true};                 // Synchronous vs async
     bool notify_watchers{true};               // Send termination_msg
 };
@@ -161,7 +168,9 @@ bool stopped = cas::system::stop_actor(actor, config);
 auto duration = std::chrono::steady_clock::now() - start;
 
 // Function blocks until actor fully stopped
-std::cout << "Stop took " << duration.count() << "ms" << std::endl;
+std::cout << "Stop took "
+          << std::chrono::duration_cast<std::chrono::milliseconds>(duration).count()
+          << "ms" << std::endl;
 ```
 
 **Use when:**
@@ -207,7 +216,15 @@ returns:
   `wait_for_shutdown()`)
 
 Before `start()` or after `wait_for_shutdown()` no actor thread is running, and
-`stop_actor()` performs the whole stop on the calling thread.
+`stop_actor()` performs the whole stop on the calling thread. An actor stopped
+before `start()` never runs `on_start()`, but its `on_shutdown()` and
+`on_stop()` do run.
+
+Inside a handler, prefer `wait_for_stop = false` and learn about completion
+from a `termination_msg` (see [Watch Pattern](#watch-pattern)). A synchronous
+stop of an actor on another worker blocks this worker thread - and every actor
+scheduled on it - for up to `drain_timeout` plus the target's hooks, and two
+actors on different workers that synchronously stop each other deadlock.
 
 ## Lifecycle During Removal
 
@@ -221,10 +238,14 @@ concurrently with, or after, `on_stop()`.
 3. **Discard or Drain** - discard: drop the queue; drain: process it until empty or `drain_timeout`
 4. **on_shutdown() Hook** - Actor can send final messages, save state
 5. **on_stop() Hook** - Final cleanup
-6. **Registry Cleanup** - Name unregistered, unless a replacement has already taken it
-7. **Watcher Notification** - Watchers receive `termination_msg` (if enabled)
-8. **Thread Removal** - Removed from its worker; a fast actor's thread is joined
-9. **State Final** - Actor state set to `stopped`; a blocking `stop_actor()` returns
+6. **Close** - Timers scheduled by the hooks are cancelled; the mailbox is closed,
+   and anything still queued (e.g. after a drain timeout) is a dead letter
+7. **Registry Cleanup** - Name unregistered, unless a replacement has already taken it
+8. **Watcher Notification** - Watchers receive `termination_msg` (if enabled)
+9. **Thread Removal** - Removed from its worker
+10. **State Final** - Actor state set to `stopped`; a blocking `stop_actor()` returns.
+    A fast actor's thread is joined after this - by `stop_actor()` if it waited,
+    otherwise later (e.g. by `system::actor_count()`)
 
 The registry is cleaned up before watchers are notified, so a supervisor that
 restarts the actor under the same name from its `termination_msg` handler
@@ -257,8 +278,8 @@ protected:
 
     void on_stop() override {
         std::cout << "Actor stopped (final cleanup)" << std::endl;
-        // No message sending allowed here
-        // Final resource cleanup only
+        // Final resource cleanup only. Messages sent from here are delivered
+        // after stop_actor(), but are dead letters during system shutdown.
     }
 
     void on_work(const work& msg) {
@@ -266,6 +287,165 @@ protected:
     }
 };
 ```
+
+## Creating and Removing Actors at Runtime
+
+A running system can grow and shrink: for example an actor per trading system,
+created when the trading system is launched and stopped when it completes, and
+a streaming actor per subscriber, created and removed as subscribers come and
+go.
+
+### Creating
+
+- `system::create<T>(args...)` is safe from any thread - a handler, `on_start()`,
+  `main()`, or a non-actor thread such as a network acceptor.
+- While the system is running, the new actor's `on_start()` runs on the creating
+  thread, **before `create()` returns** - for pooled and fast actors alike.
+  Messages sent to it meanwhile are queued, and none is handled until
+  `on_start()` returns. `call()` from `on_start()` throws `on_start_violation`.
+- Pooled actors are assigned to worker threads round-robin; there is no
+  affinity control.
+- **Use pooled actors for per-subscriber or per-instance actors.** Each
+  `fast_actor` owns an OS thread that polls (yield, hybrid or busy-wait), so a
+  fast actor per subscriber costs a thread - and potentially a core - each.
+  Reserve `fast_actor` for a few latency-critical actors such as an exchange
+  session.
+- Give dynamic actors unique names (e.g. `"stream." + client_id`) or none.
+  Default names are not registered. Re-using a name after a restart is safe:
+  a stopping actor only unregisters its name if the name still refers to it.
+
+### Removing
+
+- An actor that knows it is done stops itself: `cas::system::stop_actor(self())`
+  from a handler returns at once, and the stop completes after the handler
+  returns.
+- Whoever needs to react - a manager, a supervisor - `watch()`es it and gets a
+  `termination_msg` (match on `instance_id`: names can be reused).
+- From a handler, stop other actors with `wait_for_stop = false` (see
+  [When `stop_actor()` does not block](#when-stop_actor-does-not-block)).
+- Messages still arriving for a removed actor are dead letters (counted, and
+  passed to the dead-letter handler) - expect some around every removal. The
+  dead-letter and queue-threshold handlers (`system::set_dead_letter_handler()`,
+  `system::set_queue_threshold_handler()`) are the operational signal for
+  traffic to removed actors and for subscribers that fall behind.
+- `stateful_actor` / `stateful_fast_actor`: held (stashed) messages are reported
+  as dead letters when the actor stops. An `inline_actor` rejects messages once
+  stopping, and its stop is serialised with its synchronous dispatch.
+
+### Memory
+
+After `stop_actor()` the system drops its own references: pooled actors
+immediately, fast actors once their thread has been joined (by `stop_actor()`
+or `system::actor_count()`). The registry and the watch table hold only weak
+references. The actor object is freed when the **last `actor_ref`** to it goes -
+including refs in other actors' members and in `message_base::sender` of
+messages still held somewhere. Two actors holding `actor_ref` members to each
+other form a `shared_ptr` cycle and are never freed: clear such members in
+`on_stop()`. `system::actor_count()` counts live actors; instance ids are never
+reused until `system::reset()`.
+
+### Interaction with System Shutdown
+
+- A stop still in progress when `shutdown()` is called is completed by
+  `wait_for_shutdown()`.
+- `stop_actor()` returns `false` for an actor that has already handled its
+  system shutdown message.
+- System shutdown sends no `termination_msg`, so a supervisor does not restart
+  actors during shutdown.
+
+### Example: Trading Systems and Their Streams
+
+```cpp
+struct launch_trading_system : public cas::message_base {
+    std::string system_id;
+    std::vector<std::string> subscribers;
+};
+struct market_update : public cas::message_base { double price = 0.0; };
+struct run_complete : public cas::message_base {};
+
+// One per subscriber: pooled, unnamed
+class stream_actor : public cas::actor {
+    std::string m_subscriber;
+public:
+    explicit stream_actor(std::string subscriber) : m_subscriber(std::move(subscriber)) {}
+protected:
+    void on_start() override {
+        handler<market_update>(&stream_actor::on_update);
+    }
+    void on_update(const market_update& msg) {
+        // push msg.price to m_subscriber's connection ...
+    }
+};
+
+class trading_system_actor : public cas::actor {
+    std::string m_id;
+    std::vector<cas::actor_ref> m_streams;
+public:
+    trading_system_actor(std::string id, std::vector<cas::actor_ref> streams)
+        : m_id(std::move(id)), m_streams(std::move(streams)) {}
+protected:
+    void on_start() override {
+        set_name("ts." + m_id);
+        handler<market_update>(&trading_system_actor::on_update);
+        handler<run_complete>(&trading_system_actor::on_complete);
+    }
+    void on_update(const market_update& msg) {
+        for (const auto& stream : m_streams) stream.tell(msg);
+    }
+    void on_complete(const run_complete&) {
+        cas::system::stop_actor(self());  // returns at once; stops after this handler
+    }
+    void on_stop() override {
+        m_streams.clear();  // release the refs
+    }
+};
+
+class trading_manager : public cas::actor {
+    // trading system instance id -> its streaming actors
+    std::unordered_map<size_t, std::vector<cas::actor_ref>> m_streams;
+protected:
+    void on_start() override {
+        set_name("trading_manager");
+        handler<launch_trading_system>(&trading_manager::on_launch);
+        handler<cas::termination_msg>(&trading_manager::on_terminated);
+    }
+    void on_launch(const launch_trading_system& msg) {
+        std::vector<cas::actor_ref> streams;
+        for (const auto& subscriber : msg.subscribers) {
+            streams.push_back(cas::system::create<stream_actor>(subscriber));
+        }
+        // Each create() has run the new actor's on_start() before returning
+        auto ts = cas::system::create<trading_system_actor>(msg.system_id, streams);
+        cas::system::watch(self(), ts);
+        m_streams[ts.get_actor()->instance_id()] = std::move(streams);
+    }
+    void on_terminated(const cas::termination_msg& msg) {
+        auto it = m_streams.find(msg.instance_id);
+        if (it == m_streams.end()) return;
+
+        cas::stop_config config;
+        config.wait_for_stop = false;  // never block this worker thread
+        for (const auto& stream : it->second) {
+            cas::system::stop_actor(stream, config);
+        }
+        m_streams.erase(it);  // drop our refs so the actors can be freed
+    }
+};
+
+// main():
+//   auto manager = cas::system::create<trading_manager>();
+//   cas::system::start();
+//   launch_trading_system launch;
+//   launch.system_id = "es_momentum";
+//   launch.subscribers = {"client_a", "client_b"};
+//   manager.tell(launch);
+//   ...
+//   cas::actor_registry::get("ts.es_momentum").tell(run_complete{});
+```
+
+A subscriber that leaves while its trading system keeps running is handled the
+same way: stop its `stream_actor` with `wait_for_stop = false` and tell the
+trading system to drop the ref; updates sent to it in between are dead letters.
 
 ## Watch Pattern
 
@@ -316,12 +496,6 @@ struct termination_msg : public cas::message_base {
 
 ### Complete Example
 
-> **Creating actors at runtime:** `system::create()` calls the new actor's
-> `on_start()` before returning whenever the system is already running, so the
-> actor is ready to receive messages immediately. When the system has not started
-> yet, `start()` calls it instead — either way `on_start()` runs exactly once.
-> Calling `create()` from inside a message handler is safe.
-
 ```cpp
 class supervisor : public cas::actor {
 private:
@@ -330,14 +504,14 @@ private:
 protected:
     void on_start() override {
         set_name("supervisor");
-        handler<termination_msg>(&supervisor::on_worker_terminated);
+        handler<cas::termination_msg>(&supervisor::on_worker_terminated);
 
         // Create and watch worker
         m_worker = cas::system::create<worker_actor>();
         cas::system::watch(self(), m_worker);
     }
 
-    void on_worker_terminated(const termination_msg& msg) {
+    void on_worker_terminated(const cas::termination_msg& msg) {
         std::cout << "Worker terminated: " << msg.actor_name
                   << " (instance " << msg.instance_id << ")" << std::endl;
 
@@ -347,7 +521,9 @@ protected:
     }
 
     void stop_worker() {
-        cas::system::stop_actor(m_worker);
+        cas::stop_config config;
+        config.wait_for_stop = false;  // don't block this worker thread
+        cas::system::stop_actor(m_worker, config);
         // on_worker_terminated() is called once the worker has stopped
     }
 };
@@ -357,13 +533,16 @@ protected:
 
 ### Messages Sent to Stopped Actors
 
-Messages sent to stopped actors are **silently dropped**:
+Messages sent to a stopping or stopped actor are dropped and reported as dead
+letters: counted in `system::get_dead_letter_stats()` and passed to the handler
+set with `system::set_dead_letter_handler()`. A `call()` to it throws
+`std::future_error` (broken promise), with or without a timeout.
 
 ```cpp
 cas::system::stop_actor(actor);
 
-// This message will be dropped
-actor.tell(message{});  // No-op, returns immediately
+// Dropped: dead_letter_stats::dropped_tell is incremented
+actor.tell(message{});
 ```
 
 ### Concurrent Stop Attempts
@@ -469,6 +648,7 @@ protected:
             cas::stop_config config;
             config.mode = cas::stop_mode::drain;  // Finish pending work
             config.drain_timeout = std::chrono::seconds(5);
+            config.wait_for_stop = false;         // Don't block this worker thread
 
             cas::system::stop_actor(worker, config);
             std::cout << "Worker removed, pool size: " << m_workers.size() << std::endl;
@@ -502,7 +682,8 @@ cas::stop_config config;
 config.mode = cas::stop_mode::drain;
 config.drain_timeout = std::chrono::seconds(10);  // Generous timeout
 
-cas::system::stop_actor(actor, config);
+cas::system::stop_actor(actor, config);  // from main(); in a handler also set
+                                          // wait_for_stop = false
 ```
 
 ### DO: Clean Up State in on_shutdown()
@@ -523,13 +704,17 @@ void on_shutdown() override {
 ### DO: Check is_running() Before Sending
 
 ```cpp
+task t;
 if (worker.is_running()) {
-    worker.tell(task{});
+    worker.tell(t);
 } else {
     // Handle stopped actor
-    reassign_task(task);
+    reassign_task(t);
 }
 ```
+
+The check is racy: the actor can stop between `is_running()` and `tell()`, so
+a dead-letter handler is still the place to catch lost work.
 
 ### DON'T: Send Messages in on_stop()
 
@@ -544,11 +729,16 @@ void on_stop() override {
 }
 ```
 
-### DON'T: Hold actor_ref Past Shutdown
+### DON'T: Keep References to Stopped Actors
+
+An `actor_ref` owns the actor (it holds a `shared_ptr`). It stays valid after
+the actor stops - `is_running()` is then `false` - and keeps the stopped
+actor's memory alive. Drop it once the actor has stopped (for example on
+`termination_msg`).
 
 ```cpp
 class bad_example {
-    cas::actor_ref m_cached_actor;  // ✗ BAD: Can become invalid
+    cas::actor_ref m_cached_actor;  // ✗ Stays valid but stopped; keeps the object alive
 
 public:
     void use_actor() {
@@ -591,6 +781,11 @@ t3.join();
 | System continues | Yes | No |
 | Other actors | Unaffected | All stop |
 | Configuration | Per-actor | Global |
+| Hooks run on | Actor's own thread | `on_shutdown()` on own thread; pooled `on_stop()` on the `wait_for_shutdown()` caller |
+| Queued messages | Drained or discarded per call | Drained until the global `drain_timeout`; leftovers only logged |
+| Name unregistered | Yes | No |
+| Watchers notified | Yes (unless `notify_watchers = false`) | No |
+| Removed from system | Yes | No (until `system::reset()`) |
 | Typical use | Runtime management | Application exit |
 
 ## Next Steps

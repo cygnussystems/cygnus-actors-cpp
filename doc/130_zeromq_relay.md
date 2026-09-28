@@ -40,8 +40,8 @@ void run_server() {
 
     cas::system::start();
 
-    // Route incoming messages first: errors (e.g. a failed bind) are only
-    // delivered to route targets, so a relay without routes loses them
+    // Route incoming messages first. Messages sent from main() have no sender,
+    // so errors from this bind (e.g. a failed bind) reach only route targets
     cas::msg::zeromq_route route;
     route.message_type = "tick";
     route.target = handler;
@@ -187,7 +187,9 @@ struct zeromq_config : public cas::message_base {
     int request_timeout_ms = 30000; // Forget an unanswered correlation id after this
 };
 
-// Status query/response
+// Status query/response: an actor that tells the relay a zeromq_status{}
+// gets a zeromq_status back. A successful bind/connect also sends one
+// (connected = true) to the sender of the zeromq_bind/zeromq_connect.
 struct zeromq_status : public cas::message_base {
     bool connected = false;
     std::string endpoint;
@@ -196,8 +198,8 @@ struct zeromq_status : public cas::message_base {
     size_t route_count = 0;
 };
 
-// Error notification - sent to every route target and the default route;
-// errors raised while no route exists are lost
+// Error notification - sent to every route target, the default route, and
+// the sender of the control message that failed (receive errors: routes only)
 struct zeromq_error : public cas::message_base {
     std::string message;
     std::string endpoint;
@@ -205,6 +207,25 @@ struct zeromq_error : public cas::message_base {
 };
 
 } // namespace cas::msg
+```
+
+`zeromq_relay_actor.h` also declares `cas::msg::zeromq_disconnect`; the relay
+currently never sends or handles it.
+
+### Querying Status
+
+```cpp
+// From inside an actor (the reply goes to the sender; main() has none)
+void on_start() override {
+    handler<cas::msg::zeromq_status>([](const cas::msg::zeromq_status& s) {
+        std::cout << s.mode << " " << s.endpoint
+                  << (s.connected ? " connected" : " not connected") << "\n";
+    });
+}
+
+void check_relay() {
+    m_relay.tell(cas::msg::zeromq_status{});
+}
 ```
 
 ## Payload Handling
@@ -376,6 +397,11 @@ connect.endpoint = "tcp://server:5555";
 relay.tell(connect);
 ```
 
+A `zeromq_config` sent after bind/connect re-applies the socket options
+(send/receive timeouts, maximum message size, linger, reconnect interval) to
+the open socket. `poll_interval_ms` only takes effect at the next bind/connect,
+when the poll timer is started.
+
 ## Thread Safety
 
 ZeroMQ sockets are NOT thread-safe. The relay actor solves this:
@@ -500,10 +526,8 @@ handler<cas::msg::zeromq_error>([this](const auto& msg) {
     std::cerr << "ZeroMQ error [" << msg.error_code << "]: " << msg.message << "\n";
     std::cerr << "Endpoint: " << msg.endpoint << "\n";
     
-    // Optionally attempt reconnection
-    if (m_auto_reconnect) {
-        // Reconnect logic...
-    }
+    // Dropped connections are re-established by ZeroMQ itself when
+    // zeromq_config::auto_reconnect is true (the default)
 });
 ```
 
@@ -557,7 +581,7 @@ Outbound sends go to the socket as soon as the relay processes the `zeromq_send`
 The raw transport latency is small next to the poll interval, which dominates
 inbound latency.
 
-For lower inbound latency and higher inbound throughput:
+For lower inbound latency:
 - Set `poll_interval_ms` low (1-5ms) in a `zeromq_config` sent before bind/connect
 
 ## See Also

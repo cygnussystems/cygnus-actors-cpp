@@ -24,10 +24,21 @@ with no locks, which is what the documentation teaches.
 **Enforced by:**
 - `actor::dispatch_message()` is **private** (`include/cas/actor.h`). The set of
   callers is closed and greppable.
-- All message delivery funnels through `actor::process_next_message()`, which runs
-  only on the actor's owning worker thread.
-- Call requests go into the actor's own `m_ask_queue` and are drained by that same
-  function — they do **not** get a separate thread.
+- All message delivery funnels through `actor::process_next_message()`, run by
+  the actor's single executor: its pool worker (via the ready queue), a fast
+  actor's dedicated thread, or, for an `inline_actor`, the sender's thread -
+  serialised by its mutex (`ThreadSafe=true`) or by the single-sender contract
+  (`false`); re-entrant sends are queued and handled after the current handler.
+  The calling thread executes an actor only when no executor exists:
+  `stop_actor()` before `start()`, or after `wait_for_shutdown()` has joined
+  every thread.
+- Call requests are a priority lane inside the same `detail::mailbox`, drained by
+  that same function — they do **not** get a separate thread.
+- `stop_actor()`'s hooks run on the executor (`system::service_stop()`), not on
+  the caller; `m_stop_phase` decides whether `stop_actor()` or system shutdown
+  owns them.
+- A runtime-created actor's mailbox stays unscheduled until its `on_start()`
+  returns.
 - Debug builds: `dispatch_guard` in `source/actor.cpp` aborts with a diagnostic if
   two threads enter dispatch for one actor.
 
@@ -37,10 +48,20 @@ with no locks, which is what the documentation teaches.
 - Does it introduce a thread that can reach an actor outside its owning worker?
 - Does it make a call, timer, or relay path dispatch "directly" for latency?
 
+**Test:** `tests/11_concurrency/test_call_serialization.cpp`,
+`tests/07_dynamic_removal/test_stop_semantics.cpp` ("stop_actor runs hooks on
+the actor's thread, after the running handler"),
+`tests/11_concurrency/test_scheduler.cpp` ("A message cannot be handled while
+the actor's on_start() is running").
+
 **History:** violated between the introduction of the dedicated ask thread pool
 and its removal. Call handlers ran on 4 shared threads while regular handlers ran
 on the worker pool, so any actor with both had a silent data race. The fix was a
 return to the original design. Do not reintroduce a separate ask thread.
+Also violated, and fixed after 1.0.0: `stop_actor()` ran `on_shutdown()` /
+`on_stop()` on the caller's thread, concurrently with the actor's handlers; and
+an actor created at runtime could handle messages while its `on_start()` was
+still running.
 
 ---
 
@@ -51,8 +72,9 @@ return to the original design. Do not reintroduce a separate ask thread.
 **Enforced by:** the worker loop (`system::worker_thread()` / `run_actor()`) takes
 no lock at all: it pops ready actors from its lock-free ready queue. A worker's
 mutex is used only to park and be woken, never around a handler.
-`system::notify_watchers_internal()` copies the watcher set under lock and sends
-outside it. `system::shutdown()` and `wait_for_shutdown()` work on snapshots of
+`system::end_watches()` collects the watchers under `m_watchers_mutex` and sends
+`termination_msg` after releasing it; `register_actor()` calls `on_start()` after
+releasing the list locks; `service_stop()` runs the stop hooks with no lock held. `system::shutdown()` and `wait_for_shutdown()` work on snapshots of
 the actor lists (`snapshot_pooled_actors()` / `snapshot_fast_actors()`) taken
 under the list mutexes and used after releasing them: enqueueing
 `system_shutdown` can run user code on the caller's thread (an `inline_actor`'s
@@ -91,15 +113,19 @@ and self-deadlocks.
 
 > If sending A happens-before sending B, and both go to the same actor, A is
 > handled before B. Messages from one actor, or from one thread, are therefore
-> handled in the order they were sent. Every message sent to a live actor is
-> handled exactly once.
+> handled in the order they were sent. Every message accepted by a running actor
+> is handled at most once: if `stop_actor()` completes first (discard, drain
+> timeout, or a push racing the stop) it is reported as a dead letter instead;
+> after a system-shutdown drain timeout, leftovers are only listed in
+> `system::get_shutdown_log()`.
 >
 > **Exception — `call()`:** a call is handled *next*, after the handler currently
 > running, ahead of every ordinary message still queued — including messages
 > its own sender sent earlier. Calls are handled in order among themselves.
 
 There is **no** ordering between different senders; that would need a global
-lock. `stateful_actor`'s selective receive reorders by design.
+lock. `stateful_actor`'s and `stateful_fast_actor`'s selective receive reorders by
+design.
 
 **Enforced by:** `cas::detail::mailbox` (`include/cas/detail/mailbox.h`,
 adapted from CAF). Producers push onto one intrusive lock-free stack; every push
@@ -182,6 +208,8 @@ modelled on `set_dead_letter_handler()`.
 
 > Every actor's `on_start()` is called exactly once before it processes any
 > message, and nothing in `on_start()` may block on the message system.
+> (An actor stopped with `stop_actor()` before `start()` never runs
+> `on_start()`; its `on_shutdown()`/`on_stop()` still run.)
 
 **Enforced by:**
 - `system::start()` starts actors registered before it ran; `system::register_actor()`
@@ -192,7 +220,7 @@ modelled on `set_dead_letter_handler()`.
 - `actor_ref::call()` throws `on_start_violation` when the caller is initialising.
 
 **Why blocking is fatal here:** at startup no worker thread has been launched yet,
-so an `call()` from `on_start()` waits for a reply nobody can produce. It hangs
+so a `call()` from `on_start()` waits for a reply nobody can produce. It hangs
 rather than fails, with no diagnostic.
 
 **Why `tell()` and `create()` are allowed:** both are non-blocking. `tell()`

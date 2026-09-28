@@ -1,25 +1,32 @@
 # Advanced Actor Types
 
-Cygnus provides three specialized actor types beyond the standard `cas::actor` for specific performance and concurrency scenarios.
+Cygnus provides four specialized actor types beyond the standard `cas::actor` (fast, inline, stateful and stateful fast) for specific performance and concurrency scenarios.
 
 ## Quick Comparison
 
 | Actor Type | Thread Model | Latency | CPU Usage | Thread Safety | Use Case |
 |------------|--------------|---------|-----------|---------------|----------|
-| **Pooled** (default) | Thread pool | ~10μs | Low | Automatic | General purpose |
-| **Fast Actor** | Dedicated | <1μs | High | Automatic | Real-time systems |
+| **Pooled** (default) | Thread pool | ~0.7μs | Low | Automatic | General purpose |
+| **Fast Actor** | Dedicated | ~0.5μs | High (a core, even idle) | Automatic | Real-time systems |
 | **Inline Actor** | Caller's thread | 0μs | Zero overhead | Configurable | Synchronous services |
-| **Stateful Actor** | Thread pool | ~10μs | Low | Automatic | State machines |
-| **Stateful Fast Actor** | Dedicated | <1μs | High | Manual | Latency-critical state machines |
+| **Stateful Actor** | Thread pool | like pooled | Low | Automatic | State machines |
+| **Stateful Fast Actor** | Dedicated | like fast | High (a core, even idle) | Automatic | Latency-critical state machines |
+
+Latencies are round-trip p50 figures from the README's *Benchmarks* (MSVC,
+Ryzen 9 5900X). At the median pooled and fast actors are close; the difference
+is tail latency, and that a fast actor never waits behind other actors on a
+shared worker.
 
 ## Fast Actors
 
 Fast actors run on dedicated threads with tight polling loops for ultra-low latency message processing.
 
+> **Runnable version:** `tutorials/13_fast_actor.cpp` — run `tutorials 13`.
+
 ### When to Use Fast Actors
 
 **Use fast actors when:**
-- You need sub-microsecond latency
+- You need the tightest tail latency, never queued behind other actors
 - Actor processes high-frequency messages (thousands/sec)
 - Dedicated CPU core is acceptable
 - Examples: Trading systems, game loops, real-time control
@@ -58,7 +65,11 @@ cas::system::start();
 
 ### Polling Strategies
 
-Fast actors support three polling strategies:
+Fast actors support three polling strategies. They decide what the dedicated
+thread does when its mailbox is empty (`source/fast_actor.cpp`). None of them
+sleeps or blocks: the thread always stays runnable, so an idle fast actor shows
+as roughly one busy core in the OS whatever the strategy. What differs is how
+readily it gives that core to other runnable threads.
 
 **1. Yield (Default) - Cooperative CPU Usage**
 ```cpp
@@ -68,8 +79,9 @@ public:
 };
 ```
 
-- **Latency**: ~1-10μs
-- **CPU**: Cooperative (yields to other threads)
+- **Latency**: ~0.5μs round trip p50 (measured, `fast_actor` → `fast_actor`)
+- **CPU**: Calls `std::this_thread::yield()` on every empty poll - gives the
+  core up when other threads are runnable, otherwise keeps it busy
 - **When**: Most fast actor use cases, balanced performance
 
 **2. Hybrid - Ultra-Low Latency**
@@ -83,8 +95,9 @@ protected:
 };
 ```
 
-- **Latency**: <1μs
-- **CPU**: Moderate (spins briefly, then yields)
+- **Latency**: <1μs (not benchmarked)
+- **CPU**: Checks the mailbox up to `spin_count` times with a CPU pause
+  instruction between checks, then yields as above
 - **When**: Critical latency paths, moderate message frequency
 
 **3. Busy Wait - Minimum Latency**
@@ -95,8 +108,9 @@ public:
 };
 ```
 
-- **Latency**: <100ns (theoretical minimum)
-- **CPU**: 100% of dedicated core
+- **Latency**: <100ns (theoretical minimum, not benchmarked)
+- **CPU**: 100% of a core - only a CPU pause instruction between checks, never
+  yields
 - **When**: Absolute minimum latency required, dedicated core available
 
 ### Fast Actor Example: Game Loop
@@ -166,7 +180,7 @@ for (int i = 0; i < 60; ++i) {
 
 **Trade-offs:**
 - One thread per fast actor (resource intensive)
-- Higher CPU usage even when idle (depending on strategy)
+- About one core busy even when idle (every strategy polls; see above)
 - Not suitable for large numbers of actors
 - Shutdown requires thread join (slightly slower)
 
@@ -196,6 +210,8 @@ for (int i = 0; i < 1000; ++i) {  // Too many threads!
 ## Inline Actors
 
 Inline actors process messages synchronously in the caller's thread with zero queuing latency.
+
+> **Runnable version:** `tutorials/14_inline_actor.cpp` — run `tutorials 14`.
 
 ### When to Use Inline Actors
 
@@ -297,6 +313,9 @@ class thread_safe_counter : public cas::inline_actor<true> {
 private:
     std::atomic<int> m_count{0};
 
+protected:
+    void on_start() override {}  // required: on_start() is pure virtual
+
 public:
     void increment() {
         m_count++;
@@ -315,7 +334,7 @@ std::vector<std::thread> threads;
 for (int i = 0; i < 10; ++i) {
     threads.emplace_back([&counter_actor]() {
         for (int j = 0; j < 100; ++j) {
-            counter_actor.increment();  // Protected by inline_actor's mutex
+            counter_actor.increment();  // Safe because m_count is std::atomic - direct calls do not take inline_actor's mutex
         }
     });
 }
@@ -331,10 +350,7 @@ assert(counter_actor.count() == 1000);
 ### Inline Actor Example: Synchronous Service
 
 ```cpp
-struct validation_request : public cas::message_base {
-    std::string data;
-    mutable bool valid;  // Result written here
-};
+struct validate_op {};  // call() operation tag
 
 class data_validator : public cas::inline_actor<true> {
 private:
@@ -343,14 +359,17 @@ private:
 protected:
     void on_start() override {
         set_name("validator");
-        handler<validation_request>(&data_validator::on_validate);
+        // A result has to come back through call(): tell() copies the
+        // message, so a handler writing into it is never seen by the sender
+        call_handler<bool, validate_op>(&data_validator::on_validate);
 
         // Load blacklist
         m_blacklist = {"spam", "malicious", "invalid"};
     }
 
-    void on_validate(const validation_request& msg) {
-        msg.valid = m_blacklist.find(msg.data) == m_blacklist.end();
+    // call_handler needs a non-const member function
+    bool on_validate(const std::string& data) {
+        return validate(data);
     }
 
 public:
@@ -368,6 +387,10 @@ auto& validator_actor = validator.get_checked<data_validator>();
 
 // Direct call - immediate result
 bool is_valid = validator_actor.validate("user_input");  // Returns immediately
+
+// Or through the actor interface: runs on this thread before call() returns.
+// Argument types must match exactly - std::string, not a literal.
+bool also_valid = validator.call<bool>(validate_op{}, std::string("user_input"));
 
 if (is_valid) {
     process_data();
@@ -395,6 +418,16 @@ current handler returns, in send order, before the original `tell()` returns.
 A `call()` back into an inline actor that is mid-handler on the same thread
 throws `call_deadlock_error`. If a handler throws, the exception reaches the
 sender, and messages it had sent to itself are dropped as dead letters.
+
+**Calls to and from inline actors:** a `call()` to an inline actor is allowed
+from anywhere - main, pooled and fast actors - and runs on the caller's thread
+before `call()` returns. The reverse needs care: an inline actor's handler runs
+on its sender's thread, so from there a `call()` to a pooled actor on that same
+worker throws `call_deadlock_error`. See [Call](80_call.md).
+
+**Single-sender variant:** `inline_actor<false>` has no mutex. Sending to it
+from two threads at once is a data race; Debug builds detect concurrent
+dispatch and abort.
 
 **Best Practices:**
 ```cpp
@@ -571,6 +604,11 @@ protected:
 - `reject_message_type<T>()` while accepting everything is a no-op: to accept
   "everything but T", call `reject_all_message_types()` and accept what you
   want.
+- `accept_message_type<T>()` while accepting everything switches to accepting
+  *only* `T` (plus any types accepted after it).
+- The filter matches a message's exact dynamic type: accepting a base message
+  type does not accept messages derived from it.
+- Timer messages are ordinary messages and are filtered like any other.
 
 ### Stateful Fast Actors
 
@@ -628,7 +666,7 @@ protected:
     void on_start() override {
         set_name("download_manager");
 
-        handler<start_download>(&download_manager::on_start);
+        handler<start_download>(&download_manager::on_start_download);
         handler<pause_download>(&download_manager::on_pause);
         handler<resume_download>(&download_manager::on_resume);
         handler<cancel_download>(&download_manager::on_cancel);
@@ -667,7 +705,7 @@ protected:
         reject_message_type<download_complete>();
     }
 
-    void on_start(const start_download& msg) {
+    void on_start_download(const start_download& msg) {
         m_current_file_id = msg.file_id;
         m_bytes_downloaded = 0;
         enter_downloading_state();
@@ -703,7 +741,7 @@ protected:
     }
 
 public:
-    state get_state() const { return m_state; }
+    state current_state() const { return m_state; }
     int downloads_completed() const { return m_downloads_completed; }
 };
 
@@ -812,8 +850,9 @@ Need synchronous execution (no queuing)?
 │  └─ Multiple callers? → inline_actor<true>
 │
 └─ No → Need asynchronous processing
-   ├─ Sub-microsecond latency required?
-   │  └─ Yes → Fast Actor
+   ├─ Must never wait behind other actors / tightest tail latency?
+   │  └─ Yes → Fast Actor (a dedicated thread and core)
+   │     ├─ State-based message filtering needed? → stateful_fast_actor
    │     ├─ Minimize latency, dedicated core available? → busy_wait
    │     ├─ Balance latency and CPU? → hybrid
    │     └─ Cooperative CPU usage? → yield
@@ -893,18 +932,19 @@ class logger : public cas::actor {
 
 ## Performance Comparison
 
-Based on typical workloads:
+Latencies measured by `latency_benchmark` (see the README's *Benchmarks*);
+the other rows are estimates:
 
 | Operation | Pooled | Fast (yield) | Fast (hybrid) | Fast (busy) | Inline |
 |-----------|--------|--------------|---------------|-------------|--------|
-| Message latency | ~10μs | ~1-5μs | ~0.5-1μs | <100ns | 0 (synchronous) |
-| CPU usage (idle) | 0% | ~5% | ~20% | 100% | 0% |
+| Round-trip latency (p50) | ~0.7μs | ~0.5μs | not measured | not measured | 0 (synchronous) |
+| CPU usage (idle) | ~0% | ~1 core (yields when others are runnable) | ~1 core (spins, then yields) | 1 core (never yields) | 0% |
 | Memory per actor | ~1KB | ~100KB | ~100KB | ~100KB | <1KB |
 | Scalability | 1000s | 10s | 10s | 5-10 | 1000s |
 | Thread overhead | Shared pool | 1 per actor | 1 per actor | 1 per actor | Caller's thread |
 
 **Notes:**
-- Pooled actors share thread pool (default 4-8 threads)
+- Pooled actors share the thread pool (default: one worker per hardware thread, `system_config::thread_pool_size`)
 - Fast actors get dedicated thread each
 - Inline actors execute in caller's thread (zero threads)
 - Stateful actors perform like pooled actors with deque overhead
@@ -914,6 +954,20 @@ Based on typical workloads:
 ### Pattern: Fast Actor with Inline Helper
 
 ```cpp
+// Inline helper - defined first: get_checked<risk_calculator>() needs the complete type
+class risk_calculator : public cas::inline_actor<true> {
+protected:
+    void on_start() override {
+        set_name("risk_calc");
+    }
+
+public:
+    bool check_risk(const order& o) const {
+        // Synchronous calculation, returns immediately
+        return o.quantity * o.price <= risk_limit();
+    }
+};
+
 // Fast actor for critical path
 class trading_engine : public cas::fast_actor {
 private:
@@ -924,9 +978,8 @@ protected:
         set_polling_strategy(cas::polling_strategy::hybrid);
         handler<order>(&trading_engine::on_order);
 
-        // Create inline actor for synchronous calculations
-        auto calc = cas::system::create<risk_calculator>();
-        m_risk_calculator = cas::actor_registry::get("risk_calc");
+        // Create inline actor for synchronous calculations; keep the ref
+        m_risk_calculator = cas::system::create<risk_calculator>();
     }
 
     void on_order(const order& msg) {
@@ -939,14 +992,6 @@ protected:
 
         // Execute order
         execute(msg);
-    }
-};
-
-class risk_calculator : public cas::inline_actor<true> {
-public:
-    bool check_risk(const order& o) const {
-        // Synchronous calculation, returns immediately
-        return o.quantity * o.price <= risk_limit();
     }
 };
 ```

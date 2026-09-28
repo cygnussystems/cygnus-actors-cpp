@@ -62,6 +62,10 @@ struct my_message : public cas::message_base {
 };
 ```
 
+`message_base` has a virtual destructor, so messages are **not aggregates**:
+`my_message{1, "x", 2.0}` and designated initializers do not compile.
+Default-construct, set the fields, then send. `my_message{}` is fine.
+
 > **On hot paths**, prefer `cas::fixed_string<N>` over `std::string`. Messages are
 > allocated from a size-class pool, but `std::string` and `std::vector` members
 > allocate on the ordinary heap *outside* that pool. Sizing messages to fit a size
@@ -82,7 +86,7 @@ struct message_base {
 ```
 
 **sender** - Automatically set when message sent from an actor
-**message_id** - Globally unique ID assigned by framework
+**message_id** - Globally unique ID assigned by `tell()`/`call()` (and to each timer firing); any value you set is overwritten
 **correlation_id** - You set this to track request/response pairs
 
 ### Message Design Patterns
@@ -261,14 +265,14 @@ protected:
         handler<disconnect_msg>(&server_actor::on_disconnect);
         handler<data_msg>(&server_actor::on_data);
         handler<ping_msg>(&server_actor::on_ping);
-        handler<shutdown_msg>(&server_actor::on_shutdown);
+        handler<shutdown_msg>(&server_actor::on_shutdown_msg);
     }
 
     void on_connect(const connect_msg& msg) { /* ... */ }
     void on_disconnect(const disconnect_msg& msg) { /* ... */ }
     void on_data(const data_msg& msg) { /* ... */ }
     void on_ping(const ping_msg& msg) { /* ... */ }
-    void on_shutdown(const shutdown_msg& msg) { /* ... */ }
+    void on_shutdown_msg(const shutdown_msg& msg) { /* ... */ }  // not on_shutdown(): that would hide the lifecycle hook
 };
 ```
 
@@ -417,6 +421,15 @@ void on_work(const work_request& msg) {
 Complete example with correlation:
 
 ```cpp
+struct request_msg : public cas::message_base {
+    uint64_t request_id = 0;  // chosen by the client
+    std::string query;
+};
+
+struct response_msg : public cas::message_base {
+    std::string data;         // correlation_id carries the request_id
+};
+
 class client : public cas::actor {
 private:
     cas::actor_ref m_server;
@@ -436,10 +449,10 @@ protected:
 
     void send_request(const std::string& query) {
         request_msg msg;
-        msg.message_id = m_next_request_id++;
+        msg.request_id = m_next_request_id++;  // own field: tell() overwrites message_id
         msg.query = query;
 
-        m_pending_requests[msg.message_id] = query;
+        m_pending_requests[msg.request_id] = query;
         m_server.tell(msg);
     }
 
@@ -468,7 +481,7 @@ protected:
         // Reply with correlation
         if (msg.sender.is_valid()) {
             response_msg resp;
-            resp.correlation_id = msg.message_id;  // Link to request
+            resp.correlation_id = msg.request_id;  // Link to request
             resp.data = result;
             msg.sender.tell(resp);
         }
@@ -478,16 +491,37 @@ protected:
 
 ## Message Delivery Semantics
 
-### At-Most-Once Delivery
+### Dropped Messages
 
-Messages are delivered **at most once** - they may be lost if:
-- Target actor is stopped
-- System is shutting down
-- Target actor in `stopping` state
+A message is dropped - and counted as a **dead letter** - when:
+- the target actor is `stopping` or `stopped` (including after it has handled
+  `system_shutdown`)
+- it is sent through an invalid `actor_ref` (counted in `dropped_to_invalid`)
+- it is still queued when a `stop_actor()` drain times out, or is discarded by
+  `stop_mode::discard`
 
 ```cpp
-actor.tell(msg);  // May be dropped if actor stopped
+actor.tell(msg);  // Dropped (a dead letter) if the actor is stopping or stopped
 ```
+
+Messages still queued when a whole-system `shutdown()` reaches its
+`drain_timeout` are different: they are never handled, are **not** dead
+letters, and are listed in `system::get_shutdown_log()`.
+
+```cpp
+cas::system::set_dead_letter_handler([](const cas::dead_letter_info& info) {
+    // info.target_actor_name is empty for an invalid actor_ref
+    std::cerr << "dead letter to '" << info.target_actor_name << "'
+";
+});
+
+auto stats = cas::system::get_dead_letter_stats();
+// stats.dropped_tell, stats.dropped_ask (call() requests; 1.0 name kept),
+// stats.dropped_to_invalid
+```
+
+The handler runs on the thread that dropped the message; keep it cheap.
+`system_config::log_dead_letters = true` also logs them to stderr.
 
 ### Delivery and Ordering
 
@@ -516,6 +550,11 @@ answer from an actor that is behind (see [80_call.md](80_call.md)).
 If you need a call to see the effect of your earlier `tell()`, make the earlier
 message a call too, or have the handler answer only once it has seen it.
 
+**Inline actors:** a handler may `tell()` its own `inline_actor` (directly or
+through other inline actors). The message is handled right after the current
+handler, in send order, before the outer `tell()` returns. A `call()` back into
+an inline actor that is mid-handler throws `call_deadlock_error`.
+
 What is **not** ordered is messages from *different* senders — see below. If
 two senders' messages must be processed in a particular order, have one of them
 forward through the other, or carry a sequence number and reorder on receipt.
@@ -532,7 +571,7 @@ Messages from different senders may interleave:
 // Actor A sends: msg_a1, msg_a2
 // Actor B sends: msg_b1, msg_b2
 
-// Target actor C might tell:
+// Target actor C might handle them as:
 // msg_a1, msg_b1, msg_a2, msg_b2  (interleaved)
 // or msg_a1, msg_a2, msg_b1, msg_b2  (grouped)
 // or any other valid interleaving
@@ -551,7 +590,9 @@ auto duration = std::chrono::steady_clock::now() - start;
 // duration is typically < 10 microseconds
 ```
 
-The message is processed later by the target actor's worker thread.
+The message is processed later by the target actor's thread (its pool worker,
+or its dedicated thread for a fast actor). For an `inline_actor`, `tell()` runs
+the handler before it returns.
 
 ## Sender Tracking
 
@@ -581,9 +622,10 @@ Sender is tracked using thread-local storage:
 thread_local actor* current_actor_context = nullptr;
 
 // When actor processes message:
+actor* previous = current_actor_context;
 current_actor_context = this_actor;
 dispatch_message(msg);
-current_actor_context = nullptr;
+current_actor_context = previous;  // restored, not cleared (nested inline dispatch)
 ```
 
 ### Sender from Main Thread
@@ -767,6 +809,32 @@ with one atomic operation, adapted from CAF - see `THIRD_PARTY_NOTICES.md`):
 - About 1 µs round trip between actors (see the README's benchmarks)
 - Scales with cores
 
+Pooled actors are scheduled, not polled: an actor goes on its worker's ready
+queue when a message finds it idle, then handles up to
+`system_config::max_messages_per_turn` (default 64) messages before other ready
+actors on that worker get a turn. Lower it to bound how long actors wait behind
+a busy neighbour; 0 = no limit.
+
+### Queue Threshold
+
+When an actor's queued messages exceed `system_config::queue_threshold`
+(default 1000, 0 = off), the queue-threshold handler is called - once per
+breach; it re-arms when the queue is back to half the threshold:
+
+```cpp
+cas::system::set_queue_threshold_handler([](const cas::queue_threshold_info& info) {
+    std::cerr << info.actor_name << " has " << info.queue_size
+              << " queued (threshold " << info.threshold << ")
+";
+});
+```
+
+It runs on the sending thread, on the send path: keep it cheap and
+non-blocking. (`cas::queue_threshold_warning` is deprecated - it was never
+sent.) Per actor, `mailbox_high_water_mark()`,
+`call_queue_high_water_mark()` and `total_high_water_mark()` (largest combined
+queue seen) report the peaks.
+
 ### Batch Sending
 
 When sending many messages:
@@ -793,12 +861,15 @@ for (int i = 0; i < 1000; ++i) {
 ### DO: Make Messages Immutable
 
 ```cpp
-// ✓ GOOD: Message data doesn't change
+// ✓ GOOD: handlers receive const T&; nobody mutates a message after sending
 struct user_created : public cas::message_base {
-    const std::string user_id;
-    const std::string email;
+    std::string user_id;
+    std::string email;
 };
 ```
+
+Don't make members `const`: messages are not aggregates, so a `const` member
+could never be given a value.
 
 ### DO: Use Meaningful Message Names
 
@@ -823,7 +894,7 @@ void on_request(const request& msg) {
     }
 
     // ✗ BAD: Assume sender exists
-    // msg.sender.tell(response{});  // Crash if invalid!
+    // msg.sender.tell(response{});  // from main(): silently dropped as a dead letter
 }
 ```
 
@@ -850,8 +921,8 @@ void on_message(const my_msg& msg) {
     // ✗ BAD: Blocking call
     auto result = http_get("http://slow-server.com");
 
-    // ✓ GOOD: Offload to call or separate thread
-    // Use call for synchronous operations
+    // ✓ GOOD: run it on a separate thread (or a fast_actor) and send the
+    // result back with tell() - call() would block this handler too
 }
 ```
 
