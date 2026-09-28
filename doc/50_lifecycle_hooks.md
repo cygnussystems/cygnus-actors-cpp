@@ -323,7 +323,8 @@ When `system::shutdown()` is called:
    called `shutdown()`.
 2. **Each actor runs `on_shutdown()` when it reaches that message** in its
    mailbox - after the messages that thread sent it earlier - and then stops
-   accepting new messages (they become dead letters). Actors do this
+   accepting new messages (they become dead letters) and its timers are
+   cancelled. Actors do this
    independently; there is no order *between* actors.
 3. **Draining:** messages already queued are still handled, until every
    mailbox is empty or `drain_timeout` expires.

@@ -308,7 +308,10 @@ protected:
         call_handler<ReturnType, OpTag>(method);
     }
 
-    // Timer API: Schedule messages to be sent in the future
+    // Timer API: Schedule messages to be sent in the future.
+    // A stopping actor gets INVALID_TIMER_ID and nothing is scheduled; its
+    // timers are cancelled once on_shutdown() has run (stop_actor() or
+    // system shutdown), since it no longer accepts the ticks.
 
     // Schedule a message to be sent once after a delay
     // Returns a timer_id that can be used to cancel the timer

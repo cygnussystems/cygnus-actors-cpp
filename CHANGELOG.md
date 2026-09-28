@@ -95,6 +95,17 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Timers no longer fire into a stopping actor during system shutdown.**
+  `stop_actor()` cancelled an actor's timers, but system shutdown left them
+  running until `wait_for_shutdown()`: after `on_shutdown()` the actor
+  rejects messages, so every tick was counted as a dead letter (and passed
+  to the dead-letter handler) on each clean shutdown. An actor's timers are
+  now cancelled right after its `on_shutdown()`, including any it scheduled
+  there. A stopping actor also can no longer schedule timers:
+  `schedule_once()`/`schedule_periodic()` return `INVALID_TIMER_ID` (for
+  example from a handler still draining after `on_shutdown()`). A tick
+  already fired when the timer is cancelled can still arrive as a dead
+  letter.
 - **`stateful_actor` works, and is tested again.** Its tests had been
   excluded from the build since before 1.0, and it had defects:
   - a `call()` to it waited forever unless the current state happened to

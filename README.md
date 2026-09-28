@@ -612,9 +612,8 @@ void on_heartbeat(const heartbeat& msg) {
 }
 
 void on_shutdown() override {
-    // Cancel during system shutdown: otherwise it keeps firing until
-    // wait_for_shutdown(), and each tick after this point is a dead letter
-    cancel_timer(m_timer_id);
+    // Nothing to do: the actor's timers are cancelled once on_shutdown()
+    // returns (optional: cancel_timer(m_timer_id) here)
 }
 
 cas::timer_id m_timer_id = cas::INVALID_TIMER_ID;
@@ -627,9 +626,9 @@ cas::timer_id m_timer_id = cas::INVALID_TIMER_ID;
 cas::timer_id id = schedule_periodic(std::chrono::seconds(1), tick{});
 cancel_timer(id);
 
-// stop_actor() cancels the actor's timers. On system shutdown they keep
-// running until wait_for_shutdown(), so cancel periodic timers in
-// on_shutdown().
+// An actor's timers are cancelled once its on_shutdown() has run, whether it
+// was stopped with stop_actor() or by system shutdown. While stopping, an
+// actor cannot schedule new timers (schedule_* returns INVALID_TIMER_ID).
 ```
 
 ## Call (RPC)

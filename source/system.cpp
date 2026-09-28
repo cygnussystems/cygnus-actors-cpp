@@ -624,6 +624,13 @@ timer_id system::schedule_timer(actor* target, std::unique_ptr<message_base> msg
                                 std::chrono::milliseconds interval) {
     auto& inst = instance();
 
+    // A stopping actor accepts no messages, so every tick would be a dead
+    // letter: don't schedule (issue 013). Covers handlers still draining
+    // after on_shutdown() during system shutdown.
+    if (target->get_state() != actor_state::running) {
+        return INVALID_TIMER_ID;
+    }
+
     // Create callback that delivers the message to the target actor.
     //
     // Captures a weak_ptr, NOT the raw target pointer. Cancellation cannot

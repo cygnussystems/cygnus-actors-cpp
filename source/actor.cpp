@@ -261,6 +261,10 @@ void actor::dispatch_message(message_base* msg) {
             return;
         }
         on_shutdown();
+        // The actor no longer accepts messages: timer ticks from here on would
+        // only be dead letters. Includes timers on_shutdown() just scheduled,
+        // as stop_actor() does. Owning thread, so m_active_timers is safe.
+        system::cancel_actor_timers(this);
         set_state(actor_state::stopping);
         return;
     }

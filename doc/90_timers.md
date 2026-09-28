@@ -253,11 +253,10 @@ protected:
 
 ### Automatic Cleanup on Stop
 
-`stop_actor()` cancels the actor's timers. Whole-system shutdown does not
-cancel them until `wait_for_shutdown()`: between an actor's `on_shutdown()`
-and then, its timers keep firing, and since the actor is no longer accepting
-messages each tick is rejected and counted as a dead letter. Cancel periodic
-timers in `on_shutdown()` to avoid that noise:
+An actor's timers are cancelled once its `on_shutdown()` has run - whether it
+was stopped with `stop_actor()` or by system shutdown - including timers that
+`on_shutdown()` itself scheduled. From then on the actor accepts no messages,
+so a tick could only be a dead letter. You don't need to cancel them yourself:
 
 ```cpp
 class auto_cleanup : public cas::actor {
@@ -275,18 +274,16 @@ protected:
         );
     }
 
-    void on_shutdown() override {
-        // During system shutdown the timer would keep firing until
-        // wait_for_shutdown(), each tick becoming a dead letter
-        cancel_timer(m_timer);
-    }
+    // No on_shutdown() needed: m_timer is cancelled automatically
 };
 ```
 
 **Behavior:**
-- `stop_actor()` → that actor's timers cancelled
-- System shutdown → timers cancelled in `wait_for_shutdown()`; ticks before
-  that are rejected (dead letters) once the actor has run `on_shutdown()`
+- `stop_actor()` or system shutdown → the actor's timers are cancelled right
+  after its `on_shutdown()`
+- A stopping actor cannot schedule timers: `schedule_once()` /
+  `schedule_periodic()` return `INVALID_TIMER_ID` (for example from a handler
+  still draining during system shutdown)
 - No timer message is *handled* after the actor stops
 - A tick already fired cannot be recalled: `cancel_timer()` stops future
   firings, but a message already queued is still delivered
@@ -791,8 +788,7 @@ void on_tick(const tick& msg) {
 }
 
 void on_shutdown() override {
-    // Timers are cancelled at wait_for_shutdown(); cancel here to stop
-    // ticks from turning into dead letters in the meantime
+    // Timers are cancelled automatically after on_shutdown()
     std::cout << "Shutting down" << std::endl;
 }
 ```

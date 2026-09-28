@@ -280,3 +280,102 @@ TEST_CASE("Timer fires to correct actor after system restart", "[06_timers][life
         TEST_CLEANUP();
     }
 }
+
+// Issue 013: during system shutdown an actor stops accepting messages once it
+// has run on_shutdown(), so every later timer tick used to be rejected as a
+// dead letter until wait_for_shutdown() stopped the timer manager. Timers are
+// now cancelled right after on_shutdown(), including timers it schedules.
+namespace timer_shutdown_test {
+    struct tick : public cas::message_base {};
+
+    template<typename Base>
+    class ticking_actor : public Base {
+    public:
+        std::atomic<int> ticks{0};
+
+    protected:
+        void on_start() override {
+            this->template handler<tick>(&ticking_actor::on_tick);
+            this->schedule_periodic(std::chrono::milliseconds(1), tick{});
+        }
+
+        void on_tick(const tick&) {
+            ticks++;
+        }
+
+        void on_shutdown() override {
+            // Scheduled while stopping: cancelled along with the rest
+            this->schedule_periodic(std::chrono::milliseconds(1), tick{});
+        }
+    };
+
+    template<typename Base>
+    void run_shutdown_with_live_timers() {
+        cas::system::reset_dead_letter_stats();  // process-wide, not cleared by reset()
+        auto ref = cas::system::create<ticking_actor<Base>>();
+        cas::system::start();
+
+        auto& a = ref.template get_checked<ticking_actor<Base>>();
+        for (int i = 0; i < 200 && a.ticks.load() < 5; ++i) {
+            wait_ms(5);
+        }
+        REQUIRE(a.ticks.load() >= 5);
+
+        cas::system::shutdown();
+        wait_ms(100);  // ~100 ticks would have become dead letters here
+        cas::system::wait_for_shutdown();
+
+        REQUIRE(cas::system::get_dead_letter_stats().dropped_tell == 0);
+        cas::system::reset();
+    }
+}
+
+TEST_CASE("System shutdown cancels timers after on_shutdown (pooled actor)", "[06_timers][lifecycle][issue013]") {
+    CAS_TEST_GUARD();
+    timer_shutdown_test::run_shutdown_with_live_timers<cas::actor>();
+}
+
+TEST_CASE("System shutdown cancels timers after on_shutdown (fast actor)", "[06_timers][lifecycle][issue013]") {
+    CAS_TEST_GUARD();
+    timer_shutdown_test::run_shutdown_with_live_timers<cas::fast_actor>();
+}
+
+TEST_CASE("A stopping actor cannot schedule timers", "[06_timers][lifecycle][issue013]") {
+    CAS_TEST_GUARD();
+    struct rearm : public cas::message_base {};
+
+    // on_shutdown() still accepts messages, so its self-message is handled
+    // during the drain - with the actor stopping. A timer scheduled there
+    // would only produce dead letters, so none is scheduled.
+    class drain_scheduler : public cas::actor {
+    public:
+        std::atomic<int> result{0};  // 1 = got INVALID_TIMER_ID, 2 = got a timer
+
+    protected:
+        void on_start() override {
+            handler<rearm>(&drain_scheduler::on_rearm);
+        }
+
+        void on_shutdown() override {
+            self().tell(rearm{});
+        }
+
+        void on_rearm(const rearm&) {
+            auto id = schedule_periodic(std::chrono::milliseconds(1), timer_shutdown_test::tick{});
+            result = (id == cas::INVALID_TIMER_ID) ? 1 : 2;
+        }
+    };
+
+    cas::system::reset_dead_letter_stats();
+    auto ref = cas::system::create<drain_scheduler>();
+    cas::system::start();
+    auto& a = ref.get_checked<drain_scheduler>();
+
+    cas::system::shutdown();
+    wait_ms(50);
+    cas::system::wait_for_shutdown();
+
+    REQUIRE(a.result.load() == 1);
+    REQUIRE(cas::system::get_dead_letter_stats().dropped_tell == 0);
+    cas::system::reset();
+}
