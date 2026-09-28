@@ -250,6 +250,62 @@ creating another actor during initialisation self-deadlocked.
 
 ---
 
+## INVARIANT 7 — User code never throws out of a framework thread
+
+> An exception from user code running on a framework thread (pool worker,
+> fast actor thread, timer thread) is caught and reported; it never unwinds
+> out of the thread, which would call `std::terminate` and kill every actor.
+
+Where user code runs, and what happens when it throws:
+
+| User code | Runs on | Outcome |
+|-----------|---------|---------|
+| `tell()` handler, `on_unhandled_message()` | executor | caught in `dispatch_message`, reported, `on_handler_exception()` decides resume/stop |
+| `on_handler_exception()` | executor | caught; actor stopped; reported |
+| `call()` handler | executor | stored in the promise; the caller rethrows |
+| `inline_actor` handler | sender's thread | propagates to the sender's `tell()`/`call()` (by design) |
+| `on_shutdown()`, `on_stop()` | executor / `wait_for_shutdown()` caller | `run_stop_hook`: reported, the stop completes |
+| dead-letter, queue-threshold callbacks | whichever thread dropped / sent (incl. timer thread, workers) | caught, reported (source `dead_letter_handler` / `queue_threshold_handler`) |
+| handler-exception callback | as above | caught; falls back to stderr |
+| constructor (in `create()`) | caller | propagates out of `create()`; nothing registered |
+| `on_start()` inside `create()` (running system) | caller | propagates out of `create()`; the actor is discarded (`discard_unstarted_actor`) |
+| `on_start()` inside `start()` (pooled, created before start) | caller of `start()` | propagates out of `start()`; **treat as fatal** - shut down and exit |
+| `on_start()` of a `fast_actor` created before `start()` | its dedicated thread | **reported, then `std::terminate()`** - no one can receive it |
+
+The two fatal rows are deliberate: a failed `on_start()` is a programming error,
+and recovering would cost complexity everywhere for no real benefit. They are
+documented as such (a warning, not a safety net).
+
+**Cost:** the guards are `try` blocks, which with table-based exception handling
+(MSVC x64, GCC, Clang) cost nothing unless an exception is thrown. Do not add
+guards that cost on the normal path (e.g. per-message allocation, locks, flags
+checked per message) - document a warning instead.
+
+**Enforced by:** `actor::dispatch_message()`, `actor::handle_handler_exception()`,
+`actor::run_stop_hook()`, `system::report_queue_threshold()`,
+`system::report_dead_letter()`, `system::report_invalid_target()`,
+`system::report_handler_exception()`, `system::register_actor()`
+(`discard_unstarted_actor`), `fast_actor::run_dedicated_thread()`.
+
+**Reviewer questions:**
+- Does this diff add a place where user code is called (a hook, a callback, a
+  handler form)? Which thread runs it, and what happens if it throws? Is there a
+  row for it in the table above and in `tests/15_failure_modes/`?
+- Does the guard cost anything when nothing throws?
+
+**History:** until issue 014 (2026-09-28) nothing was caught: one throwing
+handler terminated the process. It went unnoticed because no test ever made a
+`tell()` handler throw - the only throwing test was a `call()` handler, the one
+path that already handled it.
+
+**Tests:** `tests/15_failure_modes/test_failure_modes.cpp` (the matrix: every
+row above, for pooled, fast, stateful and stateful fast actors, plus inline
+actors), `tests/11_concurrency/test_handler_exceptions.cpp`, and the
+`test_fatal_on_start` ctest (`tests/15_failure_modes/fatal_probe.cpp`, expected
+to terminate with the report).
+
+---
+
 ## Test hygiene — why every test declares a guard
 
 The actor system is a process-wide singleton, so a test that leaves it running

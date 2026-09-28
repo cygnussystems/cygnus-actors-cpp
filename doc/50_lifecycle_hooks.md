@@ -66,6 +66,21 @@ Called once per actor, before it handles any message.
 Either way `on_start()` runs exactly once. See
 [Creating and removing actors at runtime](70_dynamic_removal.md#creating-and-removing-actors-at-runtime).
 
+> **Warning - `on_start()` must not throw.** A failed `on_start()` is treated
+> as a programming error, not something to recover from:
+> - inside `create()` (system running): the exception propagates out of
+>   `create()` and the actor is discarded;
+> - inside `start()`: it propagates out of `start()` and the system is left
+>   half-started - shut down and exit;
+> - for a `fast_actor` created before `start()`, `on_start()` runs on the
+>   actor's own thread: the exception is reported (see
+>   `system::set_handler_exception_handler()`) and then **the process is
+>   terminated**.
+>
+> Do fallible set-up (connections, file loads) in a handler for a message the
+> actor sends itself from `on_start()`, where an exception is caught and
+> reported like any other handler's.
+
 **Signature:**
 ```cpp
 protected:

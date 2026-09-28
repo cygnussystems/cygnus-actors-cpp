@@ -1,4 +1,6 @@
 #include "cas/fast_actor.h"
+#include <exception>
+#include "cas/system.h"
 #include "cas/message_base.h"
 
 #include "cpu_pause.h"
@@ -25,7 +27,16 @@ void fast_actor::run_dedicated_thread() {
     // Call on_start() for initialization
     {
         on_start_scope scope(this);
-        on_start();
+        try {
+            on_start();
+        } catch (...) {
+            // Nobody to hand it to on this thread (for other actors the
+            // caller of start()/create() gets it). A failed on_start() is a
+            // programming error: report why, then terminate as before.
+            system::report_handler_exception(*this, typeid(void), 0, "on_start",
+                                             std::current_exception(), exception_action::stop);
+            std::terminate();
+        }
     }
 
     run_dedicated_thread_started();

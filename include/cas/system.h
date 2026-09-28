@@ -278,6 +278,10 @@ private:
     static void reap_stopped_fast_actors();
     static bool is_executor_of(actor* target);
 
+    // Remove an actor whose on_start() threw inside create(): stopped, no
+    // hooks, mailbox closed (dead letters), unregistered, unlisted
+    static void discard_unstarted_actor(actor* target);
+
 public:
     // Non-copyable
     system(const system&) = delete;
@@ -443,8 +447,11 @@ public:
     /// Handler and stop-hook exceptions caught since start (reset by reset())
     static size_t handler_exception_count();
 
-    // Internal: report a caught handler / hook exception
+    // Internal: report a caught handler / hook / callback exception
     static void report_handler_exception(const actor& target, std::type_index message_type,
+                                         uint64_t message_id, const char* source,
+                                         std::exception_ptr error, exception_action action);
+    static void report_handler_exception(const std::string& actor_name, std::type_index message_type,
                                          uint64_t message_id, const char* source,
                                          std::exception_ptr error, exception_action action);
 

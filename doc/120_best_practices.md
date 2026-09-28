@@ -142,8 +142,11 @@ cas::system::set_handler_exception_handler([](const cas::handler_exception_info&
 
 `exception_action::stop` stops the actor with `stop_mode::discard` (its queued
 messages become dead letters) and sends `termination_msg` to its watchers.
-Exceptions from `on_shutdown()` and `on_stop()` are reported the same way, and
-the stop still completes.
+Exceptions from `on_shutdown()` and `on_stop()`, and from the dead-letter and
+queue-threshold callbacks, are reported the same way and never reach the
+framework's threads. The exception is `on_start()`: see the warning in
+[Lifecycle Hooks](50_lifecycle_hooks.md#on_start). The full table is
+INVARIANT 7 in [INVARIANTS.md](INVARIANTS.md).
 
 The framework catching an exception is a safety net, not error handling: the
 failed handler stopped half-way, and the sender gets no answer. Where you can

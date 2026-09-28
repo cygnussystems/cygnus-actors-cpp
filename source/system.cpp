@@ -8,6 +8,7 @@
 #include "cpu_pause.h"
 #include <iostream>
 #include <stdexcept>
+#include <string_view>
 #include <algorithm>
 #include <limits>
 
@@ -424,9 +425,15 @@ void system::register_actor(std::shared_ptr<actor> actor_ptr) {
 
     // Start the actor if the system is already running. No lock is held here.
     if (needs_start) {
-        {
+        try {
             on_start_scope scope(actor_ptr.get());
             actor_ptr->on_start();
+        } catch (...) {
+            // The caller of create() gets the exception; the half-created
+            // actor must not stay behind with a mailbox nobody will read
+            // (it would hold every later shutdown for its drain timeout).
+            discard_unstarted_actor(actor_ptr.get());
+            throw;
         }
         activate_after_start(actor_ptr.get());
 
@@ -704,7 +711,14 @@ void system::report_queue_threshold(const std::string& actor_name,
 
     if (handler && *handler) {
         queue_threshold_info info(actor_name, queue_size, threshold);
-        (*handler)(info);
+        // Runs on the sending thread - possibly the timer thread or a worker
+        // outside any handler (INVARIANT 7). Zero cost unless it throws.
+        try {
+            (*handler)(info);
+        } catch (...) {
+            report_handler_exception(actor_name, typeid(void), 0, "queue_threshold_handler",
+                                     std::current_exception(), exception_action::resume);
+        }
     }
 }
 
@@ -892,6 +906,32 @@ bool system::service_stop(actor* target) {
     // Wakes a stop_actor() blocked in m_state.wait()
     target->set_state(actor_state::stopped);
     return true;
+}
+
+void system::discard_unstarted_actor(actor* target) {
+    auto& inst = instance();
+
+    target->set_state(actor_state::stopped);
+    cancel_actor_timers(target);
+    target->m_mailbox.close([target](message_base& msg, bool is_call) {
+        report_dead_letter(target->name(), &msg, actor_state::stopped, is_call);
+    });
+    actor_registry::unregister_actor(target->name(), target);
+    end_watches(target, false);
+
+    if (dynamic_cast<fast_actor*>(target)) {
+        // No thread was launched for it
+        std::lock_guard<std::mutex> lock(inst.m_fast_actors_mutex);
+        std::erase_if(inst.m_fast_actors,
+                      [target](const std::shared_ptr<actor>& ptr) { return ptr.get() == target; });
+    } else {
+        std::lock_guard<std::mutex> lock(inst.m_actors_mutex);
+        const size_t thread_id = target->m_assigned_thread_id;
+        if (thread_id < inst.m_actors_per_thread.size()) {
+            std::erase_if(inst.m_actors_per_thread[thread_id],
+                          [target](const std::shared_ptr<actor>& ptr) { return ptr.get() == target; });
+        }
+    }
 }
 
 void system::run_stop_to_completion(actor* target) {
@@ -1199,6 +1239,12 @@ size_t system::handler_exception_count() {
 void system::report_handler_exception(const actor& target, std::type_index message_type,
                                       uint64_t message_id, const char* source,
                                       std::exception_ptr error, exception_action action) {
+    report_handler_exception(target.name(), message_type, message_id, source, std::move(error), action);
+}
+
+void system::report_handler_exception(const std::string& actor_name, std::type_index message_type,
+                                      uint64_t message_id, const char* source,
+                                      std::exception_ptr error, exception_action action) {
     auto& inst = instance();
     inst.m_handler_exceptions.fetch_add(1, std::memory_order_relaxed);
 
@@ -1218,23 +1264,28 @@ void system::report_handler_exception(const actor& target, std::type_index messa
     }
 
     if (handler && *handler) {
-        handler_exception_info info(target.name(), message_type, message_id, source,
+        handler_exception_info info(actor_name, message_type, message_id, source,
                                     what, error, action);
         try {
             (*handler)(info);
+            return;
         } catch (...) {
-            // A throwing reporting callback must not take the worker down either
+            // A throwing reporting callback must not take the thread down
+            // either; fall through so the original exception is not lost
+            std::cerr << "[CAS] the handler-exception callback threw\n";
         }
-        return;
     }
 
     // No callback: never lose it silently (INVARIANT 5)
-    std::cerr << "[CAS] exception in " << source << " of actor '" << target.name() << "'";
+    std::cerr << "[CAS] exception in " << source << " of actor '" << actor_name << "'";
     if (message_type != std::type_index(typeid(void))) {
         std::cerr << " handling " << message_type.name();
     }
+    const bool fatal = std::string_view(source) == "on_start";  // fast_actor created before start()
     std::cerr << ": " << what
-              << (action == exception_action::stop ? " - stopping the actor" : "") << "\n";
+              << (fatal ? " - fatal, terminating"
+                        : action == exception_action::stop ? " - stopping the actor" : "")
+              << "\n";
 }
 
 void system::report_invalid_target(std::type_index message_type) {
@@ -1253,7 +1304,12 @@ void system::report_invalid_target(std::type_index message_type) {
     }
     if (handler && *handler) {
         dead_letter_info info(std::string(), message_type, 0, actor_state::stopped);
-        (*handler)(info);
+        try {
+            (*handler)(info);
+        } catch (...) {
+            report_handler_exception(std::string(), message_type, 0, "dead_letter_handler",
+                                     std::current_exception(), exception_action::resume);
+        }
     }
 }
 
@@ -1287,7 +1343,14 @@ void system::report_dead_letter(const std::string& actor_name,
 
     if (handler && *handler) {
         dead_letter_info info(actor_name, typeid(*msg), msg->message_id, state);
-        (*handler)(info);
+        // Runs wherever the message was dropped: a sender's thread, the timer
+        // thread, or a worker discarding a mailbox (INVARIANT 7)
+        try {
+            (*handler)(info);
+        } catch (...) {
+            report_handler_exception(actor_name, typeid(*msg), msg->message_id, "dead_letter_handler",
+                                     std::current_exception(), exception_action::resume);
+        }
     }
 }
 

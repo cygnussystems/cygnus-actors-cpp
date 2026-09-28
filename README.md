@@ -252,7 +252,13 @@ to stderr if none is set - and the actor handles its next message. An actor can
 override `on_handler_exception()` to return `cas::exception_action::stop`
 instead: it is then stopped and its watchers get a `termination_msg`. `call()`
 handler exceptions go to the caller; `inline_actor` handler exceptions
-propagate to the sender. See [Best Practices](doc/120_best_practices.md).
+propagate to the sender. Exceptions from `on_shutdown()`/`on_stop()` and from
+the dead-letter / queue-threshold callbacks are reported the same way.
+
+**`on_start()` must not throw:** the exception propagates out of `create()` or
+`start()` - and for a `fast_actor` created before `start()` it is reported and
+then terminates the process. See [Best Practices](doc/120_best_practices.md)
+and INVARIANT 7 in [doc/INVARIANTS.md](doc/INVARIANTS.md).
 
 ## Messages
 

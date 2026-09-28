@@ -162,6 +162,8 @@ if(BUILD_TESTS)
         tests/11_concurrency/test_shutdown_callbacks.cpp
         tests/11_concurrency/test_metrics_and_naming.cpp
         tests/11_concurrency/test_handler_exceptions.cpp
+        # Level 15: Failure-mode matrix - user code throwing everywhere (INVARIANT 7)
+        tests/15_failure_modes/test_failure_modes.cpp
         # Level 13: Message pool correctness (see doc/140_message_pool.md)
         tests/13_message_pool/test_message_pool.cpp
         # Level 14: Actor mailbox (lock-free, adapted from CAF)
@@ -192,6 +194,16 @@ if(BUILD_TESTS)
             -DPROBE_EXE=$<TARGET_FILE:isolation_probe>
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/12_isolation/check_isolation.cmake
     )
+
+    # Fatal-path probe (INVARIANT 7): a fast_actor created before start() whose
+    # on_start() throws is reported, then terminates the process. The probe is
+    # expected to die; the test passes when the report is in its output.
+    add_executable(fatal_probe tests/15_failure_modes/fatal_probe.cpp)
+    target_link_libraries(fatal_probe ${PROJECT_NAME})
+    add_test(NAME test_fatal_on_start COMMAND fatal_probe)
+    set_tests_properties(test_fatal_on_start PROPERTIES
+        PASS_REGULAR_EXPRESSION "exception in on_start of actor .*probe on_start failure"
+        TIMEOUT 30)
 endif()
 
 # Runnable tutorials (see tutorials/README.md)

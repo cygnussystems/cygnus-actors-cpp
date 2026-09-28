@@ -110,6 +110,20 @@ This project follows [Semantic Versioning](https://semver.org/).
   `termination_msg`). Exceptions from `on_shutdown()`/`on_stop()` are reported
   the same way and no longer abort the stop. `call()` and `inline_actor`
   handler exceptions still go to the caller/sender.
+- **User callbacks can no longer take down a framework thread.** An
+  exception from the dead-letter or queue-threshold callback - which run on
+  whichever thread dropped or sent the message, including the timer thread
+  and workers - is caught and reported (source `dead_letter_handler` /
+  `queue_threshold_handler`) instead of terminating the process or surfacing
+  from an unrelated `tell()`. A throwing handler-exception callback falls
+  back to stderr.
+- **A failed `on_start()` inside `create()` no longer leaves a half-created
+  actor behind.** The exception still propagates to the caller; the actor is
+  now discarded (it held every later shutdown for the full drain timeout).
+  A `fast_actor` created before `start()` whose `on_start()` throws is
+  reported before the process terminates, instead of terminating silently.
+  New INVARIANT 7 and a failure-mode test matrix
+  (`tests/15_failure_modes/`) cover every place user code runs.
 - **`call()` deadlock detection is decided by thread, not by actor.** It
   compared the calling actor's worker with the target's, which was wrong
   both ways: a pooled actor calling an `inline_actor` that happened to share
