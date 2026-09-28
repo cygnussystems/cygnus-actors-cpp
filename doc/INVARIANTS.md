@@ -48,9 +48,17 @@ return to the original design. Do not reintroduce a separate ask thread.
 
 > No mutex owned by the framework may be held across a call into a user handler.
 
-**Enforced by:** `system::worker_thread()` copies its per-thread actor list under
-`m_actors_mutex`, releases the lock, then processes. `system::notify_watchers_internal()`
-copies the watcher set under lock and sends outside it.
+**Enforced by:** the worker loop (`system::worker_thread()` / `run_actor()`) takes
+no lock at all: it pops ready actors from its lock-free ready queue. A worker's
+mutex is used only to park and be woken, never around a handler.
+`system::notify_watchers_internal()` copies the watcher set under lock and sends
+outside it.
+
+**History:** the worker loop used to take `m_actors_mutex` - a single
+system-wide mutex - on every iteration to copy its actor list. First it held it
+across handlers too (removed before 1.0); later, even just taking it per
+iteration capped concurrent throughput at ~2.7 M msg/s on 24 threads (the
+ready-queue scheduler, adapted from CAF, reached ~17 M).
 
 **Why:** `m_actors_mutex` is a single system-wide, non-recursive mutex. Holding it
 across a handler means (a) every worker contends on one lock on every iteration,

@@ -15,6 +15,7 @@
 #include "timer.h"
 #include "timer_manager.h"
 #include "external/concurrentqueue.h"
+#include "detail/ready_queue.h"
 
 namespace cas {
 
@@ -74,6 +75,12 @@ struct system_config {
     size_t thread_pool_size = 0;      // 0 = auto (use hardware concurrency)
     size_t queue_threshold = 1000;    // Warn if total queue size exceeds this (0 = disabled)
     bool log_dead_letters = false;    // Log dropped messages to stderr (for debugging)
+
+    // Most messages a pooled actor handles in one turn before its worker moves
+    // on to other ready actors (it is re-queued if it still has messages).
+    // Higher favours throughput of a busy actor; lower bounds how long other
+    // actors on the same worker wait behind it. 0 = no limit.
+    size_t max_messages_per_turn = 64;
 
     // DEPRECATED and ignored. Ask requests are processed on the target actor's
     // own thread so they serialise with regular handlers; there is no separate
@@ -150,14 +157,30 @@ private:
     // Timer management
     timer_manager m_timer_manager;
 
-    // Per-worker wakeup. enqueue_message() signals the thread owning the target
-    // actor, replacing the previous 1ms polling sleep.
-    struct worker_signal {
+    // Per-worker scheduling state (design adapted from CAF - see
+    // knowledge_base/caf_comparison.md). A worker runs only actors that are on
+    // its ready queue; it never scans the actors pinned to it.
+    //
+    // An actor is put on the queue when a push finds its mailbox blocked
+    // (idle) - so once per idle-to-busy transition, not per message - and when
+    // a turn ends with messages left (the budget ran out). While it is queued
+    // or running, further messages just go into its mailbox.
+    //
+    // Sized once, together with m_actors_per_thread, and kept until reset():
+    // producers index it without a lock, so it must never be resized or freed
+    // while any actor can still be scheduled.
+    struct worker_state {
+        detail::ready_queue ready;  // FIFO across producers - fairness depends on it
+
+        // Parking. A worker with nothing to run sets `sleeping`, re-checks the
+        // queue, and only then waits; a producer signals only a worker that has
+        // set `sleeping`. Fences on both sides make it impossible for both to
+        // miss each other (see park_worker / wake_worker).
+        std::atomic<bool> sleeping{false};
         std::mutex mutex;
         std::condition_variable cv;
-        bool pending = false;
     };
-    std::vector<std::unique_ptr<worker_signal>> m_worker_signals;
+    std::vector<std::unique_ptr<worker_state>> m_workers;
 
     // Watch pattern - maps watched_actor -> set of watcher actors
     std::unordered_map<actor*, std::unordered_set<actor*>> m_watchers;
@@ -184,6 +207,13 @@ private:
 
     // Worker thread function for thread pool
     void worker_thread(size_t thread_id);
+
+    // Scheduler (see worker_state)
+    void ensure_workers(size_t count);           // call with m_actors_mutex held
+    void run_actor(worker_state& w, std::shared_ptr<actor> target);
+    void park_worker(worker_state& w);
+    static void wake_worker(worker_state& w);
+    static void activate_after_start(actor* target);  // after on_start(): go idle or schedule
 
     // Stop protocol helpers (see stop_actor())
     static void run_stop_to_completion(actor* target);
@@ -263,6 +293,10 @@ public:
 
     // Internal: wake the worker thread owning this actor (called by enqueue_message)
     static void notify_worker(size_t thread_id);
+
+    // Internal: put an actor on its worker's ready queue. Called when a push
+    // reports that the actor's mailbox was blocked (idle).
+    static void schedule(actor* target);
 
     // Internal: report a queue threshold breach (called by actor::enqueue_message)
     static void report_queue_threshold(const std::string& actor_name,

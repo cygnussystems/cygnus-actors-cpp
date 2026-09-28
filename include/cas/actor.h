@@ -16,6 +16,7 @@
 #include <thread>
 #include "timer.h"
 #include "detail/mailbox.h"
+#include "detail/ready_queue.h"
 
 // Uncomment to enable debug logging
 // #define CAS_DEBUG_LOGGING
@@ -91,6 +92,9 @@ class actor {
     // Sets m_in_on_start for the duration of on_start()
     friend class on_start_scope;
 
+    // Links actors through m_ready_next / m_ready_self
+    friend class detail::ready_queue;
+
 protected:
     // Internal: who owns this actor's on_shutdown()/on_stop().
     // Exactly one of system::stop_actor() and system shutdown may claim an
@@ -120,6 +124,12 @@ private:
     // INVARIANT: consumed only by the thread executing this actor, so ask
     // handlers are serialised with regular handlers. See doc/INVARIANTS.md.
     detail::mailbox m_mailbox;
+
+    // Scheduler bookkeeping (detail::ready_queue): the intrusive link while
+    // this actor waits on its worker's ready queue, and a strong reference to
+    // itself for that time so it cannot be destroyed while queued.
+    actor* m_ready_next = nullptr;
+    std::shared_ptr<actor> m_ready_self;
 
     // Message type -> handler function map
     std::unordered_map<std::type_index, std::function<void(message_base*)>> m_handlers;

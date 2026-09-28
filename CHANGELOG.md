@@ -29,6 +29,23 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Pooled actors are scheduled from ready queues, as in CAF**, instead of
+  workers scanning every actor pinned to them. Before, each worker took the
+  single system-wide `m_actors_mutex` on every loop iteration to copy its
+  actor list and then handled one message per actor, and every `tell()`
+  locked a mutex and signalled a condition variable. Adding senders made
+  the system slower: 8 actors sending to 8 others managed 2.7 M msg/s in
+  total, less than one thread alone.
+
+  Now an actor goes on its worker's ready queue only when a message finds it
+  idle. It then handles up to `system_config::max_messages_per_turn`
+  messages (new, default 64, 0 = unlimited) before other ready actors on
+  that worker get a turn. A worker takes no lock on this path, and is
+  signalled only when it has actually parked. The ready queue is an
+  intrusive lock-free queue, FIFO across all producers.
+
+  Measured on MSVC Release: 8 senders to 8 receivers 2.7 -> 17.2 M msg/s;
+  one sender 4.5 -> 6.5 M msg/s; fast-actor round trip p99.9 8.0 -> 2.8 us.
 - **`ask()` requests no longer jump the queue.** They were kept in a
   separate priority queue, so an ask could be handled before `tell()`s its
   sender had sent earlier - `tell(fill)` then `ask(position)` could return a
@@ -42,6 +59,18 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **An actor created while the system was running could receive messages
+  while its `on_start()` was still executing.** It was listed on its worker
+  before `on_start()` ran on the creating thread, so a reply to something
+  `on_start()` sent could be handled concurrently with it - two threads in
+  one actor. Its mailbox now stays unscheduled until `on_start()` returns.
+- **Every message to a fast actor woke pooled worker 0**, whose index fast
+  actors carried by default: a mutex and a condition-variable signal per
+  message on the latency-critical path. Fast actors are never scheduled on
+  the pool now.
+- Per-worker wake-up state was destroyed in `wait_for_shutdown()` while fast
+  actors or other threads could still signal it. It now lives until
+  `reset()`.
 - **A `tell()` racing an actor's stop could be silently lost.** `tell()`
   checks that the actor is running and then enqueues; if the stop completed
   between the two, the message sat in a mailbox nobody would read, and was

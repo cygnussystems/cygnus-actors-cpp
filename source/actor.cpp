@@ -123,7 +123,8 @@ void actor::enqueue_message(std::unique_ptr<message_base> msg) {
 
     // Lock-free enqueue. Closed means the actor finished stopping after the
     // state check above: the message was never queued, so it is a dead letter.
-    if (m_mailbox.push(msg) == detail::push_result::closed) {
+    const detail::push_result pushed = m_mailbox.push(msg);
+    if (pushed == detail::push_result::closed) {
         system::report_dead_letter(name(), msg.get(), m_state.load(), false);
         return;
     }
@@ -156,8 +157,11 @@ void actor::enqueue_message(std::unique_ptr<message_base> msg) {
         }
     }
 
-    // Wake the worker thread owning this actor
-    system::notify_worker(m_assigned_thread_id);
+    // Schedule only on the idle-to-busy transition: while the actor is queued
+    // or running, its worker will get to this message without being told.
+    if (pushed == detail::push_result::unblocked) {
+        system::schedule(this);
+    }
 }
 
 void actor::enqueue_ask_message(std::unique_ptr<message_base> msg) {
@@ -174,7 +178,8 @@ void actor::enqueue_ask_message(std::unique_ptr<message_base> msg) {
     // messages its sender sent earlier. Consumed by process_next_message() on
     // the owning thread, so ask handlers are serialised with regular handlers
     // (INVARIANT 1). The caller blocks on the request's future until then.
-    if (m_mailbox.push(msg) == detail::push_result::closed) {
+    const detail::push_result pushed = m_mailbox.push(msg);
+    if (pushed == detail::push_result::closed) {
         system::report_dead_letter(name(), msg.get(), m_state.load(), true);
         return;  // destroying the request breaks its promise; the caller is not left hanging
     }
@@ -187,9 +192,10 @@ void actor::enqueue_ask_message(std::unique_ptr<message_base> msg) {
         // Loop until we successfully update or find that someone else updated higher
     }
 
-    // Wake the worker thread owning this actor - the caller is blocked on the
-    // request's future until that thread drains the ask queue.
-    system::notify_worker(m_assigned_thread_id);
+    // The caller is blocked on the request's future: make sure the actor runs.
+    if (pushed == detail::push_result::unblocked) {
+        system::schedule(this);
+    }
 }
 
 namespace {

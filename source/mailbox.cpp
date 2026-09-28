@@ -132,15 +132,13 @@ bool mailbox::try_block() noexcept {
     }
     message_base* expected = empty_tag();
     return m_stack.compare_exchange_strong(expected, blocked_tag(),
-                                           std::memory_order_acq_rel,
-                                           std::memory_order_relaxed);
+                                           std::memory_order_seq_cst);
 }
 
 bool mailbox::try_unblock() noexcept {
     message_base* expected = blocked_tag();
     return m_stack.compare_exchange_strong(expected, empty_tag(),
-                                           std::memory_order_acq_rel,
-                                           std::memory_order_relaxed);
+                                           std::memory_order_seq_cst);
 }
 
 size_t mailbox::close(const std::function<void(message_base&, bool is_ask)>& on_dropped) {

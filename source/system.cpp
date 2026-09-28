@@ -78,13 +78,12 @@ void system::start() {
         } else {
             thread_count = inst.m_actors_per_thread.size();
         }
-    }
-
-    // Initialize per-worker wakeup signals (sized once; never resized while running)
-    inst.m_worker_signals.clear();
-    inst.m_worker_signals.reserve(thread_count);
-    for (size_t i = 0; i < thread_count; ++i) {
-        inst.m_worker_signals.push_back(std::make_unique<worker_signal>());
+        inst.ensure_workers(thread_count);
+        // Entries left from a previous run (workers exit on shutdown without
+        // draining their queues) are stale: this run starts from scratch.
+        for (auto& worker : inst.m_workers) {
+            worker->ready.clear();
+        }
     }
 
     // Start timer manager
@@ -104,9 +103,14 @@ void system::start() {
     }
 
     for (auto& actor_ptr : to_start) {
-        // Sets sender context and marks the actor as initialising
-        on_start_scope scope(actor_ptr.get());
-        actor_ptr->on_start();
+        {
+            // Sets sender context and marks the actor as initialising
+            on_start_scope scope(actor_ptr.get());
+            actor_ptr->on_start();
+        }
+        // Idle, or on the ready queue if messages were sent to it before
+        // start(); either way the workers launched below pick it up.
+        activate_after_start(actor_ptr.get());
     }
 
     // From here on, actors may be executing on threads other than the caller's
@@ -237,13 +241,11 @@ void system::shutdown(const shutdown_config& config) {
     // Phase 4: Signal worker threads to stop, then wake any that are parked
     inst.m_shutdown_requested = true;
 
-    for (auto& sig_ptr : inst.m_worker_signals) {
-        worker_signal& sig = *sig_ptr;
+    for (auto& worker : inst.m_workers) {
         {
-            std::lock_guard<std::mutex> lock(sig.mutex);
-            sig.pending = true;
+            std::lock_guard<std::mutex> lock(worker->mutex);
         }
-        sig.cv.notify_all();
+        worker->cv.notify_all();
     }
 }
 
@@ -263,7 +265,7 @@ void system::wait_for_shutdown() {
         }
     }
     inst.m_thread_pool.clear();
-    inst.m_worker_signals.clear();
+    // m_workers is kept: producers may still index it (see worker_state).
 
     // Wait for all fast actor threads to finish.
     // Fast actors call their own on_stop() in their dedicated threads.
@@ -323,10 +325,12 @@ void system::reset() {
         throw std::runtime_error("Cannot reset system while it's running - call shutdown() and wait_for_shutdown() first");
     }
 
-    // Clear all pooled actors
+    // Clear all pooled actors and the per-worker state (queued entries hold
+    // shared_ptrs to actors)
     {
         std::lock_guard<std::mutex> lock(inst.m_actors_mutex);
         inst.m_actors_per_thread.clear();
+        inst.m_workers.clear();
     }
 
     // Clear all fast actors
@@ -430,10 +434,11 @@ void system::register_actor(std::shared_ptr<actor> actor_ptr) {
         // Assign actor to a thread (round-robin)
         size_t thread_id = inst.m_next_thread_assignment.fetch_add(1) % num_threads;
 
-        // Ensure we have enough thread vectors
+        // Ensure we have enough thread vectors (and matching worker state)
         if (inst.m_actors_per_thread.size() < num_threads) {
             inst.m_actors_per_thread.resize(num_threads);
         }
+        inst.ensure_workers(inst.m_actors_per_thread.size());
 
         // Set thread affinity and add to that thread's list
         actor_ptr->set_thread_affinity(thread_id);
@@ -446,6 +451,7 @@ void system::register_actor(std::shared_ptr<actor> actor_ptr) {
             on_start_scope scope(actor_ptr.get());
             actor_ptr->on_start();
         }
+        activate_after_start(actor_ptr.get());
 
         if (fast_ptr) {
             // A fast actor needs its dedicated polling thread launched; start()
@@ -467,91 +473,145 @@ uint64_t system::next_message_id() {
     return instance().m_next_message_id.fetch_add(1);
 }
 
-void system::worker_thread(size_t thread_id) {
-    // Each worker thread only processes actors assigned to it
-#ifdef CAS_DEBUG_LOGGING
-    std::cout << "[WORKER-" << thread_id << "] Thread started\n" << std::flush;
-#endif
-
-    t_worker_thread_id = thread_id;
-
-    // Reused across iterations to avoid reallocating the snapshot each loop
-    std::vector<std::shared_ptr<actor>> my_actors;
-
-    while (!m_shutdown_requested) {
-        bool found_work = false;
-
-        // INVARIANT 2: no lock is held while user code runs. Snapshot this
-        // thread's actor list under the lock, release, then process outside it.
-        // Holding m_actors_mutex across process_next_message() would serialise
-        // every worker on one mutex and self-deadlock any handler that calls
-        // system::create(). See doc/INVARIANTS.md.
-        {
-            std::lock_guard<std::mutex> lock(m_actors_mutex);
-            if (thread_id < m_actors_per_thread.size()) {
-                my_actors = m_actors_per_thread[thread_id];
-            } else {
-                my_actors.clear();
-            }
-        }
-
-        for (auto& actor_ptr : my_actors) {
-            // A stop requested by stop_actor() is carried out here, on the
-            // owning thread, interleaved with draining (INVARIANT 1).
-            if (actor_ptr->m_stop_phase.load(std::memory_order_acquire) ==
-                actor::stop_phase::requested) {
-                if (actor_ptr->get_state() != actor_state::stopped) {
-                    if (!actor_ptr->service_stop_request()) {
-                        actor_ptr->process_next_message();  // still draining
-                    }
-                    found_work = true;
-                }
-                continue;
-            }
-
-            if (actor_ptr->has_messages()) {
-#ifdef CAS_DEBUG_LOGGING
-                std::cout << "[WORKER-" << thread_id << "] Processing message\n" << std::flush;
-#endif
-                actor_ptr->process_next_message();
-                found_work = true;
-            }
-        }
-
-        my_actors.clear();  // Drop shared_ptr refs promptly
-
-        // No work - block until enqueue_message() signals this thread.
-        // Timed wait bounds the worst case if a wakeup is missed or an actor
-        // is registered while we are parked.
-        if (!found_work) {
-            worker_signal& sig = *m_worker_signals[thread_id];
-            std::unique_lock<std::mutex> lock(sig.mutex);
-            sig.cv.wait_for(lock, std::chrono::milliseconds(10),
-                            [&] { return sig.pending || m_shutdown_requested; });
-            sig.pending = false;
+void system::ensure_workers(size_t count) {
+    // Called with m_actors_mutex held, while no actor can be scheduled yet
+    // (see worker_state): only ever grows from empty.
+    if (m_workers.empty()) {
+        m_workers.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            m_workers.push_back(std::make_unique<worker_state>());
         }
     }
+}
 
-#ifdef CAS_DEBUG_LOGGING
-    std::cout << "[WORKER-" << thread_id << "] Thread stopping\n" << std::flush;
-#endif
+void system::schedule(actor* target) {
+    // Fast actors run their own loop and are never scheduled here.
+    if (dynamic_cast<fast_actor*>(target) != nullptr) {
+        return;
+    }
+    std::shared_ptr<actor> keep_alive = target->m_self_ref.lock();
+    if (!keep_alive) {
+        return;  // being destroyed
+    }
+    auto& inst = instance();
+    if (target->m_assigned_thread_id >= inst.m_workers.size()) {
+        return;  // not yet sized: start() schedules pending actors itself
+    }
+    worker_state& w = *inst.m_workers[target->m_assigned_thread_id];
+    w.ready.push(std::move(keep_alive));
+    wake_worker(w);
+}
+
+void system::activate_after_start(actor* target) {
+    // During on_start() the mailbox is deliberately left unblocked, so pushes
+    // queue without scheduling and no worker can run the actor while on_start()
+    // is still executing on the creator's thread (INVARIANT 1). Now either go
+    // idle, or - if messages arrived meanwhile - get scheduled.
+    if (dynamic_cast<fast_actor*>(target) != nullptr) {
+        return;  // polls its own mailbox
+    }
+    if (!target->m_mailbox.try_block()) {
+        schedule(target);
+    }
+}
+
+void system::wake_worker(worker_state& w) {
+    // Producer half of the parking handshake (consumer half: park_worker).
+    // The item is already on w.ready; the fence orders that enqueue before the
+    // load of `sleeping`. Either this load sees the worker parking, or the
+    // worker's re-check after setting `sleeping` sees the item.
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    if (w.sleeping.load(std::memory_order_relaxed)) {
+        std::lock_guard<std::mutex> lock(w.mutex);
+        w.cv.notify_one();
+    }
+}
+
+void system::park_worker(worker_state& w) {
+    w.sleeping.store(true, std::memory_order_relaxed);
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    {
+        std::unique_lock<std::mutex> lock(w.mutex);
+        // The predicate is evaluated under the mutex, and wake_worker notifies
+        // under it, so a wake-up cannot fall between the check and the wait.
+        // The timeout is only a backstop.
+        w.cv.wait_for(lock, std::chrono::milliseconds(10), [&] {
+            return w.ready.maybe_nonempty() ||
+                   m_shutdown_requested.load(std::memory_order_relaxed);
+        });
+    }
+    w.sleeping.store(false, std::memory_order_relaxed);
+}
+
+void system::run_actor(worker_state& w, std::shared_ptr<actor> target) {
+    actor* a = target.get();
+    if (a->get_state() == actor_state::stopped) {
+        return;  // stale entry for an actor that has since stopped
+    }
+
+    const size_t budget = m_config.max_messages_per_turn == 0
+                              ? std::numeric_limits<size_t>::max()
+                              : m_config.max_messages_per_turn;
+    size_t handled = 0;
+
+    for (;;) {
+        // A stop requested by stop_actor() is carried out here, on the owning
+        // thread, interleaved with draining (INVARIANT 1).
+        if (a->m_stop_phase.load(std::memory_order_seq_cst) == actor::stop_phase::requested) {
+            if (a->service_stop_request()) {
+                return;  // stopped (or completed elsewhere); never runs again
+            }
+        }
+
+        if (handled >= budget) {
+            // Turn over: go to the back of the queue so other ready actors on
+            // this worker run. The mailbox stays unblocked, so nothing else will
+            // schedule it - we must.
+            w.ready.push(std::move(target));
+            return;
+        }
+
+        if (a->has_messages()) {
+            a->process_next_message();
+            ++handled;
+            continue;
+        }
+
+        // Nothing left: go idle. The next push will find the mailbox blocked
+        // and schedule the actor again.
+        if (a->m_mailbox.try_block()) {
+            // A stop_actor() that ran before we blocked could not unblock us
+            // (we were running), so it relies on this re-check.
+            if (a->m_stop_phase.load(std::memory_order_seq_cst) == actor::stop_phase::requested &&
+                a->m_mailbox.try_unblock()) {
+                continue;
+            }
+            return;
+        }
+        // try_block failed: a push landed meanwhile - keep going.
+    }
+}
+
+void system::worker_thread(size_t thread_id) {
+    // Each worker runs only actors pinned to it, and only when they are ready.
+    // No lock is taken on this path (INVARIANT 2 holds trivially).
+    t_worker_thread_id = thread_id;
+    worker_state& w = *m_workers[thread_id];
+
+    while (!m_shutdown_requested.load(std::memory_order_relaxed)) {
+        if (std::shared_ptr<actor> target = w.ready.pop()) {
+            run_actor(w, std::move(target));
+            continue;
+        }
+        park_worker(w);
+    }
 }
 
 void system::notify_worker(size_t thread_id) {
     auto& inst = instance();
-
-    // m_worker_signals is sized in start() and not resized afterwards, so
-    // indexing is safe once running. Before start() there is no worker to wake.
-    if (thread_id >= inst.m_worker_signals.size()) {
-        return;
+    if (thread_id < inst.m_workers.size()) {
+        wake_worker(*inst.m_workers[thread_id]);
     }
-
-    worker_signal& sig = *inst.m_worker_signals[thread_id];
-    {
-        std::lock_guard<std::mutex> lock(sig.mutex);
-        sig.pending = true;
-    }
-    sig.cv.notify_one();
 }
 
 timer_id system::schedule_timer(actor* target, std::unique_ptr<message_base> msg,
@@ -683,7 +743,7 @@ bool system::stop_actor(actor_ref ref, const stop_config& config) {
         return false;
     }
 
-    target->m_stop_phase.store(actor::stop_phase::requested, std::memory_order_release);
+    target->m_stop_phase.store(actor::stop_phase::requested, std::memory_order_seq_cst);
 
     fast_actor* fast_ptr = dynamic_cast<fast_actor*>(target);
 
@@ -693,9 +753,12 @@ bool system::stop_actor(actor_ref ref, const stop_config& config) {
         // The caller's thread is its executor; complete the stop here.
         run_stop_to_completion(target);
     } else {
-        if (!fast_ptr) {
-            // Wake the owning worker (fast actors poll on their own).
-            notify_worker(target->m_assigned_thread_id);
+        // An idle actor is on no ready queue: unblock it and schedule it so its
+        // worker performs the stop. If it is running or queued, try_unblock
+        // fails and the worker sees the requested phase (run_actor re-checks it
+        // after blocking). Fast actors poll the phase themselves.
+        if (!fast_ptr && target->m_mailbox.try_unblock()) {
+            schedule(target);
         }
 
         // Block until on_stop() has returned - unless this thread is the one

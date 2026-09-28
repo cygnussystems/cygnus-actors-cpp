@@ -15,17 +15,15 @@ void stateful_actor::reject_all_message_types() {
     m_accepted_types.clear();
 }
 
-void stateful_actor::enqueue_message(std::unique_ptr<message_base> msg) {
-    // Don't accept new messages if actor is stopping or stopped
-    if (get_state() != actor_state::running) {
-        return;  // Silently drop message
-    }
-
+void stateful_actor::take_from_mailbox() {
     std::lock_guard<std::mutex> lock(m_stateful_mailbox_mutex);
-    m_stateful_mailbox.push_back(std::move(msg));
+    while (std::unique_ptr<message_base> msg = m_mailbox.pop()) {
+        m_stateful_mailbox.push_back(std::move(msg));
+    }
 }
 
 void stateful_actor::process_next_message() {
+    take_from_mailbox();
     std::unique_ptr<message_base> msg;
 
     // Find first message with accepted type
@@ -59,14 +57,18 @@ void stateful_actor::process_next_message() {
 
     // Dispatch message (same as base actor)
     if (msg) {
-        actor* current = get_current_actor();
+        actor* previous = current_actor_context;
         current_actor_context = this;
         dispatch_message(msg.get());
-        current_actor_context = nullptr;
+        current_actor_context = previous;
     }
 }
 
 bool stateful_actor::has_messages() {
+    // Anything not yet moved out of the base mailbox may be acceptable.
+    if (m_mailbox.size() > 0) {
+        return true;
+    }
     std::lock_guard<std::mutex> mailbox_lock(m_stateful_mailbox_mutex);
     std::lock_guard<std::mutex> types_lock(m_accepted_types_mutex);
 

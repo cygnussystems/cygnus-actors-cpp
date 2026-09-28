@@ -14,9 +14,15 @@ class stateful_actor : public actor {
     friend class system;
 
 private:
-    // Override base mailbox with deque for selective extraction
+    // Messages arrive through the base mailbox (so the actor is scheduled like
+    // any other) and are moved here, on the owning thread, for selective
+    // extraction. Owner-only; the mutex remains for has_messages(), which the
+    // shutdown drain calls from another thread.
     std::deque<std::unique_ptr<message_base>> m_stateful_mailbox;
     std::mutex m_stateful_mailbox_mutex;
+
+    // Move everything from the base mailbox into m_stateful_mailbox (owner only)
+    void take_from_mailbox();
 
     // Set of message types accepted in current state
     std::set<std::type_index> m_accepted_types;
@@ -43,9 +49,6 @@ protected:
 public:
     stateful_actor() = default;
     virtual ~stateful_actor() = default;
-
-    // Override enqueue to use stateful mailbox
-    void enqueue_message(std::unique_ptr<message_base> msg);
 
     // Override process to do selective extraction
     void process_next_message();

@@ -20,6 +20,7 @@ set(SOURCES
     source/timer_manager.cpp
     source/message_pool.cpp
     source/mailbox.cpp
+    source/ready_queue.cpp
 )
 
 # ZeroMQ relay actor (optional)
@@ -152,6 +153,7 @@ if(BUILD_TESTS)
         tests/11_concurrency/test_message_ordering.cpp
         tests/11_concurrency/test_runtime_actor_start.cpp
         tests/11_concurrency/test_on_start_contract.cpp
+        tests/11_concurrency/test_scheduler.cpp
         # Level 13: Message pool correctness (see doc/140_message_pool.md)
         tests/13_message_pool/test_message_pool.cpp
         # Level 14: Actor mailbox (lock-free, adapted from CAF)
