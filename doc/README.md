@@ -27,9 +27,8 @@ Documentation files are numbered for easy ordering and insertion of new topics.
 ### Advanced Features
 - **[80_call.md](80_call.md)** - RPC-style synchronous messaging with timeouts
 - **[90_timers.md](90_timers.md)** - One-shot and periodic timers
-- **[100_advanced_actors.md](100_advanced_actors.md)** - Fast actors, inline actors, stateful actors.
-  Note `stateful_actor`'s tests are currently disabled (`CMakeLists.txt:111`),
-  so unlike the rest of the framework it is not covered by the suite.
+- **[100_advanced_actors.md](100_advanced_actors.md)** - Fast actors, inline actors, stateful actors
+  (selective receive), and stateful fast actors.
 
 ### Configuration & Best Practices
 - **110_configuration.md** - *(not written)*. `system_config`, `shutdown_config`

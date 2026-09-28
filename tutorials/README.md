@@ -71,9 +71,9 @@ Each assumes the ones before it and does not repeat their explanations.
 
 ## Not covered
 
-**`stateful_actor`** — its tests are disabled (`CMakeLists.txt:111`, ABI
-sensitivity), so it is not currently verified and teaching it would be
-premature.
+**`stateful_actor` / `stateful_fast_actor`** (selective receive) — not yet a
+tutorial. See [doc/100_advanced_actors.md](../doc/100_advanced_actors.md#stateful-actors);
+`tests/04_advanced/test_stateful_actor.cpp` exercises both classes.
 
 **The ZeroMQ relay** — needs `cppzmq`, which the default build does not
 enable. See [doc/130_zeromq_relay.md](../doc/130_zeromq_relay.md).

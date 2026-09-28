@@ -2,75 +2,48 @@
 #define CAS_STATEFUL_ACTOR_H
 
 #include "actor.h"
-#include <set>
+#include "detail/selective_stash.h"
 #include <typeindex>
-#include <deque>
 
 namespace cas {
 
-/// Stateful actor with selective message processing
-/// Messages not accepted in current state remain queued for later
+/// Pooled actor with selective receive: in each state it accepts only some
+/// message types; the others stay queued (in order) until a later state
+/// accepts them.
+///
+/// Calls (actor_ref::call) and system shutdown are never held back.
+/// Accept/reject from this actor's own on_start() or handlers only.
+/// For the same on a dedicated thread, see stateful_fast_actor.
 class stateful_actor : public actor {
-    friend class system;
-
-private:
-    // Messages arrive through the base mailbox (so the actor is scheduled like
-    // any other) and are moved here, on the owning thread, for selective
-    // extraction. Owner-only; the mutex remains for has_messages(), which the
-    // shutdown drain calls from another thread.
-    std::deque<std::unique_ptr<message_base>> m_stateful_mailbox;
-    std::mutex m_stateful_mailbox_mutex;
-
-    // Move everything from the base mailbox into m_stateful_mailbox (owner only)
-    void take_from_mailbox();
-
-    // Set of message types accepted in current state
-    std::set<std::type_index> m_accepted_types;
-    std::mutex m_accepted_types_mutex;
-
-    // By default, accept all message types (same as base actor)
-    bool m_accept_all = true;
-
 protected:
-    /// Accept only this message type in current state
+    /// Accept this message type in the current state (turns filtering on)
     template<typename MessageType>
-    void accept_message_type();
+    void accept_message_type() { m_stash.accept(typeid(MessageType)); }
 
-    /// Reject this message type in current state (leave queued)
+    /// Stop accepting this message type; its messages wait until accepted
     template<typename MessageType>
-    void reject_message_type();
+    void reject_message_type() { m_stash.reject(typeid(MessageType)); }
 
     /// Accept all message types (default behavior)
     void accept_all_message_types();
 
-    /// Clear all accepted types (reject everything until explicitly accepted)
+    /// Accept nothing until types are accepted explicitly
     void reject_all_message_types();
 
 public:
     stateful_actor() = default;
-    virtual ~stateful_actor() = default;
+    ~stateful_actor() override = default;
 
-    // Override process to do selective extraction
-    void process_next_message();
+    // Internal: selective extraction (see detail::selective_stash)
+    void process_next_message() override;
+    bool has_messages() override;
+    size_t queue_size() const override;
+    void discard_pending_messages() override;
+    bool service_stop_request() override;
 
-    // Override has_messages to check stateful mailbox
-    bool has_messages();
+private:
+    detail::selective_stash m_stash;
 };
-
-// Template implementations
-
-template<typename MessageType>
-void stateful_actor::accept_message_type() {
-    std::lock_guard<std::mutex> lock(m_accepted_types_mutex);
-    m_accept_all = false;
-    m_accepted_types.insert(typeid(MessageType));
-}
-
-template<typename MessageType>
-void stateful_actor::reject_message_type() {
-    std::lock_guard<std::mutex> lock(m_accepted_types_mutex);
-    m_accepted_types.erase(typeid(MessageType));
-}
 
 } // namespace cas
 

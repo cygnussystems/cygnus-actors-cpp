@@ -32,7 +32,7 @@ template<typename ReturnType, typename OpTag, typename... Args> struct call_requ
 
 // Subclasses granted dispatch access (see friend declarations below)
 template<bool ThreadSafe> class inline_actor;
-class stateful_actor;
+namespace detail { class selective_stash; }
 class zeromq_relay_actor;
 
 // Constrains the callable passed to actor::handler(). Catches a mismatched
@@ -86,7 +86,7 @@ class actor {
     // actor's execution turn themselves. Each must dispatch only from the
     // actor's owning thread - see INVARIANT 1 in doc/INVARIANTS.md.
     template<bool ThreadSafe> friend class inline_actor;
-    friend class stateful_actor;
+    friend class detail::selective_stash;  // selective receive (stateful_actor, stateful_fast_actor)
     friend class zeromq_relay_actor;
 
     // Sets m_in_on_start for the duration of on_start()

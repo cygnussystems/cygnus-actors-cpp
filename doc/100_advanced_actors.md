@@ -10,6 +10,7 @@ Cygnus provides three specialized actor types beyond the standard `cas::actor` f
 | **Fast Actor** | Dedicated | <1μs | High | Automatic | Real-time systems |
 | **Inline Actor** | Caller's thread | 0μs | Zero overhead | Configurable | Synchronous services |
 | **Stateful Actor** | Thread pool | ~10μs | Low | Automatic | State machines |
+| **Stateful Fast Actor** | Dedicated | <1μs | High | Manual | Latency-critical state machines |
 
 ## Fast Actors
 
@@ -544,8 +545,53 @@ protected:
 
 **Message Processing Behavior:**
 - Accepted messages: Processed immediately
-- Rejected messages: Remain queued, processed when type is accepted
-- State changes: Trigger re-evaluation of queued messages
+- Rejected messages: Held, and processed when a later state accepts their type
+- State changes: Trigger re-evaluation of held messages
+
+**Guarantees:**
+- **Held messages keep their order.** When a state change accepts them, they are
+  handled oldest first. (Selective receive does reorder *across* types by
+  design: an accepted message can be handled before an older held one.)
+- **Calls and shutdown are never held.** `actor_ref::call()` is answered
+  whatever the current state accepts, and system shutdown reaches
+  `on_shutdown()` as usual.
+- **Held messages are accounted for.** `queue_size()` and the shutdown log
+  include them; when the actor stops, any still held are reported as dead
+  letters.
+- Call `accept_*` / `reject_*` from the actor's own `on_start()` and handlers
+  only - the filter belongs to the actor's thread and has no lock.
+- `reject_message_type<T>()` while accepting everything is a no-op: to accept
+  "everything but T", call `reject_all_message_types()` and accept what you
+  want.
+
+### Stateful Fast Actors
+
+`cas::stateful_fast_actor` is the same selective receive on a dedicated thread,
+for a state machine that is also latency-critical - an exchange session that
+must not send orders until it is logged in is the typical case. Same API, same
+guarantees; it takes a `polling_strategy` like `fast_actor`.
+
+```cpp
+#include <cas/cas.h>
+
+class exchange_session : public cas::stateful_fast_actor {
+protected:
+    void on_start() override {
+        handler<logged_in>(&exchange_session::on_logged_in);
+        handler<new_order>(&exchange_session::on_new_order);
+
+        // Until logged in, hold orders (in order) and accept only the login
+        reject_all_message_types();
+        accept_message_type<logged_in>();
+    }
+
+    void on_logged_in(const logged_in&) {
+        accept_all_message_types();  // held orders are now sent, oldest first
+    }
+
+    void on_new_order(const new_order& o) { /* send to the exchange */ }
+};
+```
 
 ### Stateful Actor Example: Download Manager
 
@@ -710,10 +756,11 @@ mgr_ref.tell(start_download{});   // Processed (accepted)
 - Prevents invalid message sequences
 
 **Trade-offs:**
-- Deque instead of lock-free queue (selective extraction)
-- Mutex for accepted types set
-- Memory for queued rejected messages
-- Slightly higher latency than regular actors
+- Held messages are scanned in order to find the next acceptable one: cheap for
+  the handful a state machine usually holds, linear if thousands pile up
+- Memory for held messages
+- Slightly higher latency than regular actors (messages pass through the hold
+  queue); no locks
 
 **Best Practices:**
 ```cpp

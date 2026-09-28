@@ -16,6 +16,8 @@ set(SOURCES
     source/actor_registry.cpp
     source/system.cpp
     source/stateful_actor.cpp
+    source/stateful_fast_actor.cpp
+    source/selective_stash.cpp
     source/fast_actor.cpp
     source/timer_manager.cpp
     source/message_pool.cpp
@@ -123,7 +125,7 @@ if(BUILD_TESTS)
         tests/03_lifecycle/test_lifecycle_hooks.cpp
         tests/03_lifecycle/test_message_draining.cpp
         # Level 4: Advanced features
-        # tests/04_advanced/test_stateful_actor.cpp  # Disabled: has ABI sensitivity issues with base class layout changes
+        tests/04_advanced/test_stateful_actor.cpp
         tests/04_advanced/test_fast_actor.cpp
         tests/04_advanced/test_inline_actor.cpp
         # Level 5: Ask pattern (RPC-style)

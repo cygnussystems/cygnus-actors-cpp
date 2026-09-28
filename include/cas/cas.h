@@ -10,6 +10,7 @@
 #include "actor.h"
 #include "stateful_actor.h"
 #include "fast_actor.h"
+#include "stateful_fast_actor.h"
 #include "inline_actor.h"
 #include "actor_registry.h"
 #include "system.h"

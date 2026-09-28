@@ -9,7 +9,7 @@ namespace cas {
 
 class actor;
 class system;
-namespace detail { class mailbox; }
+namespace detail { class mailbox; class selective_stash; }
 
 // Base struct for all messages
 // Messages inherit from this to get sender information and correlation tracking
@@ -79,6 +79,7 @@ private:
     friend class actor;
     friend class system;
     friend class detail::mailbox;
+    friend class detail::selective_stash;
 
     virtual framework_kind cas_framework_kind() const noexcept { return framework_kind::user; }
 

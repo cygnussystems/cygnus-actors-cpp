@@ -21,6 +21,10 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`cas::stateful_fast_actor`**: selective receive on a dedicated thread, for
+  state machines that are also latency-critical (e.g. an exchange session
+  holding orders until logged in). Same API as `stateful_actor`; the
+  filtering logic is shared between the two.
 - **Messages from one sender are handled in send order** - now a guarantee
   (INVARIANT 3): if sending A happens-before sending B to the same actor, A
   is handled first. That covers one actor messaging another and one thread
@@ -91,6 +95,20 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`stateful_actor` works, and is tested again.** Its tests had been
+  excluded from the build since before 1.0, and it had defects:
+  - a `call()` to it waited forever unless the current state happened to
+    accept the framework's internal request type;
+  - held messages were missing from `queue_size()` and the shutdown log, and
+    were never reported as dead letters when the actor stopped;
+  - it took two mutexes on every poll.
+  Selective receive is now one lock-free, owner-thread component shared by
+  `stateful_actor` and `stateful_fast_actor`. Calls and system shutdown
+  bypass the filter, held messages keep their order and are counted, and
+  stopping reports them as dead letters. The test file is back in the build,
+  rewritten, and runs every case against both classes. `stateful_actor`'s
+  API is unchanged; accept/reject must now be called from the actor's own
+  thread (on_start or handlers), which is how it was documented.
 - **The watch pattern could use a destroyed actor.** The watch table held
   raw actor pointers, keyed by the watched actor's address. A watcher
   destroyed before the actor it watched was dereferenced when that actor
