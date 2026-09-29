@@ -85,26 +85,26 @@ namespace tut {
 bool run_actor_registry() {
     bool ok = true;
 
-    section("Starting two named actors");
+    heading("Starting two named actors");
     cas::system::create<logger>();  // no need to keep the ref: it can be found by name
     auto reporter_ref = cas::system::create<reporter>();
     cas::system::start();
 
-    section("Looking actors up by name");
+    heading("Looking actors up by name");
     // Names are registered in on_start(), so they are visible once start() returns.
     auto found = cas::actor_registry::get("logger");
     ok &= check(cas::actor_registry::exists("logger"), "exists(\"logger\") is true");
     ok &= check(found.is_valid() && found.name() == "logger",
                 "get(\"logger\") returned a valid ref with that name");
 
-    section("Looking up a name that was never registered");
+    heading("Looking up a name that was never registered");
     // Not an error, no exception - just an invalid ref.
     ok &= check(!cas::actor_registry::exists("nonexistent"),
                 "exists() is false for an unregistered name");
     ok &= check(!cas::actor_registry::get("nonexistent").is_valid(),
                 "get() returns an invalid ref rather than throwing");
 
-    section("One actor finding another by name");
+    heading("One actor finding another by name");
     reporter::report req;
     req.text = "hello from the reporter";
     reporter_ref.tell(req);
@@ -112,14 +112,14 @@ bool run_actor_registry() {
                 "reporter found the logger and the message arrived");
     ok &= check(reporter::failed_lookups.load() == 0, "no lookup failed");
 
-    section("Sending straight through a looked-up ref");
+    heading("Sending straight through a looked-up ref");
     logger::log_line direct;
     direct.text = "sent from main()";
     cas::actor_registry::get("logger").tell(direct);
     ok &= check(wait_until([] { return logger::lines.load() == 2; }),
                 "message sent via registry lookup arrived");
 
-    section("Shutting down");
+    heading("Shutting down");
     cas::system::shutdown();
     cas::system::wait_for_shutdown();
     return ok;

@@ -237,12 +237,12 @@ bool run_trading_manager() {
         failures.fetch_add(1);
     });
 
-    section("Starting the system with just the manager");
+    heading("Starting the system with just the manager");
     auto manager = cas::system::create<trading_manager>();
     cas::system::start();
     const size_t baseline = cas::system::actor_count();  // the manager
 
-    section("1. Launching two trading systems at runtime");
+    heading("1. Launching two trading systems at runtime");
     trading_manager::launch es;
     es.system_id = "es";
     es.subscribers = {"alice", "bob"};
@@ -266,7 +266,7 @@ bool run_trading_manager() {
                 }),
                 "each subscriber's stream received its system's update");
 
-    section("2. carol unsubscribes from nq; nq keeps running");
+    heading("2. carol unsubscribes from nq; nq keeps running");
     trading_manager::unsubscribe leave;
     leave.system_id = "nq";
     leave.subscriber = "carol";
@@ -274,13 +274,13 @@ bool run_trading_manager() {
     ok &= check(wait_until([] { return stream::stopped.load() == 1; }), "carol's stream was stopped");
     ok &= check(trading_system::find("nq").is_running(), "nq keeps running");
 
-    section("3. es completes its run");
+    heading("3. es completes its run");
     trading_system::find("es").tell(trading_system::run_complete{});
     ok &= check(wait_until([] { return trading_manager::retired.load() == 1; }), "the manager was told es terminated");
     ok &= check(wait_until([] { return stream::stopped.load() == 3; }), "alice's and bob's streams were stopped with it");
     ok &= check(!cas::actor_registry::exists(trading_system::name_for("es")), "es's name was released");
 
-    section("4. nq's handler throws");
+    heading("4. nq's handler throws");
     publish("nq", -1.0);  // on_update throws; on_handler_exception() says stop
     ok &= check(wait_until([&] { return failures.load() == 1; }), "the exception was reported, not fatal");
     ok &= check(wait_until([] { return trading_manager::retired.load() == 2; }), "the manager retired nq like a completed run");
@@ -290,7 +290,7 @@ bool run_trading_manager() {
     ok &= check(wait_until([&] { return cas::system::actor_count() == baseline; }), "only the manager remains");
     ok &= check(manager.is_running(), "the manager is still running");
 
-    section("Shutting down");
+    heading("Shutting down");
     cas::system::shutdown();
     cas::system::wait_for_shutdown();
     cas::system::clear_handler_exception_handler();

@@ -108,12 +108,12 @@ namespace tut {
 bool run_actor_to_actor() {
     bool ok = true;
 
-    section("Two actors, one knowing the other");
+    heading("Two actors, one knowing the other");
     auto ponger_ref = cas::system::create<ponger>();
     auto pinger_ref = cas::system::create<pinger>(ponger_ref);
     cas::system::start();
 
-    section("The exchange");
+    heading("The exchange");
     // main() is not an actor, so this message has no sender - fine, it needs
     // no reply.
     pinger_ref.tell(pinger::start{});
@@ -122,7 +122,7 @@ bool run_actor_to_actor() {
     ok &= check(ponger::pings.load() == pinger::rounds, "one ping per round");
     ok &= check(ponger::without_sender.load() == 0, "every ping had a sender to reply to");
 
-    section("Shut down");
+    heading("Shut down");
     cas::system::shutdown();
     cas::system::wait_for_shutdown();
     return ok;

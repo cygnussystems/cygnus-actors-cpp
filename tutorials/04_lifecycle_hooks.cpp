@@ -103,12 +103,12 @@ namespace tut {
 bool run_lifecycle_hooks() {
     bool ok = true;
 
-    section("Starting");
+    heading("Starting");
     auto undertaker_ref = cas::system::create<undertaker>();
     auto worker_ref = cas::system::create<worker>(undertaker_ref);
     cas::system::start();
 
-    section("Queueing work, then shutting down at once");
+    heading("Queueing work, then shutting down at once");
     // The messages are already in the mailbox, so shutdown drains them rather
     // than discarding them: shutdown is graceful by default.
     for (int i = 1; i <= 3; ++i) {
@@ -119,7 +119,7 @@ bool run_lifecycle_hooks() {
     cas::system::shutdown();
     cas::system::wait_for_shutdown();
 
-    section("Checking what happened");
+    heading("Checking what happened");
     const auto log = worker::history();
     auto at = [&](const std::string& what) {
         return static_cast<int>(std::find(log.begin(), log.end(), what) - log.begin());

@@ -87,13 +87,13 @@ namespace tut {
 bool run_dead_letters() {
     bool ok = true;
 
-    section("Starting");
+    heading("Starting");
     auto receiver_ref = cas::system::create<receiver>();
     cas::system::start();
     send_payload(receiver_ref, 1);
     ok &= check(wait_until([] { return receiver::delivered.load() == 1; }), "a normal message was delivered");
 
-    section("Sending to a stopped actor");
+    heading("Sending to a stopped actor");
     // Statistics are always collected; nothing needs enabling.
     cas::system::reset_dead_letter_stats();
     cas::system::stop_actor(receiver_ref);
@@ -104,7 +104,7 @@ bool run_dead_letters() {
     std::cout << "  dropped tells: " << stats.dropped_tell << ", dropped calls: " << stats.dropped_ask
               << ", to invalid refs: " << stats.dropped_to_invalid << "\n";
 
-    section("Installing a dead letter handler");
+    heading("Installing a dead letter handler");
     // The handler gives the detail behind the count: which actor, which
     // message type, what state. It runs on the send path - keep it short and
     // thread-safe.
@@ -115,7 +115,7 @@ bool run_dead_letters() {
     ok &= check(dead_letter_log::targets().front() == "receiver",
                 "the handler reported the intended recipient's name");
 
-    section("Removing the handler");
+    heading("Removing the handler");
     // The handler is global and outlives any actor: remove it when done.
     cas::system::clear_dead_letter_handler();
     const std::size_t before = dead_letter_log::targets().size();
@@ -127,7 +127,7 @@ bool run_dead_letters() {
     ok &= check(dead_letter_log::total_dropped() >= 3,
                 "statistics still counted the drops after the handler was cleared");
 
-    section("Shutting down");
+    heading("Shutting down");
     cas::system::shutdown();
     cas::system::wait_for_shutdown();
     return ok;

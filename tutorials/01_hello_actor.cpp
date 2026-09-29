@@ -56,14 +56,14 @@ namespace tut {
 bool run_hello_actor() {
     bool ok = true;
 
-    section("Create, then start");
+    heading("Create, then start");
     // create() builds the actor and returns a handle; start() runs every
     // actor's on_start() and the worker threads.
     auto greeter_ref = cas::system::create<greeter>();
     cas::system::start();
     ok &= check(greeter_ref.is_valid() && cas::system::is_running(), "actor created, system running");
 
-    section("Send a message");
+    heading("Send a message");
     // tell() copies the message into the actor's mailbox and returns at once;
     // the handler runs later, on the actor's thread.
     greeter::greet msg;
@@ -71,7 +71,7 @@ bool run_hello_actor() {
     greeter_ref.tell(msg);
     ok &= check(wait_until([] { return greeter::greetings.load() == 1; }), "the handler ran once");
 
-    section("Shut down");
+    heading("Shut down");
     // shutdown() lets queued messages drain; wait_for_shutdown() waits for it.
     cas::system::shutdown();
     cas::system::wait_for_shutdown();

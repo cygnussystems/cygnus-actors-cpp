@@ -57,7 +57,7 @@ namespace tut {
 bool run_message_pool() {
     bool ok = true;
 
-    section("What a message actually costs");
+    heading("What a message actually costs");
     // message_base carries a sender, a message id, a correlation id and a
     // vtable pointer. That fixed overhead dominates small messages.
     std::cout << "  sizeof(cas::message_base) = " << sizeof(cas::message_base) << "\n"
@@ -67,7 +67,7 @@ bool run_message_pool() {
               << "  (plus whatever the std::string allocates)\n";
     ok &= check(sizeof(feed::tick) > sizeof(cas::message_base), "a message is its header plus its fields");
 
-    section("Size classes");
+    heading("Size classes");
     // Allocations round up to the next class; anything bigger than the largest
     // falls back to the heap. Keep hot-path messages under a class boundary.
     const size_t needed = sizeof(feed::tick);
@@ -75,7 +75,7 @@ bool run_message_pool() {
     std::cout << "  a " << needed << "-byte message uses the " << assigned << "-byte size class\n";
     ok &= check(assigned >= needed, "the size class is at least as big as the message");
 
-    section("Watching the pool while sending");
+    heading("Watching the pool while sending");
     // Statistics tell a pooled allocation from a heap fallback: check, don't assume.
     cas::message_pool::reset_stats();
     auto feed_ref = cas::system::create<feed>();
@@ -97,7 +97,7 @@ bool run_message_pool() {
     ok &= check(stats.heap_fallbacks == 0, "no message fell back to the heap");
     ok &= check(stats.pool_hits + stats.pool_misses > 0, "the pool served the allocations");
 
-    section("Prewarming");
+    heading("Prewarming");
     // The first allocations in a class must create blocks. prewarm() does that
     // up front, so a latency-sensitive system does not pay for it after start.
     cas::message_pool::reset_stats();
@@ -111,7 +111,7 @@ bool run_message_pool() {
     std::cout << "  after prewarm(64): " << warm.pool_hits << " hits, " << warm.pool_misses << " misses\n";
     ok &= check(warm.pool_hits > 0, "prewarmed blocks served the following allocations");
 
-    section("Shut down");
+    heading("Shut down");
     cas::system::shutdown();
     cas::system::wait_for_shutdown();
     return ok;

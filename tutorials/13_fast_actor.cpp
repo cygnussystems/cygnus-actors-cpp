@@ -59,13 +59,13 @@ namespace tut {
 bool run_fast_actor() {
     bool ok = true;
 
-    section("Starting a fast actor");
+    heading("Starting a fast actor");
     // From here on the actor's thread polls, even with nothing to do - that is
     // the price paid for the latency.
     auto engine = cas::system::create<price_engine>();
     cas::system::start();
 
-    section("Sending ticks");
+    heading("Sending ticks");
     constexpr int tick_count = 100;
     const auto begin = std::chrono::steady_clock::now();
     for (int i = 0; i < tick_count; ++i) {
@@ -82,7 +82,7 @@ bool run_fast_actor() {
         std::chrono::steady_clock::now() - begin);
     std::cout << "  100 ticks sent and processed in " << us.count() << " us\n";
 
-    section("Shut down");
+    heading("Shut down");
     cas::system::shutdown();
     cas::system::wait_for_shutdown();
     ok &= check(price_engine::ticks.load() == tick_count, "no ticks were lost");

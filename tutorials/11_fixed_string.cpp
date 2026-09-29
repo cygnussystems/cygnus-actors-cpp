@@ -68,7 +68,7 @@ namespace tut {
 bool run_fixed_string() {
     bool ok = true;
 
-    section("Basic use");
+    heading("Basic use");
     cas::fixed_string<16> symbol("AAPL");
     ok &= check(symbol == "AAPL" && "AAPL" == symbol, "compares with a C string on either side");
     ok &= check(symbol.size() == 4, "size() is the content length");
@@ -76,18 +76,18 @@ bool run_fixed_string() {
     // fixed_string<8> and fixed_string<16> are different types, yet compare.
     ok &= check(symbol == cas::fixed_string<8>("AAPL"), "compares equal across capacities");
 
-    section("Truncation is silent");
+    heading("Truncation is silent");
     // Too long truncates - no exception, no allocation, no warning. Check the
     // capacity when you do not control the input length.
     cas::fixed_string<4> tiny("ABCDEFGH");
     std::cout << "  fixed_string<4> given \"ABCDEFGH\" holds \"" << tiny << "\"\n";
     ok &= check(tiny == "ABCD" && tiny.size() == 4, "content truncated to the capacity");
 
-    section("Converting");
+    heading("Converting");
     ok &= check(symbol.str() == std::string("AAPL"), "str() copies out to a std::string");
     ok &= check(symbol.view() == "AAPL", "view() gives a string_view, no copy");
 
-    section("Using it as a map key");
+    heading("Using it as a map key");
     // Hashes like the equivalent string_view, so equal content hashes equally.
     std::unordered_map<cas::fixed_string<8>, int> position_by_symbol;
     position_by_symbol[cas::fixed_string<8>("AAPL")] = 500;
@@ -95,7 +95,7 @@ bool run_fixed_string() {
     ok &= check(position_by_symbol[cas::fixed_string<8>("AAPL")] == 500, "lookup by key works");
     ok &= check(position_by_symbol.size() == 2, "two distinct keys stored");
 
-    section("Sending a message that does not allocate");
+    heading("Sending a message that does not allocate");
     auto book = cas::system::create<order_book>();
     cas::system::start();
 
@@ -107,7 +107,7 @@ bool run_fixed_string() {
     ok &= check(wait_until([] { return order_book::orders.load() == 1; }),
                 "the order arrived with its strings intact");
 
-    section("Shut down");
+    heading("Shut down");
     cas::system::shutdown();
     cas::system::wait_for_shutdown();
     return ok;

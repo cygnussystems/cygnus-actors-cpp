@@ -249,20 +249,20 @@ namespace tut {
 bool run_zeromq_relay() {
     bool ok = true;
 
-    section("Two relays, an exchange and a trader");
+    heading("Two relays, an exchange and a trader");
     auto server_relay = cas::system::create<cas::zeromq_relay_actor>();
     auto client_relay = cas::system::create<cas::zeromq_relay_actor>();
     auto exchange_ref = cas::system::create<exchange>(server_relay);
     auto trader_ref = cas::system::create<trader>(client_relay);
     cas::system::start();
 
-    section("1. The server binds, then the client connects");
+    heading("1. The server binds, then the client connects");
     exchange_ref.tell(exchange::listen{});
     ok &= check(wait_until([] { return exchange::bound.load(); }), "the exchange's relay is bound");
     trader_ref.tell(trader::connect{});
     ok &= check(wait_until([] { return trader::connected.load(); }), "the trader's relay is connected");
 
-    section("2. The trader sends an order; the exchange acknowledges it");
+    heading("2. The trader sends an order; the exchange acknowledges it");
     trader_ref.tell(trader::place_order{});
     ok &= check(wait_until([] { return exchange::orders.load() == 1; }),
                 "the exchange received the order (routed by message_type)");
@@ -270,21 +270,21 @@ bool run_zeromq_relay() {
                 "the ack came back to the trader (matched by correlation id)");
     ok &= check(trader::last_ack() == std::string("ACK ") + trader::order_text, "with the exchange's payload");
 
-    section("3. The exchange pushes market data");
+    heading("3. The exchange pushes market data");
     exchange_ref.tell(exchange::push_market_data{});
     ok &= check(wait_until([] { return trader::market_data.load() == 1; }),
                 "the trader got it through its default route");
 
-    section("4. Asking the client relay for its status");
+    heading("4. Asking the client relay for its status");
     cas::system::create<status_monitor>(client_relay);
     ok &= check(wait_until([] { return status_monitor::pending.load() == 0; }),
                 "no request is still waiting for a reply");
 
-    section("5. Binding twice is reported to the sender");
+    heading("5. Binding twice is reported to the sender");
     exchange_ref.tell(exchange::bind_again{});
     ok &= check(wait_until([] { return exchange::errors.load() == 1; }), "the exchange received a zeromq_error");
 
-    section("Shutting down");
+    heading("Shutting down");
     cas::system::shutdown();
     cas::system::wait_for_shutdown();
     return ok;

@@ -88,7 +88,7 @@ namespace tut {
 bool run_watch_pattern() {
     bool ok = true;
 
-    section("Watching");
+    heading("Watching");
     auto worker_ref = cas::system::create<fragile_worker>();
     auto supervisor_ref = cas::system::create<supervisor>();
     cas::system::start();
@@ -96,7 +96,7 @@ bool run_watch_pattern() {
     cas::system::watch(supervisor_ref, worker_ref);
     worker_ref.tell(fragile_worker::do_work{});
 
-    section("Stopping the watched actor");
+    heading("Stopping the watched actor");
     cas::system::stop_actor(worker_ref);
     ok &= check(wait_until([] { return supervisor::terminations.load() == 1; }),
                 "supervisor was notified of the termination");
@@ -111,7 +111,7 @@ bool run_watch_pattern() {
                 "the restarted worker is registered and running");
     ok &= check(!worker_ref.is_running(), "the original reference is still stale after the restart");
 
-    section("Unwatching, then stopping again");
+    heading("Unwatching, then stopping again");
     // unwatch() spares the watcher a notification it would only ignore.
     cas::system::unwatch(supervisor_ref, restarted);
     const int before = supervisor::terminations.load();
@@ -119,7 +119,7 @@ bool run_watch_pattern() {
     std::this_thread::sleep_for(std::chrono::milliseconds(80));
     ok &= check(supervisor::terminations.load() == before, "no notification arrived after unwatch()");
 
-    section("Shutting down");
+    heading("Shutting down");
     cas::system::shutdown();
     cas::system::wait_for_shutdown();
     return ok;

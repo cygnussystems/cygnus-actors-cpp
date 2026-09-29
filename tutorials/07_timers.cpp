@@ -91,7 +91,7 @@ namespace tut {
 bool run_timers() {
     bool ok = true;
 
-    section("Arming timers");
+    heading("Arming timers");
     auto ticker_ref = cas::system::create<ticker>();
     cas::system::start();
     ticker_ref.tell(ticker::arm{});
@@ -101,14 +101,14 @@ bool run_timers() {
     ok &= check(wait_until([] { return ticker::cancelled.load(); }),
                 "periodic timer fired repeatedly, then cancelled itself");
 
-    section("Confirming the cancellation held");
+    heading("Confirming the cancellation held");
     // Several more intervals pass; nothing may move.
     const int after_cancel = ticker::heartbeats.load();
     std::this_thread::sleep_for(std::chrono::milliseconds(60));
     ok &= check(ticker::heartbeats.load() == after_cancel, "no further heartbeats after cancel_timer()");
     ok &= check(ticker::one_shots.load() == 1, "the one-shot timer did not repeat");
 
-    section("Shutting down");
+    heading("Shutting down");
     cas::system::shutdown();
     cas::system::wait_for_shutdown();
     return ok;

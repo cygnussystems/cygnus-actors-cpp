@@ -76,8 +76,8 @@ const tutorial_entry g_tutorials[] = {
 const int g_tutorial_count =
     static_cast<int>(sizeof(g_tutorials) / sizeof(g_tutorials[0]));
 
-void section(const std::string& title) {
-    std::cout << "\n--- " << title << " ---\n";
+void heading(const std::string& title) {
+    std::cout << "\n" << title << "\n" << std::string(title.size(), '-') << "\n";
 }
 
 bool check(bool condition, const std::string& what) {

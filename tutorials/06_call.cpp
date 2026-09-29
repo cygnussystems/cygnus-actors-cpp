@@ -77,11 +77,11 @@ bool run_call() {
     using namespace std::chrono_literals;
     bool ok = true;
 
-    section("Starting");
+    heading("Starting");
     auto calc = cas::system::create<calculator>();
     cas::system::start();
 
-    section("Asking for a value");
+    heading("Asking for a value");
     // call<Return>(tag, args...) blocks until the handler has returned.
     const int sum = calc.call<int>(calculator::add_op{}, 10, 5);
     const double quotient = calc.call<double>(calculator::divide_op{}, 7, 2);
@@ -89,7 +89,7 @@ bool run_call() {
     ok &= check(sum == 15, "call<int>(add_op{}, 10, 5) returned 15");
     ok &= check(quotient == 3.5, "call<double>(divide_op{}, 7, 2) returned 3.5");
 
-    section("Asking with a timeout");
+    heading("Asking with a timeout");
     // Returns an empty optional instead of blocking forever. Prefer it wherever
     // the target might be slow or stuck.
     auto quick = calc.call<int>(calculator::add_op{}, 1000ms, 2, 3);
@@ -98,7 +98,7 @@ bool run_call() {
     auto late = calc.call<int>(calculator::slow_op{}, 50ms, 500);
     ok &= check(!late.has_value(), "a slow operation timed out and returned an empty optional");
 
-    section("A call handler that throws");
+    heading("A call handler that throws");
     bool caught = false;
     try {
         (void)calc.call<double>(calculator::divide_op{}, 1, 0);
@@ -108,7 +108,7 @@ bool run_call() {
     }
     ok &= check(caught, "exception from the handler surfaced at the caller");
 
-    section("Deadlock protection");
+    heading("Deadlock protection");
     // call() deadlocks if the caller holds the thread the target needs. The
     // framework rejects these cases up front instead of hanging:
     //   1. call() from on_start()
@@ -125,7 +125,7 @@ bool run_call() {
     }
     ok &= check(rejected, "an actor asking itself was rejected, not left to deadlock");
 
-    section("Shutting down");
+    heading("Shutting down");
     cas::system::shutdown();
     cas::system::wait_for_shutdown();
     return ok;

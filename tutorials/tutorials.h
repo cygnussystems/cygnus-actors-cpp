@@ -66,9 +66,9 @@ extern const int g_tutorial_count;
 // scaffolding. They are NOT part of the framework API.
 // ---------------------------------------------------------------------------
 
-// Prints a labelled section header, so the console output of a tutorial maps
-// onto the sections of its source file.
-void section(const std::string& title);
+// Prints an underlined heading, so the console output of a tutorial maps
+// onto the steps of its source file.
+void heading(const std::string& title);
 
 // Reports a single check. Prints a pass/fail line and returns the condition,
 // so tutorials can accumulate a result without early-exiting.

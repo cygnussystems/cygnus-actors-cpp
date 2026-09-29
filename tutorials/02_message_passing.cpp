@@ -91,11 +91,11 @@ namespace tut {
 bool run_message_passing() {
     bool ok = true;
 
-    section("Starting the system");
+    heading("Starting the system");
     auto acct = cas::system::create<account>();
     cas::system::start();
 
-    section("Sending messages");
+    heading("Sending messages");
     // Messages from one sender to one actor arrive in the order sent, so this
     // sequence is deterministic.
     auto deposit = [&](int amount) { account::deposit m; m.amount = amount; acct.tell(m); };
@@ -108,14 +108,14 @@ bool run_message_passing() {
     ok &= check(wait_until([] { return account::rejected.load() == 1; }),
                 "over-balance withdrawal was rejected");
 
-    section("Sending an unregistered message type");
+    heading("Sending an unregistered message type");
     // Any message type can be sent; account simply has no handler for this one.
     struct unsupported : cas::message_base {};
     acct.tell(unsupported{});
     ok &= check(wait_until([] { return account::unhandled.load() == 1; }),
                 "unhandled message reached on_unhandled_message()");
 
-    section("Shutting down");
+    heading("Shutting down");
     // wait_for_shutdown() guarantees on_stop() has run before we read its result.
     cas::system::shutdown();
     cas::system::wait_for_shutdown();

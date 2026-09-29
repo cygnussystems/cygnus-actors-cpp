@@ -61,22 +61,22 @@ namespace tut {
 bool run_inline_actor() {
     bool ok = true;
 
-    section("Starting an inline actor");
+    heading("Starting an inline actor");
     auto counter_ref = cas::system::create<counter>();
     cas::system::start();
 
-    section("tell() runs the handler before it returns");
+    heading("tell() runs the handler before it returns");
     // With an ordinary actor we would need wait_until() here. Not with this one.
     counter_ref.tell(counter::record{});
     ok &= check(counter::records.load() == 1, "the handler had already run when tell() returned");
 
-    section("The handler runs on the sender's thread");
+    heading("The handler runs on the sender's thread");
     // So a slow handler blocks the sender, and the actor's state is protected
     // only by the mutex, not by the one-thread-per-actor rule.
     ok &= check(counter::handler_thread.load() == std::this_thread::get_id(),
                 "the handler ran on the calling thread, not a worker");
 
-    section("Concurrent senders");
+    heading("Concurrent senders");
     // The mutex serialises senders, so the count is exact - but they now
     // contend for a lock where an ordinary actor's mailbox would absorb them.
     counter::records.store(0);
@@ -98,7 +98,7 @@ bool run_inline_actor() {
     ok &= check(counter::records.load() == thread_count * per_thread,
                 "all 1000 sends from 4 threads were counted exactly");
 
-    section("Shut down");
+    heading("Shut down");
     cas::system::shutdown();
     cas::system::wait_for_shutdown();
     return ok;
