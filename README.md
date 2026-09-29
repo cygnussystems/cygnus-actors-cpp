@@ -1015,7 +1015,8 @@ static void configure(const system_config& config);  // throws if running
 // Create an actor (call before or after start); args go to T's constructor
 template<typename T, typename... Args> static actor_ref create(Args&&... args);
 
-// Start the system (call once)
+// Start the system. Again after a shutdown only after reset() (else throws
+// std::logic_error); while running, a no-op.
 static void start();
 
 // Initiate shutdown; blocks until queues drain or config.drain_timeout

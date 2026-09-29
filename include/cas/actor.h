@@ -201,6 +201,10 @@ private:
     // target yet. Only ever read/written by the thread running on_start().
     bool m_in_on_start = false;
 
+    // Set by the one on_start() call (run_on_start()): INVARIANT 6 holds by
+    // construction, whatever path reaches it.
+    std::atomic<bool> m_started{false};
+
     // Stop protocol (system::stop_actor()). INVARIANT 1: the stop - timer
     // cancellation, discard or drain, on_shutdown(), on_stop() - is performed
     // by the thread that executes this actor, never by the caller.
@@ -274,6 +278,11 @@ protected:
     // Internal: current stop ownership (acquire load). Used by subclasses that
     // run their own execution loop (fast_actor) to notice a requested stop.
     stop_phase current_stop_phase() const;
+
+    // Internal: run on_start() unless it has already run (INVARIANT 6), with
+    // the actor as current context and marked initialising. Returns false if
+    // it had already run. An exception from on_start() propagates.
+    bool run_on_start();
 
     // Internal: count a message this actor will never deliver as a dead letter.
     // For subclasses that override enqueue_message().

@@ -27,7 +27,8 @@ class actor_ref;
 struct scheduled_timer;
 struct message_base;
 
-// Threading model for actors
+// Not used by the framework (the actor's type decides its threading: pooled
+// actor, fast_actor, inline_actor). Kept for 1.x API compatibility.
 enum class threading_model {
     pooled,    // Runs on shared thread pool (default)
     dedicated  // Runs on its own dedicated thread
@@ -171,6 +172,8 @@ private:
     // Set when shutdown() begins: an actor created from then on is sent
     // system_shutdown by register_actor(), since shutdown() will not see it
     std::atomic<bool> m_shutdown_started{false};
+    // start() has run since the last reset(): a second start() throws
+    std::atomic<bool> m_has_run{false};
 
     // True while worker and fast-actor threads may be executing actors: set in
     // start() before they are launched, cleared in wait_for_shutdown() after

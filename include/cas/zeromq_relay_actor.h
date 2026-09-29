@@ -72,7 +72,7 @@ struct zeromq_config : public cas::message_base {
                                         //   0 = block at once, -1 = never block (busy-poll, a full core)
     int send_timeout_ms = 1000;         // queue policy: how long an unsent message may wait; also the linger on close
     zeromq_send_policy send_policy = zeromq_send_policy::queue;  // when a peer is not keeping up
-    int max_queued_sends = 10000;       // queue policy: unsent messages held in total; beyond -> reported
+    int max_queued_sends = 10000;       // queue policy: unsent messages held in total; beyond -> reported; 0 = no limit
     int send_hwm = 1000;                // ZeroMQ send high-water mark (per peer), set at bind/connect
     int recv_hwm = 1000;                // ZeroMQ receive high-water mark, set at bind/connect
     int recv_timeout_ms = 1000;         // No effect: receives are non-blocking
@@ -130,7 +130,6 @@ protected:
     void on_send(const msg::zeromq_send& msg);
     void on_route(const msg::zeromq_route& msg);
     void on_config(const msg::zeromq_config& msg);
-    void on_status_request(const message_base& msg);
 
     // Handle waiting inbound messages (up to a budget); returns how many
     size_t poll();

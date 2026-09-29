@@ -659,6 +659,25 @@ TEST_CASE("Send policy queue: a full queue is reported at once",
     REQUIRE(s.p->queued.load() == 3);
 }
 
+TEST_CASE("Send policy queue: max_queued_sends = 0 means no limit",
+          "[08_zeromq_relay][backpressure]") {
+    CAS_TEST_GUARD();
+    using namespace relay_backpressure;
+    stalled_peer peer("inproc://bp-unlimited");
+    cas::msg::zeromq_config config;
+    config.send_policy = cas::msg::zeromq_send_policy::queue;
+    config.send_timeout_ms = 10000;
+    config.max_queued_sends = 0;
+    setup s("inproc://bp-unlimited", config);
+
+    send_batch batch;
+    batch.count = 50;
+    s.producer_ref.tell(batch);
+    REQUIRE(relay_e2e::wait_for([&] { s.refresh_status(); return s.p->queued.load() > 0; }));
+    REQUIRE(s.p->error_count("") == 0);  // nothing refused
+    REQUIRE(peer.read(50).size() == 50);
+}
+
 TEST_CASE("Send policy fail: reported to the sender at once",
           "[08_zeromq_relay][backpressure]") {
     CAS_TEST_GUARD();

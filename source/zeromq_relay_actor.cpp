@@ -7,6 +7,7 @@
 #include "cas/actor_ref_impl.h"
 #include "cas/actor_impl.h"
 #include <iostream>
+#include <limits>
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
@@ -308,7 +309,9 @@ void zeromq_relay_actor::on_config(const msg::zeromq_config& msg) {
     m_request_timeout_ms = msg.request_timeout_ms;
     m_spin_before_block_us = msg.spin_before_block_us;
     m_send_policy = msg.send_policy;
-    m_max_queued_sends = msg.max_queued_sends > 0 ? static_cast<size_t>(msg.max_queued_sends) : 0;
+    // 0 (or less) = no limit, like the framework's other limits
+    m_max_queued_sends = msg.max_queued_sends > 0 ? static_cast<size_t>(msg.max_queued_sends)
+                                                  : std::numeric_limits<size_t>::max();
     m_options.send_hwm = msg.send_hwm;
     m_options.recv_hwm = msg.recv_hwm;
 

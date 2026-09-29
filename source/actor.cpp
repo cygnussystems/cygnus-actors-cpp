@@ -337,6 +337,15 @@ void actor::dispatch_message(message_base* msg) {
     }
 }
 
+bool actor::run_on_start() {
+    if (m_started.exchange(true)) {
+        return false;
+    }
+    on_start_scope scope(this);
+    on_start();
+    return true;
+}
+
 exception_action actor::on_handler_exception(const message_base& /*msg*/, std::exception_ptr /*error*/) {
     return exception_action::resume;
 }

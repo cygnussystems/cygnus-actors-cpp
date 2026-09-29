@@ -26,9 +26,8 @@ void fast_actor::cpu_pause() {
 void fast_actor::run_dedicated_thread() {
     // Call on_start() for initialization
     {
-        on_start_scope scope(this);
         try {
-            on_start();
+            run_on_start();
         } catch (...) {
             // Nobody to hand it to on this thread (for other actors the
             // caller of start()/create() gets it). A failed on_start() is a

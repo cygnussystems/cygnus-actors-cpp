@@ -220,9 +220,12 @@ Handler exceptions (issue 014) follow the same rule: caught in `actor::dispatch_
 **Enforced by:**
 - `system::start()` starts actors registered before it ran; `system::register_actor()`
   starts actors created after it. `m_running` decides which, so neither double-starts.
-- `on_start_scope` (in `include/cas/actor.h`) sets the actor context and the
-  `m_in_on_start` flag at all three call sites — `start()`, `register_actor()`, and
-  `fast_actor::run_dedicated_thread()`.
+- All three call sites — `start()`, `register_actor()`,
+  `fast_actor::run_dedicated_thread()` — go through `actor::run_on_start()`, which
+  runs `on_start()` only if the actor's `m_started` flag was not yet set, inside an
+  `on_start_scope` (actor context + `m_in_on_start`).
+- `system::start()` after a shutdown without `reset()` throws `std::logic_error`
+  (it would have re-run `on_start()` on stopped actors).
 - `actor_ref::call()` throws `on_start_violation` when the caller is initialising.
 
 **Why blocking is fatal here:** at startup no worker thread has been launched yet,

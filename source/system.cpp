@@ -59,8 +59,16 @@ void system::start() {
     if (inst.m_running) {
         return;  // Already running
     }
+    if (inst.m_has_run) {
+        // Every actor was stopped by the last shutdown; starting them again
+        // cannot work (and would re-run no on_start()). A programming error.
+        throw std::logic_error(
+            "system::start() after a shutdown: call system::reset() first "
+            "(and create the actors again)");
+    }
 
     inst.m_running = true;
+    inst.m_has_run = true;
     inst.m_shutdown_requested = false;
     inst.m_shutdown_started = false;
 
@@ -106,11 +114,8 @@ void system::start() {
     }
 
     for (auto& actor_ptr : to_start) {
-        {
-            // Sets sender context and marks the actor as initialising
-            on_start_scope scope(actor_ptr.get());
-            actor_ptr->on_start();
-        }
+        // Sets sender context and marks the actor as initialising
+        actor_ptr->run_on_start();
         // Idle, or on the ready queue if messages were sent to it before
         // start(); either way the workers launched below pick it up.
         activate_after_start(actor_ptr.get());
@@ -316,6 +321,8 @@ void system::reset() {
         inst.m_watching.clear();
     }
 
+    inst.m_has_run = false;
+
     // Reset instance ID counter
     inst.m_next_instance_id.store(1);
 
@@ -429,8 +436,7 @@ void system::register_actor(std::shared_ptr<actor> actor_ptr) {
     // Start the actor if the system is already running. No lock is held here.
     if (needs_start) {
         try {
-            on_start_scope scope(actor_ptr.get());
-            actor_ptr->on_start();
+            actor_ptr->run_on_start();
         } catch (...) {
             // The caller of create() gets the exception; the half-created
             // actor must not stay behind with a mailbox nobody will read

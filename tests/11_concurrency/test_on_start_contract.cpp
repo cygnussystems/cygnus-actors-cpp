@@ -185,3 +185,42 @@ TEST_CASE("is_initialising() is false outside on_start()",
 
     TEST_CLEANUP();
 }
+
+// INVARIANT 6 by construction: on_start() goes through actor::run_on_start(),
+// which runs it at most once. Restarting a shut-down system without reset()
+// used to re-run on_start() on the stopped actors; it now throws.
+namespace on_start_once_test {
+    std::atomic<int> g_starts{0};
+    class counted : public cas::actor {
+    protected:
+        void on_start() override { g_starts++; }
+    };
+    class counted_fast : public cas::fast_actor {
+    protected:
+        void on_start() override { g_starts++; }
+    };
+}
+
+TEST_CASE("start() after a shutdown without reset() throws and runs no on_start() again",
+          "[11_concurrency][on_start][invariant6]") {
+    CAS_TEST_GUARD();
+    using namespace on_start_once_test;
+    g_starts = 0;
+    cas::system::create<counted>();
+    cas::system::create<counted_fast>();
+    cas::system::start();
+    REQUIRE(wait_until([] { return g_starts.load() == 2; }));
+
+    cas::system::start();  // while running: a harmless no-op
+    cas::system::shutdown();
+    cas::system::wait_for_shutdown();
+
+    REQUIRE_THROWS_AS(cas::system::start(), std::logic_error);
+    REQUIRE(g_starts.load() == 2);  // nobody started twice
+
+    // After reset() the system starts again, with new actors
+    cas::system::reset();
+    cas::system::create<counted>();
+    cas::system::start();
+    REQUIRE(wait_until([] { return g_starts.load() == 3; }));
+}

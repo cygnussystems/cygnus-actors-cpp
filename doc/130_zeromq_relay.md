@@ -190,7 +190,7 @@ struct zeromq_config : public cas::message_base {
     int spin_before_block_us = 0;   // Idle: poll this long before blocking; -1 = never block
     int send_timeout_ms = 1000;     // queue policy: how long an unsent message may wait; also the linger on close
     zeromq_send_policy send_policy = zeromq_send_policy::queue;
-    int max_queued_sends = 10000;   // queue policy: unsent messages held in total
+    int max_queued_sends = 10000;   // queue policy: unsent messages held in total; 0 = no limit
     int send_hwm = 1000;            // ZeroMQ send high-water mark (per peer), set at bind/connect
     int recv_hwm = 1000;            // ZeroMQ receive high-water mark, set at bind/connect
     int recv_timeout_ms = 1000;     // No effect: receives are non-blocking

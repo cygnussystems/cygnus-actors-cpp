@@ -126,6 +126,13 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`on_start()` can no longer run twice.** Calling `system::start()` again
+  after a shutdown without `system::reset()` re-ran `on_start()` on the
+  stopped actors. Every `on_start()` now goes through one function that runs
+  it at most once, and such a `start()` throws `std::logic_error` (call
+  `reset()` first). `start()` while running is still a no-op.
+- **`zeromq_config::max_queued_sends = 0` means no limit**, like the
+  framework's other limits (it made the queue policy refuse every held send).
 - **Three more ways user code could take down the process** (INVARIANT 7).
   An `inline_actor` runs its handler on the sending thread and passes
   exceptions to the sender - but some sends come from the framework, with no
