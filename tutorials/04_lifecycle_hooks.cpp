@@ -60,7 +60,8 @@ private:
 
 class worker : public cas::actor {
 public:
-    explicit worker(cas::actor_ref undertaker_ref) : m_undertaker(std::move(undertaker_ref)) {}
+    explicit worker(cas::actor_ref undertaker_ref)
+        : m_undertaker(undertaker_ref) {}
 
     // Observed by the tutorial: the order hooks and handlers ran in.
     static std::vector<std::string> history() {

@@ -68,7 +68,7 @@ public:
     static inline std::atomic<int> s_order_count{0};
     static inline std::atomic<int> s_error_count{0};
 
-    explicit exchange(cas::actor_ref relay) : m_relay(std::move(relay)) {}
+    explicit exchange(cas::actor_ref relay) : m_relay(relay) {}
 
 protected:
     void on_start() override {
@@ -159,7 +159,7 @@ public:
         return s_last_ack;
     }
 
-    explicit trader(cas::actor_ref relay) : m_relay(std::move(relay)) {}
+    explicit trader(cas::actor_ref relay) : m_relay(relay) {}
 
 protected:
     void on_start() override {
@@ -225,7 +225,7 @@ class status_monitor : public cas::actor {
 public:
     static inline std::atomic<long long> s_pending_count{-1};  // observed by the tutorial
 
-    explicit status_monitor(cas::actor_ref relay) : m_relay(std::move(relay)) {}
+    explicit status_monitor(cas::actor_ref relay) : m_relay(relay) {}
 
 protected:
     void on_start() override {

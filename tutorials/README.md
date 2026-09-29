@@ -108,6 +108,10 @@ published by the actor that owns it, as `static inline std::atomic` members
 (`s_pong_count`) marked "observed by the tutorial". Real programs reply with
 a message instead (tutorial 3).
 
+**`actor_ref` is a value.** It is a cheap handle to an actor (a shared
+pointer inside): pass it, copy it, store it - `m_partner(partner)`, no
+`std::move`.
+
 **Plain syntax: no lambdas.** Handlers are private member functions, so
 `on_start()` reads as the list of messages the actor accepts; callbacks are
 static member functions; waits name what they wait for -

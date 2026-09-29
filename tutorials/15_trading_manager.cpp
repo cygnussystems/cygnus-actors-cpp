@@ -68,7 +68,7 @@ namespace actor {
 // manager holds its actor_ref, so nobody needs to look it up.
 class stream : public cas::actor {
 public:
-    explicit stream(std::string subscriber) : m_subscriber(std::move(subscriber)) {}
+    explicit stream(std::string subscriber) : m_subscriber(subscriber) {}
 
     static inline std::atomic<int> s_stopped_count{0};  // observed by the tutorial
     static inline std::atomic<int> s_update_count{0};
@@ -100,7 +100,7 @@ private:
 class trading_system : public cas::actor {
 public:
     trading_system(std::string id, std::vector<cas::actor_ref> streams)
-        : m_id(std::move(id)), m_streams(std::move(streams)) {}
+        : m_id(id), m_streams(streams) {}
 
     // Named, so the outside world (here: main) can reach it by id
     static std::string name_for(const std::string& id) { return "ts." + id; }
@@ -182,7 +182,7 @@ private:
         // id, which termination_msg carries: names can be reused by a
         // relaunch, instance ids never are.
         cas::system::watch(self(), sys.ts);
-        m_systems[sys.ts.get_actor()->instance_id()] = std::move(sys);
+        m_systems[sys.ts.get_actor()->instance_id()] = sys;
         std::cout << "  manager: launched " << _msg.system_id << " with "
                   << _msg.subscribers.size() << " stream(s)\n";
         s_launched_count.fetch_add(1);

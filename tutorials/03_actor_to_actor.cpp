@@ -77,7 +77,7 @@ public:
 
     // Arguments to create<pinger>(...) are forwarded here: this is how an
     // actor gets to know its collaborators.
-    explicit pinger(cas::actor_ref partner) : m_partner(std::move(partner)) {}
+    explicit pinger(cas::actor_ref partner) : m_partner(partner) {}
 
 protected:
     void on_start() override {

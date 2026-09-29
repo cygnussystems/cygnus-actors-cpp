@@ -41,7 +41,7 @@ class worker : public cas::actor {
 public:
     static inline std::atomic<int> s_job_count{0};       // observed by the tutorial
 
-    explicit worker(std::string name) : m_name(std::move(name)) {}
+    explicit worker(std::string name) : m_name(name) {}
 
 protected:
     void on_start() override {
