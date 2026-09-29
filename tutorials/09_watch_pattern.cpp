@@ -105,16 +105,16 @@ bool run_watch_pattern() {
 
     heading("Watching");
     //------------------
-    auto worker_ref = cas::system::create<actor::fragile_worker>();
-    auto supervisor_ref = cas::system::create<actor::supervisor>();
+    auto worker = cas::system::create<actor::fragile_worker>();
+    auto supervisor = cas::system::create<actor::supervisor>();
     cas::system::start();
     // watch(watcher, watched): one-way; an actor may watch several others.
-    cas::system::watch(supervisor_ref, worker_ref);
-    worker_ref.tell(msg::do_work{});
+    cas::system::watch(supervisor, worker);
+    worker.tell(msg::do_work{});
 
     heading("Stopping the watched actor");
     //------------------------------------
-    cas::system::stop_actor(worker_ref);
+    cas::system::stop_actor(worker);
     ok &= check(wait_until(actor::supervisor::s_termination_count, 1),
                 "supervisor was notified of the termination");
     ok &= check(actor::supervisor::last_terminated() == "fragile_worker",
@@ -126,12 +126,12 @@ bool run_watch_pattern() {
     auto restarted = cas::actor_registry::get("fragile_worker");
     ok &= check(restarted.is_valid() && restarted.is_running(),
                 "the restarted worker is registered and running");
-    ok &= check(!worker_ref.is_running(), "the original reference is still stale after the restart");
+    ok &= check(!worker.is_running(), "the original reference is still stale after the restart");
 
     heading("Unwatching, then stopping again");
     //-----------------------------------------
     // unwatch() spares the watcher a notification it would only ignore.
-    cas::system::unwatch(supervisor_ref, restarted);
+    cas::system::unwatch(supervisor, restarted);
     const int before = actor::supervisor::s_termination_count.load();
     cas::system::stop_actor(restarted);
     std::this_thread::sleep_for(std::chrono::milliseconds(80));

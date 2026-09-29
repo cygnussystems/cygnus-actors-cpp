@@ -103,9 +103,9 @@ bool run_timers() {
 
     heading("Arming timers");
     //-----------------------
-    auto ticker_ref = cas::system::create<actor::ticker>();
+    auto ticker = cas::system::create<actor::ticker>();
     cas::system::start();
-    ticker_ref.tell(msg::arm{});
+    ticker.tell(msg::arm{});
 
     ok &= check(wait_until(actor::ticker::s_one_shot_count, 1),
                 "one-shot timer fired exactly once");

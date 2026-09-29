@@ -121,15 +121,15 @@ bool run_actor_to_actor() {
 
     heading("Two actors, one knowing the other");
     //-------------------------------------------
-    auto ponger_ref = cas::system::create<actor::ponger>();
-    auto pinger_ref = cas::system::create<actor::pinger>(ponger_ref);
+    auto ponger = cas::system::create<actor::ponger>();
+    auto pinger = cas::system::create<actor::pinger>(ponger);
     cas::system::start();
 
     heading("The exchange");
     //----------------------
     // main() is not an actor, so this message has no sender - fine, it needs
     // no reply.
-    pinger_ref.tell(msg::start{});
+    pinger.tell(msg::start{});
     ok &= check(wait_until(actor::pinger::s_pong_count, actor::pinger::s_target_rounds), "3 rounds of ping/pong completed");
     ok &= check(actor::ponger::s_ping_count.load() == actor::pinger::s_target_rounds, "one ping per round");
     ok &= check(actor::ponger::s_without_sender_count.load() == 0, "every ping had a sender to reply to");

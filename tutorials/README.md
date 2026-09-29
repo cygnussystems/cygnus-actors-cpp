@@ -110,7 +110,8 @@ a message instead (tutorial 3).
 
 **`actor_ref` is a value.** It is a cheap handle to an actor (a shared
 pointer inside): pass it, copy it, store it - `m_partner(partner)`, no
-`std::move`.
+`std::move`. Name it after the actor - `auto greeter = create<actor::greeter>()`,
+not `greeter_ref`; the type already says it is a reference.
 
 **Plain syntax: no lambdas.** Handlers are private member functions, so
 `on_start()` reads as the list of messages the actor accepts; callbacks are

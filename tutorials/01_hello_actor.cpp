@@ -67,9 +67,9 @@ bool run_hello_actor() {
     //----------------------------
     // create() builds the actor and returns a handle; start() runs every
     // actor's on_start() and the worker threads.
-    auto greeter_ref = cas::system::create<actor::greeter>();
+    auto greeter = cas::system::create<actor::greeter>();
     cas::system::start();
-    ok &= check(greeter_ref.is_valid() && cas::system::is_running(), "actor created, system running");
+    ok &= check(greeter.is_valid() && cas::system::is_running(), "actor created, system running");
 
     heading("Send a message");
     //------------------------
@@ -77,7 +77,7 @@ bool run_hello_actor() {
     // the handler runs later, on the actor's thread.
     msg::greet greeting;
     greeting.name = "World";
-    greeter_ref.tell(greeting);
+    greeter.tell(greeting);
     ok &= check(wait_until(actor::greeter::s_greeting_count, 1), "the handler ran once");
 
     heading("Shut down");

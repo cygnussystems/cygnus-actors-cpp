@@ -77,25 +77,25 @@ bool run_dynamic_removal() {
 
     heading("Starting a worker");
     //---------------------------
-    auto worker_ref = cas::system::create<actor::worker>("worker_a");
+    auto worker = cas::system::create<actor::worker>("worker_a");
     cas::system::start();
-    send_job(worker_ref, 1);
+    send_job(worker, 1);
     ok &= check(wait_until(actor::worker::s_job_count, 1), "worker handled a job normally");
 
     heading("Stopping the worker (default: drain)");
     //----------------------------------------------
     // stop_actor() stops one actor; the system keeps running. By default it
     // drains - queued messages are handled first - and blocks until done.
-    ok &= check(cas::system::stop_actor(worker_ref), "stop_actor() reported success");
+    ok &= check(cas::system::stop_actor(worker), "stop_actor() reported success");
     ok &= check(cas::system::is_running(), "system still running after stopping one actor");
 
     heading("The reference is now stale");
     //------------------------------------
     // Not dangling - safe to use - but messages through it are silently
     // dropped (tutorial 10 shows how to observe that).
-    ok &= check(!worker_ref.is_running(), "is_running() is false for the stopped actor");
+    ok &= check(!worker.is_running(), "is_running() is false for the stopped actor");
     const int before = actor::worker::s_job_count.load();
-    send_job(worker_ref, 99);
+    send_job(worker, 99);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     ok &= check(actor::worker::s_job_count.load() == before, "a message to a stopped actor was silently dropped");
 

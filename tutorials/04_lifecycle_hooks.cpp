@@ -60,8 +60,8 @@ private:
 
 class worker : public cas::actor {
 public:
-    explicit worker(cas::actor_ref undertaker_ref)
-        : m_undertaker(undertaker_ref) {}
+    explicit worker(cas::actor_ref undertaker)
+        : m_undertaker(undertaker) {}
 
     // Observed by the tutorial: the order hooks and handlers ran in.
     static std::vector<std::string> history() {
@@ -139,8 +139,8 @@ bool run_lifecycle_hooks() {
 
     heading("Starting");
     //------------------
-    auto undertaker_ref = cas::system::create<actor::undertaker>();
-    auto worker_ref = cas::system::create<actor::worker>(undertaker_ref);
+    auto undertaker = cas::system::create<actor::undertaker>();
+    auto worker = cas::system::create<actor::worker>(undertaker);
     cas::system::start();
 
     heading("Queueing work, then shutting down at once");
@@ -150,7 +150,7 @@ bool run_lifecycle_hooks() {
     for (int i = 1; i <= 3; ++i) {
         msg::work job;
         job.id = i;
-        worker_ref.tell(job);
+        worker.tell(job);
     }
     cas::system::shutdown();
     cas::system::wait_for_shutdown();

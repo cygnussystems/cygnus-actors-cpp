@@ -75,14 +75,14 @@ private:
     void on_report(const msg::report& _msg) {
         // get() returns an invalid ref if nothing is registered under the name
         // or the actor has stopped. Telling an invalid ref goes nowhere.
-        auto logger_ref = cas::actor_registry::get(logger::s_registry_name);
-        if (!logger_ref.is_valid()) {
+        auto logger = cas::actor_registry::get(logger::s_registry_name);
+        if (!logger.is_valid()) {
             s_failed_lookup_count.fetch_add(1);
             return;
         }
         msg::log_line line;
         line.text = _msg.text;
-        logger_ref.tell(line);
+        logger.tell(line);
     }
 };
 
@@ -98,7 +98,7 @@ bool run_actor_registry() {
     heading("Starting two named actors");
     //-----------------------------------
     cas::system::create<actor::logger>();  // no need to keep the ref: it can be found by name
-    auto reporter_ref = cas::system::create<actor::reporter>();
+    auto reporter = cas::system::create<actor::reporter>();
     cas::system::start();
 
     heading("Looking actors up by name");
@@ -121,7 +121,7 @@ bool run_actor_registry() {
     //-------------------------------------------
     msg::report req;
     req.text = "hello from the reporter";
-    reporter_ref.tell(req);
+    reporter.tell(req);
     ok &= check(wait_until(actor::logger::s_line_count, 1),
                 "reporter found the logger and the message arrived");
     ok &= check(actor::reporter::s_failed_lookup_count.load() == 0, "no lookup failed");

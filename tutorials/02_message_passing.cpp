@@ -120,25 +120,25 @@ bool run_message_passing() {
 
     heading("Starting the system");
     //-----------------------------
-    auto account_ref = cas::system::create<actor::account>();
+    auto account = cas::system::create<actor::account>();
     cas::system::start();
 
     heading("Sending messages");
     //--------------------------
     // Messages from one sender to one actor arrive in the order sent, so this
     // sequence is deterministic.
-    actor::account::send_deposit(account_ref, 100);
-    actor::account::send_deposit(account_ref, 50);
-    actor::account::send_withdraw(account_ref, 30);
-    actor::account::send_withdraw(account_ref, 500);  // more than the balance: rejected
-    account_ref.tell(msg::print_balance{});
+    actor::account::send_deposit(account, 100);
+    actor::account::send_deposit(account, 50);
+    actor::account::send_withdraw(account, 30);
+    actor::account::send_withdraw(account, 500);  // more than the balance: rejected
+    account.tell(msg::print_balance{});
     ok &= check(wait_until(actor::account::s_rejected_count, 1),
                 "over-balance withdrawal was rejected");
 
     heading("Sending an unregistered message type");
     //----------------------------------------------
     // Any message type can be sent; account simply has no handler for this one.
-    account_ref.tell(msg::unsupported{});
+    account.tell(msg::unsupported{});
     ok &= check(wait_until(actor::account::s_unhandled_count, 1),
                 "unhandled message reached on_unhandled_message()");
 

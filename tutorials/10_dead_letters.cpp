@@ -102,17 +102,17 @@ bool run_dead_letters() {
 
     heading("Starting");
     //------------------
-    auto receiver_ref = cas::system::create<actor::receiver>();
+    auto receiver = cas::system::create<actor::receiver>();
     cas::system::start();
-    send_payload(receiver_ref, 1);
+    send_payload(receiver, 1);
     ok &= check(wait_until(actor::receiver::s_delivered_count, 1), "a normal message was delivered");
 
     heading("Sending to a stopped actor");
     //------------------------------------
     // Statistics are always collected; nothing needs enabling.
     cas::system::reset_dead_letter_stats();
-    cas::system::stop_actor(receiver_ref);
-    send_payload(receiver_ref, 2);                       // nowhere to go
+    cas::system::stop_actor(receiver);
+    send_payload(receiver, 2);                       // nowhere to go
     ok &= check(wait_until(&dead_letter_log::any_dropped),
                 "the undeliverable message was counted as a dead letter");
     const auto stats = cas::system::get_dead_letter_stats();
@@ -125,7 +125,7 @@ bool run_dead_letters() {
     // message type, what state. It runs on the send path - keep it short and
     // thread-safe.
     cas::system::set_dead_letter_handler(&dead_letter_log::record);
-    send_payload(receiver_ref, 3);
+    send_payload(receiver, 3);
     ok &= check(wait_until(&dead_letter_log::any_reported),
                 "the handler was called for the undeliverable message");
     ok &= check(dead_letter_log::targets().front() == "receiver",
@@ -136,7 +136,7 @@ bool run_dead_letters() {
     // The handler is global and outlives any actor: remove it when done.
     cas::system::clear_dead_letter_handler();
     const std::size_t before = dead_letter_log::targets().size();
-    send_payload(receiver_ref, 4);
+    send_payload(receiver, 4);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     ok &= check(dead_letter_log::targets().size() == before,
                 "the handler stopped being called after clearing it");

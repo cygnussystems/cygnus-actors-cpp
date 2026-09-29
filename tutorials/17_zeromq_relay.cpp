@@ -256,20 +256,20 @@ bool run_zeromq_relay() {
     //----------------------------------------------
     auto server_relay = cas::system::create<cas::zeromq_relay_actor>();
     auto client_relay = cas::system::create<cas::zeromq_relay_actor>();
-    auto exchange_ref = cas::system::create<actor::exchange>(server_relay);
-    auto trader_ref = cas::system::create<actor::trader>(client_relay);
+    auto exchange = cas::system::create<actor::exchange>(server_relay);
+    auto trader = cas::system::create<actor::trader>(client_relay);
     cas::system::start();
 
     heading("1. The server binds, then the client connects");
     //-------------------------------------------------------
-    exchange_ref.tell(msg::listen{});
+    exchange.tell(msg::listen{});
     ok &= check(wait_until(actor::exchange::s_bound), "the exchange's relay is bound");
-    trader_ref.tell(msg::connect{});
+    trader.tell(msg::connect{});
     ok &= check(wait_until(actor::trader::s_connected), "the trader's relay is connected");
 
     heading("2. The trader sends an order; the exchange acknowledges it");
     //--------------------------------------------------------------------
-    trader_ref.tell(msg::place_order{});
+    trader.tell(msg::place_order{});
     ok &= check(wait_until(actor::exchange::s_order_count, 1),
                 "the exchange received the order (routed by message_type)");
     ok &= check(wait_until(actor::trader::s_ack_count, 1),
@@ -279,7 +279,7 @@ bool run_zeromq_relay() {
 
     heading("3. The exchange pushes market data");
     //--------------------------------------------
-    exchange_ref.tell(msg::push_market_data{});
+    exchange.tell(msg::push_market_data{});
     ok &= check(wait_until(actor::trader::s_market_data_count, 1),
                 "the trader got it through its default route");
 
@@ -291,7 +291,7 @@ bool run_zeromq_relay() {
 
     heading("5. Binding twice is reported to the sender");
     //----------------------------------------------------
-    exchange_ref.tell(msg::bind_again{});
+    exchange.tell(msg::bind_again{});
     ok &= check(wait_until(actor::exchange::s_error_count, 1), "the exchange received a zeromq_error");
 
     heading("Shutting down");

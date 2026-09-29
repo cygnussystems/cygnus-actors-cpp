@@ -82,13 +82,13 @@ bool run_inline_actor() {
 
     heading("Starting an inline actor");
     //----------------------------------
-    auto counter_ref = cas::system::create<actor::counter>();
+    auto counter = cas::system::create<actor::counter>();
     cas::system::start();
 
     heading("tell() runs the handler before it returns");
     //---------------------------------------------------
     // With an ordinary actor we would need wait_until() here. Not with this one.
-    counter_ref.tell(msg::record{});
+    counter.tell(msg::record{});
     ok &= check(actor::counter::s_record_count.load() == 1, "the handler had already run when tell() returned");
 
     heading("The handler runs on the sender's thread");
@@ -107,7 +107,7 @@ bool run_inline_actor() {
     constexpr int per_thread = 250;
     std::vector<std::thread> senders;
     for (int t = 0; t < thread_count; ++t) {
-        senders.emplace_back(&actor::counter::send_records, counter_ref, per_thread);
+        senders.emplace_back(&actor::counter::send_records, counter, per_thread);
     }
     for (auto& s : senders) {
         s.join();

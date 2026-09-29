@@ -87,14 +87,14 @@ bool run_call() {
 
     heading("Starting");
     //------------------
-    auto calculator_ref = cas::system::create<actor::calculator>();
+    auto calculator = cas::system::create<actor::calculator>();
     cas::system::start();
 
     heading("Asking for a value");
     //----------------------------
     // call<Return>(tag, args...) blocks until the handler has returned.
-    const int sum = calculator_ref.call<int>(msg::add_op{}, 10, 5);
-    const double quotient = calculator_ref.call<double>(msg::divide_op{}, 7, 2);
+    const int sum = calculator.call<int>(msg::add_op{}, 10, 5);
+    const double quotient = calculator.call<double>(msg::divide_op{}, 7, 2);
     std::cout << "  add(10, 5) = " << sum << ", divide(7, 2) = " << quotient << "\n";
     ok &= check(sum == 15, "call<int>(add_op{}, 10, 5) returned 15");
     ok &= check(quotient == 3.5, "call<double>(divide_op{}, 7, 2) returned 3.5");
@@ -103,17 +103,17 @@ bool run_call() {
     //-------------------------------
     // Returns an empty optional instead of blocking forever. Prefer it wherever
     // the target might be slow or stuck.
-    auto quick = calculator_ref.call<int>(msg::add_op{}, 1000ms, 2, 3);
+    auto quick = calculator.call<int>(msg::add_op{}, 1000ms, 2, 3);
     ok &= check(quick.has_value() && *quick == 5,
                 "a fast operation returned a value within the timeout");
-    auto late = calculator_ref.call<int>(msg::slow_op{}, 50ms, 500);
+    auto late = calculator.call<int>(msg::slow_op{}, 50ms, 500);
     ok &= check(!late.has_value(), "a slow operation timed out and returned an empty optional");
 
     heading("A call handler that throws");
     //------------------------------------
     bool caught = false;
     try {
-        (void)calculator_ref.call<double>(msg::divide_op{}, 1, 0);
+        (void)calculator.call<double>(msg::divide_op{}, 1, 0);
     } catch (const std::exception& e) {
         caught = true;
         std::cout << "  caught: " << e.what() << "\n";
@@ -131,7 +131,7 @@ bool run_call() {
     // (tutorial 3). main() is not an actor, so its calls above were safe.
     bool rejected = false;
     try {
-        (void)calculator_ref.call<int>(msg::self_ask_op{}, 2000ms);
+        (void)calculator.call<int>(msg::self_ask_op{}, 2000ms);
     } catch (const std::exception& e) {
         rejected = true;
         std::cout << "  rejected: " << e.what() << "\n";
