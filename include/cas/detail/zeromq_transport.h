@@ -12,6 +12,10 @@ namespace cas::detail {
 /// (client). All relays in a process share one ZeroMQ context, so inproc://
 /// works between them.
 ///
+/// wait() is a zmq_poll on the data socket and an internal inproc PAIR used
+/// by wake(); wake() sends on the other end of that pair under a mutex (a
+/// ZeroMQ socket may move between threads given a full barrier).
+///
 /// Wire format - one multipart message per envelope:
 ///   client -> server: [correlation_id][payload][content_type][message_type]
 ///   server -> client: same four frames; the ROUTER prepends / strips the
@@ -31,6 +35,8 @@ public:
     void send(const envelope& message) override;
     size_t receive(std::vector<envelope>& out, size_t max) override;
     void drain_events(std::vector<transport_event>& out) override;
+    void wait(std::chrono::milliseconds timeout) override;
+    void wake() override;
     std::string local_endpoint() const override;
     void close() override;
 

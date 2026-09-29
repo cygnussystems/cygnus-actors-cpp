@@ -53,6 +53,18 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **The ZeroMQ relay runs on its own thread and no longer waits for a poll
+  tick.** It was a pooled actor that read its socket only when its poll
+  timer fired (`poll_interval_ms`, default 10 ms) or another message
+  arrived, so inbound latency was up to one tick. It is now a `fast_actor`
+  that blocks until its socket or its mailbox has work and wakes at once
+  for either. `poll_interval_ms` has no effect any more; the new
+  `zeromq_config::spin_before_block_us` trades idle CPU for latency (0 =
+  block at once, N = spin N µs first, -1 = never block). The first relay
+  *created* now takes the `"zeromq_relay"` registry name (relays start on
+  their own threads, in no fixed order). Fast actors gained two private
+  hooks (`wait_for_work()`, `wake()`) that a blocking fast actor overrides;
+  the default keeps the polling strategies unchanged.
 - **The ZeroMQ relay is split into a relay and a transport** (internal,
   no behaviour change): routing, correlation, errors and status stay in
   `zeromq_relay_actor`; all ZeroMQ code moved to `detail::zeromq_transport`

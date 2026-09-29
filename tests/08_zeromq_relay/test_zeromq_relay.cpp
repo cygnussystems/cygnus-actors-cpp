@@ -288,6 +288,11 @@ TEST_CASE("A second relay does not take over the registry name",
     auto second = cas::system::create<cas::zeromq_relay_actor>();
     cas::system::start();
 
+    // Relays start on their own threads: wait until both have run on_start()
+    using namespace relay_e2e;
+    REQUIRE(wait_for([&] { return cas::actor_registry::exists("zeromq_relay"); }));
+    std::this_thread::sleep_for(50ms);  // give the second one time to (wrongly) take it
+
     REQUIRE(cas::actor_registry::get("zeromq_relay") == first);
     REQUIRE(second.name() != "zeromq_relay");
 }
@@ -326,6 +331,156 @@ TEST_CASE("Unanswered correlation ids expire",
     ctl.tell(ask_status{});
     REQUIRE(wait_for([&] { return c.statuses.load() >= 2; }));
     REQUIRE(c.last_pending.load() == 0);
+}
+
+// ---------------------------------------------------------------------------
+// 070 stage 1, item 2: the relay runs on its own thread and blocks on its
+// socket, so latency is not tied to a poll interval
+// ---------------------------------------------------------------------------
+
+namespace relay_thread {
+
+struct kick : public cas::message_base {};
+
+// Server side: echoes every request back to its sender, same correlation id
+class echo : public cas::actor {
+public:
+    cas::actor_ref relay;
+protected:
+    void on_start() override {
+        handler<cas::msg::zeromq_recv>([this](const cas::msg::zeromq_recv& in) {
+            cas::msg::zeromq_send out;
+            out.target = in.source;
+            out.correlation_id = in.correlation_id;
+            out.message_type = "pong";
+            out.data = in.data;
+            relay.tell(out);
+        });
+    }
+};
+
+// Client side: sends the next request when the previous reply arrives
+class pinger : public cas::actor {
+public:
+    cas::actor_ref relay;
+    int rounds = 0;
+    std::atomic<int> completed{0};
+protected:
+    void on_start() override {
+        handler<kick>([this](const kick&) { send_next(); });
+        handler<cas::msg::zeromq_recv>([this](const cas::msg::zeromq_recv&) {
+            if (completed.fetch_add(1) + 1 < rounds) {
+                send_next();
+            }
+        });
+    }
+    void send_next() {
+        cas::msg::zeromq_send out;
+        out.correlation_id = static_cast<uint64_t>(completed.load() + 1);
+        out.message_type = "ping";
+        out.data = {'p'};
+        relay.tell(out);
+    }
+};
+
+// Sets up server + client relays over inproc with the given relay config,
+// runs `rounds` sequential request/reply round trips; returns the elapsed time
+std::chrono::milliseconds round_trips(int rounds, const cas::msg::zeromq_config& config,
+                                      const std::string& endpoint) {
+    auto server = cas::system::create<cas::zeromq_relay_actor>();
+    auto client = cas::system::create<cas::zeromq_relay_actor>();
+    auto e = cas::system::create<echo>();
+    auto p = cas::system::create<pinger>();
+    e.get_checked<echo>().relay = server;
+    auto& ping = p.get_checked<pinger>();
+    ping.relay = client;
+    ping.rounds = rounds;
+    cas::system::start();
+
+    server.tell(config);
+    client.tell(config);
+
+    cas::msg::zeromq_route route;
+    route.message_type = "ping";
+    route.target = e;
+    server.tell(route);
+
+    cas::msg::zeromq_bind bind;
+    bind.endpoint = endpoint;
+    server.tell(bind);
+    std::this_thread::sleep_for(50ms);
+
+    cas::msg::zeromq_connect connect;
+    connect.endpoint = endpoint;
+    connect.identity = "pinger";
+    client.tell(connect);
+    std::this_thread::sleep_for(50ms);
+
+    const auto t0 = std::chrono::steady_clock::now();
+    p.tell(kick{});
+    relay_e2e::wait_for([&] { return ping.completed.load() == rounds; }, 20000);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t0);
+    REQUIRE(ping.completed.load() == rounds);
+    return elapsed;
+}
+
+} // namespace relay_thread
+
+TEST_CASE("Relay latency is not tied to the poll interval",
+          "[08_zeromq_relay][relay_thread]") {
+    CAS_TEST_GUARD();
+    // With the old poll timer each round trip waited up to two ticks
+    // (5 s here); the relay now blocks on its socket and wakes at once.
+    cas::msg::zeromq_config config;
+    config.poll_interval_ms = 5000;
+    const auto elapsed = relay_thread::round_trips(200, config, "inproc://relay-thread-block");
+    REQUIRE(elapsed < std::chrono::seconds(5));  // typically a few ms in total
+}
+
+TEST_CASE("Relay spin modes deliver too",
+          "[08_zeromq_relay][relay_thread]") {
+    CAS_TEST_GUARD();
+    cas::msg::zeromq_config config;
+    SECTION("spin before blocking") {
+        config.spin_before_block_us = 200;
+        REQUIRE(relay_thread::round_trips(200, config, "inproc://relay-thread-spin") < std::chrono::seconds(5));
+    }
+    SECTION("never block (busy-poll)") {
+        config.spin_before_block_us = -1;
+        REQUIRE(relay_thread::round_trips(200, config, "inproc://relay-thread-busy") < std::chrono::seconds(5));
+    }
+}
+
+TEST_CASE("stop_actor() on an idle relay returns promptly",
+          "[08_zeromq_relay][relay_thread]") {
+    CAS_TEST_GUARD();
+    auto relay = cas::system::create<cas::zeromq_relay_actor>();
+    cas::system::start();
+
+    cas::msg::zeromq_bind bind;
+    bind.endpoint = "tcp://127.0.0.1:*";
+    relay.tell(bind);
+    std::this_thread::sleep_for(100ms);  // idle, blocked in the transport
+
+    const auto t0 = std::chrono::steady_clock::now();
+    REQUIRE(cas::system::stop_actor(relay));
+    // Woken by stop_actor(), not by the 100 ms idle backstop
+    REQUIRE(std::chrono::steady_clock::now() - t0 < 80ms);
+    REQUIRE_FALSE(relay.is_running());
+}
+
+TEST_CASE("System shutdown with an idle relay completes promptly",
+          "[08_zeromq_relay][relay_thread]") {
+    CAS_TEST_GUARD();
+    auto relay = cas::system::create<cas::zeromq_relay_actor>();
+    cas::system::start();
+    std::this_thread::sleep_for(100ms);  // idle, blocked (not even bound)
+
+    const auto t0 = std::chrono::steady_clock::now();
+    cas::system::shutdown();
+    cas::system::wait_for_shutdown();
+    REQUIRE(std::chrono::steady_clock::now() - t0 < 80ms);
 }
 
 #else

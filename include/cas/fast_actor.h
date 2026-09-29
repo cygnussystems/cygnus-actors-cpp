@@ -50,6 +50,17 @@ private:
     // Cross-platform CPU pause instruction
     inline void cpu_pause();
 
+    // Called by the loop when there is nothing to handle. Default: one step of
+    // the polling strategy. An actor that also waits on something outside its
+    // mailbox (the ZeroMQ relay waits on its socket) overrides it to block;
+    // it must then override wake() too.
+    virtual void wait_for_work();
+
+    // Called by the system, from any thread, when this actor may be blocked
+    // in wait_for_work() and has work: a message arrived at a blocked mailbox,
+    // or a stop was requested. Default: nothing (the loop polls).
+    virtual void wake();
+
 protected:
     /// Set the polling strategy (default: yield)
     /// Call in constructor or on_start()

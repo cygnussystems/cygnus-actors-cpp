@@ -103,7 +103,7 @@ void run_client() {
 }
 ```
 
-The first relay started takes the registry name `"zeromq_relay"`; further
+The first relay created takes the registry name `"zeromq_relay"`; further
 relays keep their unique default names. With more than one relay, hold the
 `actor_ref` returned by `create()` instead of looking relays up by name.
 
@@ -183,7 +183,8 @@ struct zeromq_route : public cas::message_base {
 
 // Configuration
 struct zeromq_config : public cas::message_base {
-    int poll_interval_ms = 10;      // Poll timer period (see Performance)
+    int poll_interval_ms = 10;      // No effect: the relay waits on its socket (see Performance)
+    int spin_before_block_us = 0;   // Idle: poll this long before blocking; -1 = never block
     int send_timeout_ms = 1000;     // Send timeout; also the linger on close
     int recv_timeout_ms = 1000;     // No effect: receives are non-blocking
     int max_message_size = 1048576; // 1MB
@@ -385,10 +386,9 @@ messages are simpler and faster.
 ## Configuration
 
 ```cpp
-// Configure before connecting (poll_interval_ms is read when bind/connect
-// starts the poll timer)
+// Configure before connecting
 cas::msg::zeromq_config config;
-config.poll_interval_ms = 5;       // Fast polling for low latency
+config.spin_before_block_us = 50;  // Trading: poll 50 us before sleeping (costs CPU)
 config.send_timeout_ms = 500;      // Fail fast on send
 config.max_message_size = 10 * 1024 * 1024;  // 10MB max
 config.auto_reconnect = true;       // Reconnect dropped connections...
@@ -404,16 +404,16 @@ relay.tell(connect);
 
 A `zeromq_config` sent after bind/connect re-applies the socket options
 (send/receive timeouts, maximum message size, linger, reconnect interval) to
-the open socket. `poll_interval_ms` only takes effect at the next bind/connect,
-when the poll timer is started.
+the open socket; the other settings take effect at once.
 
 ## Thread Safety
 
 ZeroMQ sockets are NOT thread-safe. The relay actor solves this:
 
-- All socket operations happen on the actor's assigned thread
-- No locks needed - single-threaded access to socket
-- Actor model naturally provides thread isolation
+- The relay runs on its own dedicated thread (it is a `fast_actor`), and all
+  socket operations happen there
+- No locks needed - single-threaded access to the socket
+- Actors anywhere talk to it with ordinary messages
 
 ## Complete Example: FIX Gateway
 
@@ -506,7 +506,7 @@ int main() {
     auto handler = cas::system::create<fix_handler>();
     cas::system::start();
 
-    // Keep running; wait_for_shutdown() alone would stop the relay's poll timer
+    // Keep running until told to stop; wait_for_shutdown() would stop at once
     while (g_running) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
@@ -568,26 +568,33 @@ ZeroMQ support is controlled by `CAS_ENABLE_ZEROMQ` compile definition:
 
 ## Performance Considerations
 
-The relay reads its socket each time it processes an actor message, draining
-up to 256 waiting ZeroMQ messages at a time. It is woken by its periodic poll
-timer (`poll_interval_ms`, default 10 ms) or by other messages sent to it. So:
+The relay runs on its own thread. When it has nothing to do it blocks until
+a message arrives on its socket or in its mailbox, and wakes at once for
+either - so there is no poll interval in the latency. Inbound bursts are
+drained up to 256 messages at a time, then the relay's own queue gets a turn.
+Outbound sends go to the socket as soon as the relay handles the
+`zeromq_send`.
 
-- **Inbound latency** is up to `poll_interval_ms`, not microseconds.
-- **Inbound throughput** is not limited by the tick: bursts are drained (up to
-  256 messages per wake-up, then the relay's own queue gets a turn).
+Idle behaviour is set with `zeromq_config::spin_before_block_us`:
 
-Outbound sends go to the socket as soon as the relay processes the `zeromq_send`.
+| Setting | Idle CPU | Latency |
+|---------|----------|---------|
+| `0` (default) | none - blocks at once | adds an OS wake-up (a few µs) per burst |
+| `N > 0` | spins N µs after each burst, then blocks | no wake-up for traffic arriving within N µs |
+| `-1` | a full core, always | lowest: never sleeps |
+
+Each relay uses one thread. Unanswered correlation ids are expired when the
+relay goes idle, and at least every 100 ms.
 
 | Transport | Use Case |
 |-----------|----------|
 | **ipc://** | Same machine, different processes |
 | **tcp://** | Different machines (latency depends on network) |
 
-The raw transport latency is small next to the poll interval, which dominates
-inbound latency.
-
-For lower inbound latency:
-- Set `poll_interval_ms` low (1-5ms) in a `zeromq_config` sent before bind/connect
+What remains is ZeroMQ itself - framing, its I/O thread, a system call per
+message: typically tens of microseconds on one machine. For the lowest
+latency between processes on one host, see the transport plans in
+`planning/070_low_latency_ipc.md` (shared memory).
 
 ## See Also
 

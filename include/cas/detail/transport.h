@@ -1,6 +1,7 @@
 #ifndef CAS_DETAIL_TRANSPORT_H
 #define CAS_DETAIL_TRANSPORT_H
 
+#include <chrono>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -18,7 +19,8 @@
 // the ZeroMQ transport is stabilised, and may change within 1.x.
 //
 // Threading: one owner thread. A transport is used only by the thread that
-// executes its relay, so implementations need no locking.
+// executes its relay, so implementations need no locking - except wake(),
+// which any thread may call.
 
 namespace cas::detail {
 
@@ -85,11 +87,21 @@ public:
     /// Move the events recorded since the last call into out
     virtual void drain_events(std::vector<transport_event>& out) = 0;
 
+    /// Block until inbound data may be waiting, wake() is called, or timeout
+    /// passes - whichever comes first. May return early (spuriously). Works
+    /// before bind()/connect() too: then only wake() or the timeout end it.
+    virtual void wait(std::chrono::milliseconds timeout) = 0;
+
+    /// End a wait() in progress, or make the next one return at once.
+    /// The only member that may be called from any thread.
+    virtual void wake() = 0;
+
     /// The endpoint actually in use - e.g. with the port resolved when bound
     /// to a wildcard such as "tcp://127.0.0.1:*". Empty before bind/connect.
     virtual std::string local_endpoint() const = 0;
 
     /// Release the connection. Idempotent; the destructor also closes.
+    /// wait()/wake() keep working afterwards (a later bind/connect may follow).
     virtual void close() = 0;
 };
 

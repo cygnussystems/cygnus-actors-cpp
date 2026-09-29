@@ -469,8 +469,11 @@ void system::ensure_workers(size_t count) {
 }
 
 void system::schedule(actor* target) {
-    // Fast actors run their own loop and are never scheduled here.
-    if (dynamic_cast<fast_actor*>(target) != nullptr) {
+    // Fast actors run their own loop and are never scheduled here. One that
+    // blocks when idle (its mailbox was blocked, so this push unblocked it)
+    // is woken instead; the default fast_actor::wake() does nothing.
+    if (auto* fast_ptr = dynamic_cast<fast_actor*>(target)) {
+        fast_ptr->wake();
         return;
     }
     std::shared_ptr<actor> keep_alive = target->m_self_ref.lock();
@@ -780,6 +783,10 @@ bool system::stop_actor(actor_ref ref, const stop_config& config) {
     target->m_stop_phase.store(actor::stop_phase::requested, std::memory_order_seq_cst);
 
     fast_actor* fast_ptr = dynamic_cast<fast_actor*>(target);
+    if (fast_ptr) {
+        // It polls stop_phase itself - unless it is blocked waiting for work
+        fast_ptr->wake();
+    }
 
     if (!inst.m_workers_active.load(std::memory_order_acquire)) {
         // No worker or fast-actor thread is running (before start(), or after

@@ -159,4 +159,69 @@ TEST_CASE("Transport: close is idempotent and ends the connection",
     REQUIRE(server.receive(got, 10) == 0);
 }
 
+// --- wait() / wake() (070 stage 1, item 2) ------------------------------------
+
+TEST_CASE("Transport: wait() times out when nothing happens",
+          "[08_zeromq_relay][transport][wait]") {
+    zeromq_transport t;  // works before bind/connect too
+    const auto t0 = std::chrono::steady_clock::now();
+    t.wait(std::chrono::milliseconds(50));
+    const auto waited = std::chrono::steady_clock::now() - t0;
+    REQUIRE(waited >= std::chrono::milliseconds(40));
+    REQUIRE(waited < std::chrono::seconds(2));
+}
+
+TEST_CASE("Transport: wake() from another thread ends a wait()",
+          "[08_zeromq_relay][transport][wait]") {
+    zeromq_transport t;
+    t.bind("tcp://127.0.0.1:*");
+
+    std::thread waker([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        t.wake();
+    });
+    const auto t0 = std::chrono::steady_clock::now();
+    t.wait(std::chrono::seconds(10));
+    const auto waited = std::chrono::steady_clock::now() - t0;
+    waker.join();
+    REQUIRE(waited < std::chrono::seconds(2));
+}
+
+TEST_CASE("Transport: a wake() before wait() makes it return at once, once",
+          "[08_zeromq_relay][transport][wait]") {
+    zeromq_transport t;
+    t.wake();
+    t.wake();  // several wake-ups before a wait are answered by one wait
+    const auto t0 = std::chrono::steady_clock::now();
+    t.wait(std::chrono::seconds(10));
+    REQUIRE(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(1));
+
+    // Consumed: the next wait blocks until its timeout
+    const auto t1 = std::chrono::steady_clock::now();
+    t.wait(std::chrono::milliseconds(50));
+    REQUIRE(std::chrono::steady_clock::now() - t1 >= std::chrono::milliseconds(40));
+}
+
+TEST_CASE("Transport: inbound data ends a wait()",
+          "[08_zeromq_relay][transport][wait]") {
+    zeromq_transport server;
+    server.bind("tcp://127.0.0.1:*");
+    zeromq_transport client;
+    client.connect(server.local_endpoint(), "c");
+
+    std::thread sender([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        client.send(make("tick", "x"));
+    });
+    const auto t0 = std::chrono::steady_clock::now();
+    std::vector<envelope> got;
+    while (got.empty() && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(5)) {
+        server.wait(std::chrono::seconds(10));
+        server.receive(got, 10);
+    }
+    sender.join();
+    REQUIRE(got.size() == 1);
+    REQUIRE(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(2));
+}
+
 #endif // CAS_ENABLE_ZEROMQ

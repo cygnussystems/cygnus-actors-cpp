@@ -3,7 +3,7 @@
 
 #ifdef CAS_ENABLE_ZEROMQ
 
-#include "actor.h"
+#include "fast_actor.h"
 #include "actor_ref.h"
 #include "detail/transport.h"
 #include <vector>
@@ -57,7 +57,9 @@ struct zeromq_route : public cas::message_base {
 
 // Configuration
 struct zeromq_config : public cas::message_base {
-    int poll_interval_ms = 10;          // How often to check for messages
+    int poll_interval_ms = 10;          // No effect: the relay waits on its socket on its own thread
+    int spin_before_block_us = 0;       // Idle: poll this long before blocking (lower latency, costs CPU);
+                                        //   0 = block at once, -1 = never block (busy-poll, a full core)
     int send_timeout_ms = 1000;         // Send timeout; also the linger on close
     int recv_timeout_ms = 1000;         // No effect: receives are non-blocking
     int max_message_size = 1048576;     // 1MB max
@@ -92,7 +94,10 @@ struct zeromq_disconnect : public cas::message_base {
 
 // ZeroMQ relay actor for inter-process actor communication
 // Supports ROUTER (server) and DEALER (client) modes
-class zeromq_relay_actor : public cas::actor {
+// Runs on its own thread (a fast_actor): when idle it blocks until a message
+// arrives on its socket or in its mailbox, so inbound latency is not tied to
+// any poll interval.
+class zeromq_relay_actor : public cas::fast_actor {
 public:
     enum class mode {
         router,  // Server - accepts connections from multiple clients
@@ -111,8 +116,8 @@ protected:
     void on_config(const msg::zeromq_config& msg);
     void on_status_request(const message_base& msg);
 
-    // Poll for incoming ZeroMQ messages (called by timer)
-    void poll();
+    // Handle waiting inbound messages (up to a budget); returns how many
+    size_t poll();
 
     // Override to interleave ZeroMQ polling with actor messages
     void process_next_message() override;
@@ -129,7 +134,8 @@ public:
 private:
     // The connection. The relay is the actor side - routing, correlation,
     // errors, status; the transport moves the bytes (detail::transport,
-    // detail::zeromq_transport). Created by bind/connect, released on stop.
+    // detail::zeromq_transport). Lives as long as the relay (wake() may be
+    // called from any thread); bind/connect open it, stop closes it.
     std::unique_ptr<detail::transport> m_transport;
     detail::transport_options m_options;
     mode m_mode = mode::router;
@@ -137,17 +143,20 @@ private:
     std::string m_endpoint;
 
     // Relay configuration (transport settings are in m_options)
-    int m_poll_interval_ms = 10;
     int m_request_timeout_ms = 30000;
+    int m_spin_before_block_us = 0;
 
-    // Timer for polling
-    timer_id m_poll_timer = INVALID_TIMER_ID;
+    // fast_actor loop hooks: block in the transport when idle; wake it when
+    // a message arrives at the blocked mailbox or a stop is requested
+    void wait_for_work() override;
+    void wake() override;
 
     // Routing table: message_type -> actor_ref
     std::unordered_map<std::string, cas::actor_ref> m_routes;
 
     // Pending requests for correlation (correlation_id -> sender), expired
-    // after m_request_timeout_ms by the poll tick
+    // after m_request_timeout_ms (checked whenever the relay goes idle, and
+    // at least every idle_backstop)
     struct pending_request {
         cas::actor_ref requester;
         std::chrono::steady_clock::time_point deadline;
@@ -159,7 +168,6 @@ private:
     std::vector<detail::transport_event> m_events;
 
     void expire_pending_requests();
-    void start_polling();
     void report_transport_events();
 
     // Default route (for unmatched messages)

@@ -10,6 +10,10 @@
 //   - errors: sent to the actor whose control message failed
 //   - asking a relay for its status
 //
+// Each relay runs on its own thread and blocks on its socket when idle, so
+// messages are handled as they arrive (see zeromq_config::spin_before_block_us
+// for trading the CPU of a spinning thread against a few µs of wake-up).
+//
 // ASSUMES
 //   Tutorials 1-3. Only built when the framework is built with ZeroMQ
 //   (CMake ENABLE_ZEROMQ=ON, vcpkg cppzmq).

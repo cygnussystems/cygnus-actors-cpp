@@ -39,6 +39,10 @@ with no locks, which is what the documentation teaches.
   owns them.
 - A runtime-created actor's mailbox stays unscheduled until its `on_start()`
   returns.
+- A fast actor that blocks when idle (the ZeroMQ relay: `wait_for_work()`)
+  still runs everything on its one dedicated thread; other threads only call
+  its `wake()` (from `system::schedule()` when a push unblocks its mailbox,
+  and from `stop_actor()`), which touches no actor state.
 - Debug builds: `dispatch_guard` in `source/actor.cpp` aborts with a diagnostic if
   two threads enter dispatch for one actor.
 

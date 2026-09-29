@@ -2,6 +2,7 @@
 
 #include "cas/detail/zeromq_transport.h"
 #include <zmq.hpp>
+#include <atomic>
 #include <cerrno>
 #include <mutex>
 #include <optional>
@@ -35,16 +36,19 @@ std::string text_of(const std::vector<char>& frame) {
 } // namespace
 
 struct zeromq_transport::impl {
-    std::shared_ptr<zmq::context_t> context;   // declared before socket: destroyed after it
+    std::shared_ptr<zmq::context_t> context;   // declared first: destroyed after the sockets
     std::optional<zmq::socket_t> socket;
+
+    // wake(): any thread sends on wake_tx (under wake_mutex); wait() polls
+    // wake_rx next to the data socket
+    std::optional<zmq::socket_t> wake_rx;
+    std::optional<zmq::socket_t> wake_tx;
+    std::mutex wake_mutex;
     bool server = false;                       // ROUTER (bound) vs DEALER (connected)
     transport_options options;
     std::vector<transport_event> events;
 
     void create_socket(int type) {
-        if (!context) {
-            context = shared_context();
-        }
         socket.emplace(*context, type);
         server = (type == ZMQ_ROUTER);
     }
@@ -130,10 +134,63 @@ struct zeromq_transport::impl {
     }
 };
 
-zeromq_transport::zeromq_transport() : m_impl(std::make_unique<impl>()) {}
+zeromq_transport::zeromq_transport() : m_impl(std::make_unique<impl>()) {
+    static std::atomic<uint64_t> next_id{1};
+    const std::string wake_endpoint = "inproc://cas-transport-wake-" + std::to_string(next_id.fetch_add(1));
+
+    m_impl->context = shared_context();
+    m_impl->wake_rx.emplace(*m_impl->context, ZMQ_PAIR);
+    m_impl->wake_rx->set(zmq::sockopt::linger, 0);
+    m_impl->wake_rx->bind(wake_endpoint);
+    m_impl->wake_tx.emplace(*m_impl->context, ZMQ_PAIR);
+    m_impl->wake_tx->set(zmq::sockopt::linger, 0);
+    m_impl->wake_tx->connect(wake_endpoint);
+}
 
 zeromq_transport::~zeromq_transport() {
     close();
+    m_impl->wake_tx.reset();
+    m_impl->wake_rx.reset();
+    m_impl->context.reset();  // the last transport's release terminates the context
+}
+
+void zeromq_transport::wake() {
+    std::lock_guard<std::mutex> lock(m_impl->wake_mutex);
+    try {
+        // Level-triggered: a queued frame makes every later wait() return
+        // until wait() drains it. A full queue already means "awake".
+        m_impl->wake_tx->send(zmq::message_t(), zmq::send_flags::dontwait);
+    } catch (const zmq::error_t&) {
+        // Only if the context is terminating; nothing to wake then
+    }
+}
+
+void zeromq_transport::wait(std::chrono::milliseconds timeout) {
+    zmq::pollitem_t items[2] = {
+        {static_cast<void*>(*m_impl->wake_rx), 0, ZMQ_POLLIN, 0},
+        {nullptr, 0, ZMQ_POLLIN, 0},
+    };
+    int count = 1;
+    if (m_impl->socket) {
+        items[1].socket = static_cast<void*>(*m_impl->socket);
+        count = 2;
+    }
+
+    try {
+        zmq::poll(items, static_cast<size_t>(count), timeout);
+    } catch (const zmq::error_t& e) {
+        if (e.num() != EINTR) {
+            m_impl->record_error(std::string("Wait failed: ") + e.what(), e.num());
+        }
+        return;
+    }
+
+    if (items[0].revents & ZMQ_POLLIN) {
+        // Consume every pending wake-up: one wait() answers them all
+        zmq::message_t signal;
+        while (m_impl->wake_rx->recv(signal, zmq::recv_flags::dontwait)) {
+        }
+    }
 }
 
 void zeromq_transport::bind(const std::string& endpoint) {
@@ -229,7 +286,6 @@ std::string zeromq_transport::local_endpoint() const {
 
 void zeromq_transport::close() {
     m_impl->socket.reset();
-    m_impl->context.reset();  // the last transport's release terminates the context
 }
 
 } // namespace cas::detail

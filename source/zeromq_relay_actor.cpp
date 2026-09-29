@@ -8,28 +8,46 @@
 #include "cas/actor_impl.h"
 #include <iostream>
 #include <algorithm>
+#include <atomic>
 #include <string>
 
 namespace cas {
 
 namespace {
 
-// Wakes the relay to read its transport
-struct poll_tick : public cas::message_base {};
-
 // Most inbound messages handled per poll: drains bursts without starving the
 // relay's other messages (sends, routes) for long
 constexpr size_t k_max_recv_per_poll = 256;
 
+// Longest the relay sleeps without a reason to wake: bounds how late an
+// expired request is noticed. Inbound messages and actor messages wake it.
+constexpr std::chrono::milliseconds k_idle_backstop{100};
+
 } // namespace
 
-zeromq_relay_actor::zeromq_relay_actor() = default;
-zeromq_relay_actor::~zeromq_relay_actor() = default;
+// The relay that holds the well-known registry name "zeromq_relay": the first
+// one created that is still alive. Decided at construction - creation order -
+// because relays start on their own threads, in no particular order.
+namespace {
+std::atomic<const zeromq_relay_actor*> g_named_relay{nullptr};
+} // namespace
+
+zeromq_relay_actor::zeromq_relay_actor()
+    : m_transport(std::make_unique<detail::zeromq_transport>()) {
+    const zeromq_relay_actor* expected = nullptr;
+    g_named_relay.compare_exchange_strong(expected, this);
+}
+
+zeromq_relay_actor::~zeromq_relay_actor() {
+    const zeromq_relay_actor* expected = this;
+    g_named_relay.compare_exchange_strong(expected, nullptr);
+}
 
 void zeromq_relay_actor::on_start() {
-    // The first relay takes the well-known name; later ones keep their unique
-    // default name rather than taking it over. Hold the actor_ref from create().
-    if (!actor_registry::exists("zeromq_relay")) {
+    // The first relay created takes the well-known name; later ones keep
+    // their unique default name rather than taking it over. Hold the
+    // actor_ref from create().
+    if (g_named_relay.load() == this) {
         set_name("zeromq_relay");
     }
 
@@ -39,7 +57,6 @@ void zeromq_relay_actor::on_start() {
     handler<msg::zeromq_send>([this](const auto& msg) { on_send(msg); });
     handler<msg::zeromq_route>([this](const auto& msg) { on_route(msg); });
     handler<msg::zeromq_config>([this](const auto& msg) { on_config(msg); });
-    handler<poll_tick>([this](const poll_tick&) { expire_pending_requests(); });
 
     // Status request handler
     handler<msg::zeromq_status>([this](const auto& msg) {
@@ -58,6 +75,9 @@ void zeromq_relay_actor::on_start() {
 
 void zeromq_relay_actor::on_stop() {
     cleanup_socket();
+    // Stopped: a relay created later may take the name
+    const zeromq_relay_actor* expected = this;
+    g_named_relay.compare_exchange_strong(expected, nullptr);
 }
 
 void zeromq_relay_actor::on_connect(const msg::zeromq_connect& msg) {
@@ -70,12 +90,9 @@ void zeromq_relay_actor::on_connect(const msg::zeromq_connect& msg) {
         m_mode = mode::dealer;
         m_endpoint = msg.endpoint;
 
-        m_transport = std::make_unique<detail::zeromq_transport>();
         m_transport->configure(m_options);
         m_transport->connect(msg.endpoint, msg.identity);
         m_connected = true;
-
-        start_polling();
 
 #ifdef CAS_DEBUG_LOGGING
         std::cout << "[ZEROMQ] Connected (DEALER) to " << msg.endpoint << "\n" << std::flush;
@@ -106,12 +123,9 @@ void zeromq_relay_actor::on_bind(const msg::zeromq_bind& msg) {
         m_mode = mode::router;
         m_endpoint = msg.endpoint;
 
-        m_transport = std::make_unique<detail::zeromq_transport>();
         m_transport->configure(m_options);
         m_transport->bind(msg.endpoint);
         m_connected = true;
-
-        start_polling();
 
 #ifdef CAS_DEBUG_LOGGING
         std::cout << "[ZEROMQ] Bound (ROUTER) to " << msg.endpoint << "\n" << std::flush;
@@ -133,7 +147,7 @@ void zeromq_relay_actor::on_bind(const msg::zeromq_bind& msg) {
 }
 
 void zeromq_relay_actor::on_send(const msg::zeromq_send& msg) {
-    if (!m_connected || !m_transport) {
+    if (!m_connected) {
         send_error("Not connected", 0, msg.sender);
         return;
     }
@@ -185,8 +199,8 @@ void zeromq_relay_actor::on_route(const msg::zeromq_route& msg) {
 }
 
 void zeromq_relay_actor::on_config(const msg::zeromq_config& msg) {
-    m_poll_interval_ms = msg.poll_interval_ms;
     m_request_timeout_ms = msg.request_timeout_ms;
+    m_spin_before_block_us = msg.spin_before_block_us;
 
     m_options.send_timeout_ms = msg.send_timeout_ms;
     m_options.recv_timeout_ms = msg.recv_timeout_ms;
@@ -194,16 +208,14 @@ void zeromq_relay_actor::on_config(const msg::zeromq_config& msg) {
     m_options.auto_reconnect = msg.auto_reconnect;
     m_options.reconnect_delay_ms = msg.reconnect_delay_ms;
 
-    // Re-apply to a live connection
-    if (m_transport) {
-        m_transport->configure(m_options);
-        report_transport_events();
-    }
+    // Applied now if connected, and to any later bind/connect
+    m_transport->configure(m_options);
+    report_transport_events();
 }
 
 void zeromq_relay_actor::process_next_message() {
-    // First, poll for inbound messages
-    if (m_connected && m_transport) {
+    // Inbound first, so a busy mailbox does not starve the socket
+    if (m_connected) {
         poll();
     }
 
@@ -211,8 +223,62 @@ void zeromq_relay_actor::process_next_message() {
     actor::process_next_message();
 }
 
-void zeromq_relay_actor::start_polling() {
-    m_poll_timer = schedule_periodic(std::chrono::milliseconds(m_poll_interval_ms), poll_tick{});
+void zeromq_relay_actor::wait_for_work() {
+    // Called by the fast_actor loop when the mailbox is empty. Runs on the
+    // relay's own thread (INVARIANT 1). Routing tell()s need this actor as
+    // the current context, as they would inside a handler.
+    struct context_scope {
+        actor* prev = current_actor_context;
+        explicit context_scope(actor* self) { current_actor_context = self; }
+        ~context_scope() { current_actor_context = prev; }
+    } scope(this);
+
+    if (m_connected && poll() > 0) {
+        return;  // there may be more; the loop comes straight back
+    }
+    expire_pending_requests();
+
+    // Optional spin: catch the next message without a wake-up
+    if (m_spin_before_block_us != 0) {
+        const auto until = std::chrono::steady_clock::now() +
+                           std::chrono::microseconds(m_spin_before_block_us);
+        for (unsigned polls = 0;; ++polls) {
+            if (has_messages() || current_stop_phase() != stop_phase::none) {
+                return;
+            }
+            if (m_connected && poll() > 0) {
+                return;
+            }
+            // -1 = never block: keep spinning (the loop re-enters here)
+            if (m_spin_before_block_us > 0 && (polls & 63) == 63 &&
+                std::chrono::steady_clock::now() >= until) {
+                break;
+            }
+            if (m_spin_before_block_us < 0 && polls >= 1024) {
+                return;  // let the loop check stop requests
+            }
+        }
+    }
+
+    // Block. Mark the mailbox blocked first: a push from now on returns
+    // push_result::unblocked, and system::schedule() calls wake(). If a
+    // message slipped in before, try_block() fails and we go handle it.
+    if (!m_mailbox.try_block()) {
+        return;
+    }
+    if (current_stop_phase() != stop_phase::none) {
+        m_mailbox.try_unblock();
+        return;  // a stop requested before the block: its wake() may have come early
+    }
+    m_transport->wait(k_idle_backstop);  // ends on inbound data, wake(), or the backstop
+    m_mailbox.try_unblock();             // back to running (a pusher may have done it already)
+    report_transport_events();
+}
+
+void zeromq_relay_actor::wake() {
+    // Any thread (system::schedule, stop_actor). The transport outlives every
+    // caller: they hold a reference to this actor while calling.
+    m_transport->wake();
 }
 
 void zeromq_relay_actor::expire_pending_requests() {
@@ -223,15 +289,16 @@ void zeromq_relay_actor::expire_pending_requests() {
     std::erase_if(m_pending_requests, [now](const auto& entry) { return entry.second.deadline <= now; });
 }
 
-void zeromq_relay_actor::poll() {
+size_t zeromq_relay_actor::poll() {
     // Drain what is waiting (up to a budget), not one message per wake-up
     m_inbound.clear();
-    m_transport->receive(m_inbound, k_max_recv_per_poll);
+    const size_t received = m_transport->receive(m_inbound, k_max_recv_per_poll);
     report_transport_events();
     for (auto& message : m_inbound) {
         route_message(message);
     }
     m_inbound.clear();
+    return received;
 }
 
 void zeromq_relay_actor::report_transport_events() {
@@ -285,12 +352,7 @@ void zeromq_relay_actor::route_message(detail::envelope& message) {
 }
 
 void zeromq_relay_actor::cleanup_socket() {
-    if (m_poll_timer != INVALID_TIMER_ID) {
-        cancel_timer(m_poll_timer);
-        m_poll_timer = INVALID_TIMER_ID;
-    }
-
-    m_transport.reset();  // closes; the last one terminates the shared context
+    m_transport->close();  // the transport itself stays: wake() may still be called
 
     m_connected = false;
     m_pending_requests.clear();

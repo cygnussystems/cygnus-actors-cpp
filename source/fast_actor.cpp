@@ -69,29 +69,7 @@ void fast_actor::run_dedicated_thread_started() {
             process_next_message();
             current_actor_context = nullptr;
         } else {
-            // Apply polling strategy when no messages
-            switch (m_polling_strategy) {
-                case polling_strategy::yield:
-                    // Yield to scheduler - cooperative, low latency
-                    std::this_thread::yield();
-                    break;
-
-                case polling_strategy::hybrid:
-                    // Spin briefly, then yield
-                    for (int i = 0; i < m_spin_count; ++i) {
-                        if (has_messages()) break;
-                        cpu_pause();
-                    }
-                    if (!has_messages()) {
-                        std::this_thread::yield();
-                    }
-                    break;
-
-                case polling_strategy::busy_wait:
-                    // Pure busy-wait - minimum latency, maximum CPU
-                    cpu_pause();
-                    break;
-            }
+            wait_for_work();
         }
     }
 
@@ -104,6 +82,35 @@ void fast_actor::run_dedicated_thread_started() {
 
     // Call on_stop(); an exception is reported, not propagated
     run_stop_hook(stop_hook::on_stop);
+}
+
+void fast_actor::wake() {
+}
+
+void fast_actor::wait_for_work() {
+    // One step of the polling strategy; the loop then checks again
+    switch (m_polling_strategy) {
+        case polling_strategy::yield:
+            // Yield to scheduler - cooperative, low latency
+            std::this_thread::yield();
+            break;
+
+        case polling_strategy::hybrid:
+            // Spin briefly, then yield
+            for (int i = 0; i < m_spin_count; ++i) {
+                if (has_messages()) break;
+                cpu_pause();
+            }
+            if (!has_messages()) {
+                std::this_thread::yield();
+            }
+            break;
+
+        case polling_strategy::busy_wait:
+            // Pure busy-wait - minimum latency, maximum CPU
+            cpu_pause();
+            break;
+    }
 }
 
 } // namespace cas
