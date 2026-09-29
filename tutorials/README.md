@@ -85,19 +85,25 @@ built only when the framework is built with ZeroMQ; see
 
 ## Conventions
 
-**Handlers are member functions** by default. `on_start()` then reads as a
-list of the messages an actor accepts, with the logic in named methods.
-Lambdas appear where a handler is a genuine one-liner — tutorial 2 shows both
-side by side.
+**An actor is self-contained.** Each actor class holds its messages, its
+state, its handlers and what it exposes. A message only one actor receives is
+a nested type of that actor (`greeter::greet`); messages exchanged between
+actors - a request and its reply, a shared event - sit in a short protocol
+block at the top of the file.
 
-**Tutorials observe results through a file-scope atomic.** `create<T>()`
-returns an `actor_ref`, not the actor, so there is no way to reach in and read
-its state; the handler records what happened somewhere `main()` can see. Real
-programs usually reply with a message instead (tutorial 3).
+**No global state.** `create<T>()` returns an `actor_ref`, not the actor, so
+`main()` cannot reach in and read actor state. What a tutorial needs to check
+is published by the actor that owns it, as `static inline std::atomic`
+members marked "observed by the tutorial". Real programs reply with a message
+instead (tutorial 3).
+
+**Handlers are private member functions**, so `on_start()` reads as the list
+of messages the actor accepts. Lambdas appear where a handler is a genuine
+one-liner.
 
 **Waiting is by polling, not by sleeping.** `wait_until()` polls for the
-condition so the tutorials are not flaky on a loaded machine or slow on a fast
-one.
+condition, so the tutorials are neither flaky on a loaded machine nor slow on
+a fast one.
 
 ## Adding a tutorial
 

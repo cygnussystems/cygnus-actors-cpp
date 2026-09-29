@@ -1,19 +1,17 @@
 // Tutorial 11: fixed_string, for messages that do not allocate
 //
 // TEACHES
-//   - why std::string in a message costs a heap allocation per send
-//   - fixed_string<N> as an inline replacement
-//   - silent truncation, and how to avoid being caught by it
+//   - why a std::string in a message costs a heap allocation per send
+//   - fixed_string<N> as an inline replacement, and its silent truncation
 //   - comparison, conversion, hashing, and compile-time use
 //
 // ASSUMES
 //   Tutorials 1-10.
 //
 // THE IDEA
-//   Everything so far has used std::string in messages, which is fine until
-//   throughput matters. A std::string member allocates on the heap, so every
-//   message carrying one costs an allocation on send and a free on delivery.
-//   fixed_string<N> stores its characters inside the message instead.
+//   A std::string member keeps its characters on the heap: an allocation on
+//   every send, a free on every delivery. fixed_string<N> stores them inside
+//   the message instead.
 
 #include "tutorials.h"
 #include "cas/cas.h"
@@ -25,45 +23,43 @@
 
 namespace {
 
-// --- 1. A message that does not allocate -------------------------------------
-//
-// Pick N from the longest value you actually expect. The cost of overshooting
-// is bytes per message; the cost of undershooting is silent truncation.
-
-struct order : cas::message_base {
-    cas::fixed_string<8> symbol;    // "AAPL", "MSFT"
-    cas::fixed_string<16> trader;   // "desk-emea-01"
-    int quantity = 0;
-};
-
-std::atomic<int> g_orders_handled{0};
-
 class order_book : public cas::actor {
+public:
+    // Pick N from the longest value you expect: overshooting costs bytes per
+    // message, undershooting silently truncates.
+    struct order : cas::message_base {
+        cas::fixed_string<8> symbol;    // "AAPL"
+        cas::fixed_string<16> trader;   // "desk-emea-01"
+        int quantity = 0;
+    };
+
+    // fixed_string is constexpr throughout, so it can be a compile-time constant.
+    static constexpr cas::fixed_string<8> default_symbol{"AAPL"};
+
+    static inline std::atomic<int> orders{0};            // observed by the tutorial
+
 protected:
     void on_start() override {
         set_name("order_book");
         handler<order>(&order_book::on_order);
     }
 
+private:
+    // fixed_string streams and compares like a string: the handler reads no
+    // differently from the std::string version.
     void on_order(const order& msg) {
-        // fixed_string streams and compares like a string, so handler code
-        // reads no differently from the std::string version.
         std::cout << "  order: " << msg.quantity << " " << msg.symbol
                   << " from " << msg.trader << "\n";
-        g_orders_handled.fetch_add(1);
+        if (msg.symbol == default_symbol && msg.trader == "desk-emea-01") {
+            orders.fetch_add(1);
+        }
     }
 };
 
-// --- 2. Compile-time use -----------------------------------------------------
-//
-// fixed_string is constexpr throughout, so constants can be built and compared
-// at compile time. These are checked by the compiler - if they were wrong, this
-// file would not build.
-
-constexpr cas::fixed_string<8> k_default_symbol("AAPL");
-static_assert(k_default_symbol == "AAPL");
-static_assert(k_default_symbol.size() == 4);
-static_assert(k_default_symbol != "MSFT");
+// Checked by the compiler: if these were wrong, the file would not build.
+static_assert(order_book::default_symbol == "AAPL");
+static_assert(order_book::default_symbol.size() == 4);
+static_assert(order_book::default_symbol != "MSFT");
 
 } // namespace
 
@@ -73,74 +69,47 @@ bool run_fixed_string() {
     bool ok = true;
 
     section("Basic use");
-
     cas::fixed_string<16> symbol("AAPL");
-    ok &= check(symbol == "AAPL", "compares equal to a C string");
-    ok &= check(symbol.size() == 4, "size() is the content length, not the capacity");
-    ok &= check(symbol.capacity() == 16, "capacity() is the N it was declared with");
-
-    // Comparison works in either direction and across different capacities -
-    // useful because a fixed_string<8> and a fixed_string<16> are different
-    // types.
-    cas::fixed_string<8> shorter("AAPL");
-    ok &= check(symbol == shorter, "compares equal across capacities");
-    ok &= check("AAPL" == symbol, "compares with the C string on the left");
-
-    // --- 3. Truncation -------------------------------------------------------
-    //
-    // Assigning more than N characters truncates rather than throwing or
-    // allocating. That keeps the hot path free of exceptions, but it means an
-    // undersized capacity corrupts data quietly - check capacity when the
-    // input length is not something you control.
+    ok &= check(symbol == "AAPL" && "AAPL" == symbol, "compares with a C string on either side");
+    ok &= check(symbol.size() == 4, "size() is the content length");
+    ok &= check(symbol.capacity() == 16, "capacity() is the declared N");
+    // fixed_string<8> and fixed_string<16> are different types, yet compare.
+    ok &= check(symbol == cas::fixed_string<8>("AAPL"), "compares equal across capacities");
 
     section("Truncation is silent");
+    // Too long truncates - no exception, no allocation, no warning. Check the
+    // capacity when you do not control the input length.
     cas::fixed_string<4> tiny("ABCDEFGH");
     std::cout << "  fixed_string<4> given \"ABCDEFGH\" holds \"" << tiny << "\"\n";
-    ok &= check(tiny == "ABCD", "content was truncated to the capacity");
-    ok &= check(tiny.size() == 4, "size() reflects the truncated length");
-
-    // --- 4. Conversion -------------------------------------------------------
+    ok &= check(tiny == "ABCD" && tiny.size() == 4, "content truncated to the capacity");
 
     section("Converting");
-    std::string as_string = symbol.str();
-    ok &= check(as_string == "AAPL", "str() copies out to a std::string");
-
-    std::string_view as_view = symbol.view();
-    ok &= check(as_view == "AAPL", "view() gives a view with no copy");
-
-    // --- 5. As a map key -----------------------------------------------------
-    //
-    // fixed_string hashes consistently with string_view, so equal content
-    // always hashes equally - including across different capacities.
+    ok &= check(symbol.str() == std::string("AAPL"), "str() copies out to a std::string");
+    ok &= check(symbol.view() == "AAPL", "view() gives a string_view, no copy");
 
     section("Using it as a map key");
+    // Hashes like the equivalent string_view, so equal content hashes equally.
     std::unordered_map<cas::fixed_string<8>, int> position_by_symbol;
     position_by_symbol[cas::fixed_string<8>("AAPL")] = 500;
     position_by_symbol[cas::fixed_string<8>("MSFT")] = 250;
-
-    ok &= check(position_by_symbol[cas::fixed_string<8>("AAPL")] == 500,
-                "lookup by fixed_string key works");
+    ok &= check(position_by_symbol[cas::fixed_string<8>("AAPL")] == 500, "lookup by key works");
     ok &= check(position_by_symbol.size() == 2, "two distinct keys stored");
-
-    // --- 6. In an actual message ---------------------------------------------
 
     section("Sending a message that does not allocate");
     auto book = cas::system::create<order_book>();
     cas::system::start();
 
-    order o;
+    order_book::order o;
     o.symbol = "AAPL";
     o.trader = "desk-emea-01";
     o.quantity = 100;
     book.tell(o);
+    ok &= check(wait_until([] { return order_book::orders.load() == 1; }),
+                "the order arrived with its strings intact");
 
-    ok &= check(wait_until([] { return g_orders_handled.load() == 1; }),
-                "the order was delivered with its strings intact");
-
-    section("Shutting down");
+    section("Shut down");
     cas::system::shutdown();
     cas::system::wait_for_shutdown();
-
     return ok;
 }
 
