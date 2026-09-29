@@ -25,33 +25,42 @@
 
 namespace {
 
+// The messages.
+namespace msg {
+
+struct work : cas::message_base {
+    int id = 0;
+};
+
+// From the worker's on_shutdown() to the undertaker.
+struct farewell : cas::message_base {};
+
+} // namespace msg
+
+// The actors.
+namespace actor {
+
 // Only here to receive a message sent from the worker's on_shutdown().
 class undertaker : public cas::actor {
 public:
-    struct farewell : cas::message_base {};
-
-    static inline std::atomic<int> farewells{0};  // observed by the tutorial
+    static inline std::atomic<int> s_farewell_count{0};  // observed by the tutorial
 
 protected:
     void on_start() override {
         set_name("undertaker");
-        handler<farewell>(&undertaker::on_farewell);
+        handler<msg::farewell>(&undertaker::on_farewell);
     }
 
 private:
-    void on_farewell(const farewell&) {
+    void on_farewell(const msg::farewell&) {
         std::cout << "  undertaker received a farewell\n";
-        farewells.fetch_add(1);
+        s_farewell_count.fetch_add(1);
     }
 };
 
 class worker : public cas::actor {
 public:
-    struct work : cas::message_base {
-        int id = 0;
-    };
-
-    explicit worker(cas::actor_ref undertaker) : m_undertaker(std::move(undertaker)) {}
+    explicit worker(cas::actor_ref undertaker_ref) : m_undertaker(std::move(undertaker_ref)) {}
 
     // Observed by the tutorial: the order hooks and handlers ran in.
     static std::vector<std::string> history() {
@@ -86,7 +95,7 @@ protected:
     //    acquire resources.
     void on_start() override {
         set_name("worker");
-        handler<work>(&worker::on_work);
+        handler<msg::work>(&worker::on_work);
         note("on_start");
     }
 
@@ -96,7 +105,7 @@ protected:
     //    If another actor must hear from you, tell it while the system runs.
     void on_shutdown() override {
         note("on_shutdown");
-        m_undertaker.tell(undertaker::farewell{});
+        m_undertaker.tell(msg::farewell{});
     }
 
     // 3. After the actor has fully stopped: release resources, publish final
@@ -104,7 +113,7 @@ protected:
     void on_stop() override { note("on_stop"); }
 
 private:
-    void on_work(const work& msg) { note("handled work " + std::to_string(msg.id)); }
+    void on_work(const msg::work& _msg) { note("handled work " + std::to_string(_msg.id)); }
 
     static void note(const std::string& what) {
         std::cout << "  " << what << "\n";
@@ -118,6 +127,8 @@ private:
     cas::actor_ref m_undertaker;
 };
 
+} // namespace actor
+
 } // namespace
 
 namespace tut {
@@ -127,8 +138,8 @@ bool run_lifecycle_hooks() {
 
     heading("Starting");
     //------------------
-    auto undertaker_ref = cas::system::create<undertaker>();
-    auto worker_ref = cas::system::create<worker>(undertaker_ref);
+    auto undertaker_ref = cas::system::create<actor::undertaker>();
+    auto worker_ref = cas::system::create<actor::worker>(undertaker_ref);
     cas::system::start();
 
     heading("Queueing work, then shutting down at once");
@@ -136,29 +147,29 @@ bool run_lifecycle_hooks() {
     // The messages are already in the mailbox, so shutdown drains them rather
     // than discarding them: shutdown is graceful by default.
     for (int i = 1; i <= 3; ++i) {
-        worker::work w;
-        w.id = i;
-        worker_ref.tell(w);
+        msg::work job;
+        job.id = i;
+        worker_ref.tell(job);
     }
     cas::system::shutdown();
     cas::system::wait_for_shutdown();
 
     heading("Checking what happened");
     //--------------------------------
-    const int end = static_cast<int>(worker::history().size());
+    const int end = static_cast<int>(actor::worker::history().size());
 
-    ok &= check(worker::work_handled() == 3, "all 3 queued messages were drained, not dropped");
-    ok &= check(worker::position_of("on_start") == 0, "on_start() ran first");
-    ok &= check(worker::position_of("on_shutdown") < worker::position_of("on_stop") &&
-                    worker::position_of("on_stop") < end,
+    ok &= check(actor::worker::work_handled() == 3, "all 3 queued messages were drained, not dropped");
+    ok &= check(actor::worker::position_of("on_start") == 0, "on_start() ran first");
+    ok &= check(actor::worker::position_of("on_shutdown") < actor::worker::position_of("on_stop") &&
+                    actor::worker::position_of("on_stop") < end,
                 "on_shutdown() ran before on_stop()");
-    ok &= check(worker::position_of("handled work 3") < worker::position_of("on_stop"),
+    ok &= check(actor::worker::position_of("handled work 3") < actor::worker::position_of("on_stop"),
                 "queued work was handled before on_stop()");
 
     // Deliberately not asserted: whether the farewell arrived is a race, and
     // both outcomes are correct.
     std::cout << "  (farewell from on_shutdown() "
-              << (undertaker::farewells.load() == 1 ? "arrived" : "did not arrive")
+              << (actor::undertaker::s_farewell_count.load() == 1 ? "arrived" : "did not arrive")
               << " this run - both are valid)\n";
 
     return ok;

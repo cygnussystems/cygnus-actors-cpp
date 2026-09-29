@@ -23,60 +23,70 @@
 
 namespace {
 
+// The messages.
+namespace msg {
+
+struct log_line : cas::message_base {
+    std::string text;
+};
+
+struct report : cas::message_base {
+    std::string text;
+};
+
+} // namespace msg
+
+// The actors.
+namespace actor {
+
 class logger : public cas::actor {
 public:
-    struct log_line : cas::message_base {
-        std::string text;
-    };
-
     // The name others look this actor up by. Names must be unique.
-    static constexpr const char* registry_name = "logger";
+    static constexpr const char* s_registry_name = "logger";
 
-    static inline std::atomic<int> lines{0};  // observed by the tutorial
+    static inline std::atomic<int> s_line_count{0};  // observed by the tutorial
 
 protected:
     // set_name() in on_start() registers the actor under that name.
     void on_start() override {
-        set_name(registry_name);
-        handler<log_line>(&logger::on_log_line);
+        set_name(s_registry_name);
+        handler<msg::log_line>(&logger::on_log_line);
     }
 
 private:
-    void on_log_line(const log_line& msg) {
-        std::cout << "  [log] " << msg.text << "\n";
-        lines.fetch_add(1);
+    void on_log_line(const msg::log_line& _msg) {
+        std::cout << "  [log] " << _msg.text << "\n";
+        s_line_count.fetch_add(1);
     }
 };
 
 // Holds no reference to the logger: it finds it by name when it needs it.
 class reporter : public cas::actor {
 public:
-    struct report : cas::message_base {
-        std::string text;
-    };
-
-    static inline std::atomic<int> failed_lookups{0};  // observed by the tutorial
+    static inline std::atomic<int> s_failed_lookup_count{0};  // observed by the tutorial
 
 protected:
     void on_start() override {
         set_name("reporter");
-        handler<report>(&reporter::on_report);
+        handler<msg::report>(&reporter::on_report);
     }
 
 private:
-    void on_report(const report& msg) {
+    void on_report(const msg::report& _msg) {
         // get() returns an invalid ref if nothing is registered under the name
         // or the actor has stopped. Telling an invalid ref goes nowhere.
-        auto logger_ref = cas::actor_registry::get(logger::registry_name);
+        auto logger_ref = cas::actor_registry::get(logger::s_registry_name);
         if (!logger_ref.is_valid()) {
-            failed_lookups.fetch_add(1);
+            s_failed_lookup_count.fetch_add(1);
             return;
         }
-        logger::log_line line;
-        line.text = msg.text;
+        msg::log_line line;
+        line.text = _msg.text;
         logger_ref.tell(line);
     }
 };
+
+} // namespace actor
 
 } // namespace
 
@@ -87,8 +97,8 @@ bool run_actor_registry() {
 
     heading("Starting two named actors");
     //-----------------------------------
-    cas::system::create<logger>();  // no need to keep the ref: it can be found by name
-    auto reporter_ref = cas::system::create<reporter>();
+    cas::system::create<actor::logger>();  // no need to keep the ref: it can be found by name
+    auto reporter_ref = cas::system::create<actor::reporter>();
     cas::system::start();
 
     heading("Looking actors up by name");
@@ -109,19 +119,19 @@ bool run_actor_registry() {
 
     heading("One actor finding another by name");
     //-------------------------------------------
-    reporter::report req;
+    msg::report req;
     req.text = "hello from the reporter";
     reporter_ref.tell(req);
-    ok &= check(wait_until(logger::lines, 1),
+    ok &= check(wait_until(actor::logger::s_line_count, 1),
                 "reporter found the logger and the message arrived");
-    ok &= check(reporter::failed_lookups.load() == 0, "no lookup failed");
+    ok &= check(actor::reporter::s_failed_lookup_count.load() == 0, "no lookup failed");
 
     heading("Sending straight through a looked-up ref");
     //--------------------------------------------------
-    logger::log_line direct;
+    msg::log_line direct;
     direct.text = "sent from main()";
     cas::actor_registry::get("logger").tell(direct);
-    ok &= check(wait_until(logger::lines, 2),
+    ok &= check(wait_until(actor::logger::s_line_count, 2),
                 "message sent via registry lookup arrived");
 
     heading("Shutting down");

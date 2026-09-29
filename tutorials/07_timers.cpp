@@ -23,66 +23,76 @@
 
 namespace {
 
+// The messages. Timer messages are ordinary messages; they simply arrive later.
+namespace msg {
+
+// Sent by main(). schedule_*() are protected actor members - an actor arms
+// timers on itself - so the outside world asks it to by message. (Arming in
+// on_start() is just as common.)
+struct arm : cas::message_base {};
+
+// Only the ticker sends these, to itself, through its timers.
+struct one_shot : cas::message_base {
+    int label = 0;
+};
+
+struct heartbeat : cas::message_base {};
+
+} // namespace msg
+
+// The actors.
+namespace actor {
+
 class ticker : public cas::actor {
 public:
-    // Sent by main(). schedule_*() are protected actor members - an actor
-    // arms timers on itself - so the outside world asks it to by message.
-    // (Arming in on_start() is just as common.)
-    struct arm : cas::message_base {};
-
-    static constexpr int heartbeat_limit = 3;
-    static inline std::atomic<int> one_shots{0};        // observed by the tutorial
-    static inline std::atomic<int> heartbeats{0};
-    static inline std::atomic<bool> cancelled{false};
+    static constexpr int s_heartbeat_limit = 3;
+    static inline std::atomic<int> s_one_shot_count{0};      // observed by the tutorial
+    static inline std::atomic<int> s_heartbeat_count{0};
+    static inline std::atomic<bool> s_cancelled{false};
 
 protected:
     void on_start() override {
         set_name("ticker");
-        handler<arm>(&ticker::on_arm);
-        handler<one_shot>(&ticker::on_one_shot);
-        handler<heartbeat>(&ticker::on_heartbeat);
+        handler<msg::arm>(&ticker::on_arm);
+        handler<msg::one_shot>(&ticker::on_one_shot);
+        handler<msg::heartbeat>(&ticker::on_heartbeat);
     }
 
 private:
-    // Timer messages are ordinary messages; they simply arrive later. Only
-    // the ticker sends them to itself, so they are private.
-    struct one_shot : cas::message_base {
-        int label = 0;
-    };
-    struct heartbeat : cas::message_base {};
-
-    void on_arm(const arm&) {
+    void on_arm(const msg::arm&) {
         // Delivered once after the delay. The message is copied, so a local
         // is fine.
-        one_shot msg;
-        msg.label = 1;
-        schedule_once(std::chrono::milliseconds(30), msg);
+        msg::one_shot once;
+        once.label = 1;
+        schedule_once(std::chrono::milliseconds(30), once);
 
         // Redelivered every interval until cancelled - keep the id.
-        m_heartbeat = schedule_periodic(std::chrono::milliseconds(10), heartbeat{});
+        m_heartbeat = schedule_periodic(std::chrono::milliseconds(10), msg::heartbeat{});
         std::cout << "  timers armed\n";
     }
 
-    void on_one_shot(const one_shot& msg) {
-        std::cout << "  one-shot timer fired (label " << msg.label << ")\n";
-        one_shots.fetch_add(1);
+    void on_one_shot(const msg::one_shot& _msg) {
+        std::cout << "  one-shot timer fired (label " << _msg.label << ")\n";
+        s_one_shot_count.fetch_add(1);
     }
 
-    void on_heartbeat(const heartbeat&) {
-        const int count = heartbeats.fetch_add(1) + 1;
+    void on_heartbeat(const msg::heartbeat&) {
+        const int count = s_heartbeat_count.fetch_add(1) + 1;
         std::cout << "  heartbeat " << count << "\n";
 
         // Cancelling from the timer's own handler is the normal way to end a
         // periodic timer. Cancelling a dead id is harmless.
-        if (count >= heartbeat_limit) {
+        if (count >= s_heartbeat_limit) {
             cancel_timer(m_heartbeat);
-            cancelled.store(true);
-            std::cout << "  heartbeat cancelled after " << heartbeat_limit << "\n";
+            s_cancelled.store(true);
+            std::cout << "  heartbeat cancelled after " << s_heartbeat_limit << "\n";
         }
     }
 
     cas::timer_id m_heartbeat = cas::INVALID_TIMER_ID;
 };
+
+} // namespace actor
 
 } // namespace
 
@@ -93,22 +103,22 @@ bool run_timers() {
 
     heading("Arming timers");
     //-----------------------
-    auto ticker_ref = cas::system::create<ticker>();
+    auto ticker_ref = cas::system::create<actor::ticker>();
     cas::system::start();
-    ticker_ref.tell(ticker::arm{});
+    ticker_ref.tell(msg::arm{});
 
-    ok &= check(wait_until(ticker::one_shots, 1),
+    ok &= check(wait_until(actor::ticker::s_one_shot_count, 1),
                 "one-shot timer fired exactly once");
-    ok &= check(wait_until(ticker::cancelled),
+    ok &= check(wait_until(actor::ticker::s_cancelled),
                 "periodic timer fired repeatedly, then cancelled itself");
 
     heading("Confirming the cancellation held");
     //------------------------------------------
     // Several more intervals pass; nothing may move.
-    const int after_cancel = ticker::heartbeats.load();
+    const int after_cancel = actor::ticker::s_heartbeat_count.load();
     std::this_thread::sleep_for(std::chrono::milliseconds(60));
-    ok &= check(ticker::heartbeats.load() == after_cancel, "no further heartbeats after cancel_timer()");
-    ok &= check(ticker::one_shots.load() == 1, "the one-shot timer did not repeat");
+    ok &= check(actor::ticker::s_heartbeat_count.load() == after_cancel, "no further heartbeats after cancel_timer()");
+    ok &= check(actor::ticker::s_one_shot_count.load() == 1, "the one-shot timer did not repeat");
 
     heading("Shutting down");
     //-----------------------

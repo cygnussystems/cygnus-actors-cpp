@@ -25,25 +25,31 @@
 
 namespace {
 
-class calculator : public cas::actor {
-public:
-    // Operation tags: empty types that name an operation. A call is dispatched
-    // on its tag, so one actor can expose several operations, each with its
-    // own signature.
-    struct add_op {};
-    struct divide_op {};
-    struct slow_op {};
-    struct self_ask_op {};
+// The messages. For call(), these are operation tags: empty types that name
+// an operation. A call is dispatched on its tag, so one actor can expose
+// several operations, each with its own signature.
+namespace msg {
 
+struct add_op {};
+struct divide_op {};
+struct slow_op {};
+struct self_ask_op {};
+
+} // namespace msg
+
+// The actors.
+namespace actor {
+
+class calculator : public cas::actor {
 protected:
     void on_start() override {
         set_name("calculator");
         // call_handler<ReturnType, Tag>(&method): an ordinary member function
         // with ordinary arguments - call()'s extra arguments are forwarded to it.
-        call_handler<int, add_op>(&calculator::add);
-        call_handler<double, divide_op>(&calculator::divide);
-        call_handler<int, slow_op>(&calculator::slow);
-        call_handler<int, self_ask_op>(&calculator::ask_myself);
+        call_handler<int, msg::add_op>(&calculator::add);
+        call_handler<double, msg::divide_op>(&calculator::divide);
+        call_handler<int, msg::slow_op>(&calculator::slow);
+        call_handler<int, msg::self_ask_op>(&calculator::ask_myself);
     }
 
 private:
@@ -66,8 +72,10 @@ private:
 
     // Deliberately wrong: the thread that would answer is the one waiting.
     // The framework throws call_deadlock_error instead of hanging.
-    int ask_myself() { return self().call<int>(add_op{}, 1, 1); }
+    int ask_myself() { return self().call<int>(msg::add_op{}, 1, 1); }
 };
+
+} // namespace actor
 
 } // namespace
 
@@ -79,14 +87,14 @@ bool run_call() {
 
     heading("Starting");
     //------------------
-    auto calc = cas::system::create<calculator>();
+    auto calculator_ref = cas::system::create<actor::calculator>();
     cas::system::start();
 
     heading("Asking for a value");
     //----------------------------
     // call<Return>(tag, args...) blocks until the handler has returned.
-    const int sum = calc.call<int>(calculator::add_op{}, 10, 5);
-    const double quotient = calc.call<double>(calculator::divide_op{}, 7, 2);
+    const int sum = calculator_ref.call<int>(msg::add_op{}, 10, 5);
+    const double quotient = calculator_ref.call<double>(msg::divide_op{}, 7, 2);
     std::cout << "  add(10, 5) = " << sum << ", divide(7, 2) = " << quotient << "\n";
     ok &= check(sum == 15, "call<int>(add_op{}, 10, 5) returned 15");
     ok &= check(quotient == 3.5, "call<double>(divide_op{}, 7, 2) returned 3.5");
@@ -95,17 +103,17 @@ bool run_call() {
     //-------------------------------
     // Returns an empty optional instead of blocking forever. Prefer it wherever
     // the target might be slow or stuck.
-    auto quick = calc.call<int>(calculator::add_op{}, 1000ms, 2, 3);
+    auto quick = calculator_ref.call<int>(msg::add_op{}, 1000ms, 2, 3);
     ok &= check(quick.has_value() && *quick == 5,
                 "a fast operation returned a value within the timeout");
-    auto late = calc.call<int>(calculator::slow_op{}, 50ms, 500);
+    auto late = calculator_ref.call<int>(msg::slow_op{}, 50ms, 500);
     ok &= check(!late.has_value(), "a slow operation timed out and returned an empty optional");
 
     heading("A call handler that throws");
     //------------------------------------
     bool caught = false;
     try {
-        (void)calc.call<double>(calculator::divide_op{}, 1, 0);
+        (void)calculator_ref.call<double>(msg::divide_op{}, 1, 0);
     } catch (const std::exception& e) {
         caught = true;
         std::cout << "  caught: " << e.what() << "\n";
@@ -123,7 +131,7 @@ bool run_call() {
     // (tutorial 3). main() is not an actor, so its calls above were safe.
     bool rejected = false;
     try {
-        (void)calc.call<int>(calculator::self_ask_op{}, 2000ms);
+        (void)calculator_ref.call<int>(msg::self_ask_op{}, 2000ms);
     } catch (const std::exception& e) {
         rejected = true;
         std::cout << "  rejected: " << e.what() << "\n";

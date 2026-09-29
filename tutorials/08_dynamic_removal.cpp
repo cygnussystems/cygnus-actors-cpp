@@ -25,37 +25,47 @@
 
 namespace {
 
+// The messages.
+namespace msg {
+
+struct job : cas::message_base {
+    int id = 0;
+};
+
+} // namespace msg
+
+// The actors.
+namespace actor {
+
 class worker : public cas::actor {
 public:
-    struct job : cas::message_base {
-        int id = 0;
-    };
-
-    static inline std::atomic<int> jobs_done{0};         // observed by the tutorial
+    static inline std::atomic<int> s_job_count{0};       // observed by the tutorial
 
     explicit worker(std::string name) : m_name(std::move(name)) {}
 
 protected:
     void on_start() override {
         set_name(m_name);
-        handler<job>(&worker::on_job);
+        handler<msg::job>(&worker::on_job);
     }
 
     void on_stop() override { std::cout << "  " << m_name << " stopped\n"; }
 
 private:
-    void on_job(const job& msg) {
-        std::cout << "  " << m_name << " handled job " << msg.id << "\n";
-        jobs_done.fetch_add(1);
+    void on_job(const msg::job& _msg) {
+        std::cout << "  " << m_name << " handled job " << _msg.id << "\n";
+        s_job_count.fetch_add(1);
     }
 
     std::string m_name;
 };
 
+} // namespace actor
+
 void send_job(const cas::actor_ref& to, int id) {
-    worker::job msg;
-    msg.id = id;
-    to.tell(msg);
+    msg::job job;
+    job.id = id;
+    to.tell(job);
 }
 
 } // namespace
@@ -67,10 +77,10 @@ bool run_dynamic_removal() {
 
     heading("Starting a worker");
     //---------------------------
-    auto worker_ref = cas::system::create<worker>("worker_a");
+    auto worker_ref = cas::system::create<actor::worker>("worker_a");
     cas::system::start();
     send_job(worker_ref, 1);
-    ok &= check(wait_until(worker::jobs_done, 1), "worker handled a job normally");
+    ok &= check(wait_until(actor::worker::s_job_count, 1), "worker handled a job normally");
 
     heading("Stopping the worker (default: drain)");
     //----------------------------------------------
@@ -84,17 +94,17 @@ bool run_dynamic_removal() {
     // Not dangling - safe to use - but messages through it are silently
     // dropped (tutorial 10 shows how to observe that).
     ok &= check(!worker_ref.is_running(), "is_running() is false for the stopped actor");
-    const int before = worker::jobs_done.load();
+    const int before = actor::worker::s_job_count.load();
     send_job(worker_ref, 99);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    ok &= check(worker::jobs_done.load() == before, "a message to a stopped actor was silently dropped");
+    ok &= check(actor::worker::s_job_count.load() == before, "a message to a stopped actor was silently dropped");
 
     heading("Stopping with stop_mode::discard");
     //------------------------------------------
     // discard drops queued messages instead of handling them: for work that
     // is worthless once the actor goes away.
-    auto second = cas::system::create<worker>("worker_b");
-    const int before_b = worker::jobs_done.load();
+    auto second = cas::system::create<actor::worker>("worker_b");
+    const int before_b = actor::worker::s_job_count.load();
     for (int i = 1; i <= 5; ++i) {
         send_job(second, i);
     }
@@ -102,18 +112,18 @@ bool run_dynamic_removal() {
     discard.mode = cas::stop_mode::discard;
     cas::system::stop_actor(second, discard);
     // Some may have run before the stop landed; discard only skips the rest.
-    std::cout << "  worker_b handled " << worker::jobs_done.load() - before_b
+    std::cout << "  worker_b handled " << actor::worker::s_job_count.load() - before_b
               << " of 5 queued jobs before being discarded\n";
     ok &= check(!second.is_running(), "discarded actor is no longer running");
 
     heading("Creating a replacement under the same name");
     //----------------------------------------------------
     // A stopped actor's name is free again - the basis of restarting a worker.
-    auto replacement = cas::system::create<worker>("worker_a");
+    auto replacement = cas::system::create<actor::worker>("worker_a");
     ok &= check(replacement.is_running(), "replacement actor is running");
-    const int before_replacement = worker::jobs_done.load();
+    const int before_replacement = actor::worker::s_job_count.load();
     send_job(replacement, 2);
-    ok &= check(wait_until(worker::jobs_done, before_replacement + 1),
+    ok &= check(wait_until(actor::worker::s_job_count, before_replacement + 1),
                 "the replacement handled a job");
 
     heading("Shutting down");

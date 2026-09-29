@@ -25,27 +25,35 @@
 
 namespace {
 
+// The messages. Termination is reported with cas::termination_msg, which the
+// framework defines.
+namespace msg {
+
+struct do_work : cas::message_base {};
+
+} // namespace msg
+
+// The actors.
+namespace actor {
+
 // Nothing special: it neither knows nor cares that it is watched.
 class fragile_worker : public cas::actor {
-public:
-    struct do_work : cas::message_base {};
-
 protected:
     void on_start() override {
         set_name("fragile_worker");
-        handler<do_work>(&fragile_worker::on_do_work);
+        handler<msg::do_work>(&fragile_worker::on_do_work);
     }
 
 private:
-    void on_do_work(const do_work&) {
+    void on_do_work(const msg::do_work&) {
         std::cout << "  fragile_worker did some work\n";
     }
 };
 
 class supervisor : public cas::actor {
 public:
-    static inline std::atomic<int> terminations{0};     // observed by the tutorial
-    static inline std::atomic<int> restarts{0};
+    static inline std::atomic<int> s_termination_count{0};  // observed by the tutorial
+    static inline std::atomic<int> s_restart_count{0};
 
     static std::string last_terminated() {
         std::lock_guard<std::mutex> lock(s_mutex);
@@ -61,13 +69,13 @@ protected:
     }
 
 private:
-    void on_termination(const cas::termination_msg& msg) {
-        std::cout << "  supervisor: '" << msg.actor_name << "' terminated\n";
+    void on_termination(const cas::termination_msg& _msg) {
+        std::cout << "  supervisor: '" << _msg.actor_name << "' terminated\n";
         {
             std::lock_guard<std::mutex> lock(s_mutex);
-            s_last_terminated = msg.actor_name;
+            s_last_terminated = _msg.actor_name;
         }
-        terminations.fetch_add(1);
+        s_termination_count.fetch_add(1);
 
         // create() is fine inside a handler; the new actor starts at once.
         // Restart only once - an unbounded restart turns a permanently
@@ -76,7 +84,7 @@ private:
             m_restarted = true;
             cas::system::create<fragile_worker>();
             std::cout << "  supervisor: restarted it\n";
-            restarts.fetch_add(1);                       // after create() returned
+            s_restart_count.fetch_add(1);                // after create() returned
         }
     }
 
@@ -85,6 +93,8 @@ private:
     static inline std::mutex s_mutex;
     static inline std::string s_last_terminated;
 };
+
+} // namespace actor
 
 } // namespace
 
@@ -95,21 +105,21 @@ bool run_watch_pattern() {
 
     heading("Watching");
     //------------------
-    auto worker_ref = cas::system::create<fragile_worker>();
-    auto supervisor_ref = cas::system::create<supervisor>();
+    auto worker_ref = cas::system::create<actor::fragile_worker>();
+    auto supervisor_ref = cas::system::create<actor::supervisor>();
     cas::system::start();
     // watch(watcher, watched): one-way; an actor may watch several others.
     cas::system::watch(supervisor_ref, worker_ref);
-    worker_ref.tell(fragile_worker::do_work{});
+    worker_ref.tell(msg::do_work{});
 
     heading("Stopping the watched actor");
     //------------------------------------
     cas::system::stop_actor(worker_ref);
-    ok &= check(wait_until(supervisor::terminations, 1),
+    ok &= check(wait_until(actor::supervisor::s_termination_count, 1),
                 "supervisor was notified of the termination");
-    ok &= check(supervisor::last_terminated() == "fragile_worker",
+    ok &= check(actor::supervisor::last_terminated() == "fragile_worker",
                 "termination_msg named the actor that stopped");
-    ok &= check(wait_until(supervisor::restarts, 1),
+    ok &= check(wait_until(actor::supervisor::s_restart_count, 1),
                 "supervisor restarted the worker");
 
     // The restarted actor is a new one; the old reference stays stale.
@@ -122,10 +132,10 @@ bool run_watch_pattern() {
     //-----------------------------------------
     // unwatch() spares the watcher a notification it would only ignore.
     cas::system::unwatch(supervisor_ref, restarted);
-    const int before = supervisor::terminations.load();
+    const int before = actor::supervisor::s_termination_count.load();
     cas::system::stop_actor(restarted);
     std::this_thread::sleep_for(std::chrono::milliseconds(80));
-    ok &= check(supervisor::terminations.load() == before, "no notification arrived after unwatch()");
+    ok &= check(actor::supervisor::s_termination_count.load() == before, "no notification arrived after unwatch()");
 
     heading("Shutting down");
     //-----------------------

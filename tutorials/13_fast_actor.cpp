@@ -24,20 +24,28 @@
 
 namespace {
 
+// The messages. A fast actor receives the same messages as any other actor.
+namespace msg {
+
+struct market_tick : cas::message_base {
+    double price = 0.0;
+};
+
+} // namespace msg
+
+// The actors.
+namespace actor {
+
 // Derives from cas::fast_actor instead of cas::actor. Handlers, on_start()
 // and messages are unchanged - only the execution model differs.
 class price_engine : public cas::fast_actor {
 public:
-    struct market_tick : cas::message_base {
-        double price = 0.0;
-    };
-
-    static inline std::atomic<int> ticks{0};             // observed by the tutorial
+    static inline std::atomic<int> s_tick_count{0};      // observed by the tutorial
 
 protected:
     void on_start() override {
         set_name("price_engine");
-        handler<market_tick>(&price_engine::on_tick);
+        handler<msg::market_tick>(&price_engine::on_tick);
 
         // What the thread does when the mailbox is empty:
         //   yield     - give up the CPU; ~1-10us latency, a good neighbour.
@@ -49,8 +57,10 @@ protected:
     }
 
 private:
-    void on_tick(const market_tick&) { ticks.fetch_add(1); }
+    void on_tick(const msg::market_tick&) { s_tick_count.fetch_add(1); }
 };
+
+} // namespace actor
 
 } // namespace
 
@@ -63,19 +73,19 @@ bool run_fast_actor() {
     //-------------------------------
     // From here on the actor's thread polls, even with nothing to do - that is
     // the price paid for the latency.
-    auto engine = cas::system::create<price_engine>();
+    auto engine = cas::system::create<actor::price_engine>();
     cas::system::start();
 
     heading("Sending ticks");
     //-----------------------
-    constexpr int tick_count = 100;
+    constexpr int tick_total = 100;
     const auto begin = std::chrono::steady_clock::now();
-    for (int i = 0; i < tick_count; ++i) {
-        price_engine::market_tick t;
-        t.price = 100.0 + i;
-        engine.tell(t);
+    for (int i = 0; i < tick_total; ++i) {
+        msg::market_tick tick;
+        tick.price = 100.0 + i;
+        engine.tell(tick);
     }
-    ok &= check(wait_until(price_engine::ticks, tick_count),
+    ok &= check(wait_until(actor::price_engine::s_tick_count, tick_total),
                 "the fast actor processed all 100 ticks");
 
     // Printed, not asserted: a timing threshold would fail on a loaded machine
@@ -88,7 +98,7 @@ bool run_fast_actor() {
     //-------------------
     cas::system::shutdown();
     cas::system::wait_for_shutdown();
-    ok &= check(price_engine::ticks.load() == tick_count, "no ticks were lost");
+    ok &= check(actor::price_engine::s_tick_count.load() == tick_total, "no ticks were lost");
     return ok;
 }
 

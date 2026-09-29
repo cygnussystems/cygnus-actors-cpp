@@ -27,26 +27,36 @@
 
 namespace {
 
+// The messages.
+namespace msg {
+
+struct payload : cas::message_base {
+    int id = 0;
+};
+
+} // namespace msg
+
+// The actors.
+namespace actor {
+
 class receiver : public cas::actor {
 public:
-    struct payload : cas::message_base {
-        int id = 0;
-    };
-
-    static inline std::atomic<int> delivered{0};         // observed by the tutorial
+    static inline std::atomic<int> s_delivered_count{0};  // observed by the tutorial
 
 protected:
     void on_start() override {
         set_name("receiver");
-        handler<payload>(&receiver::on_payload);
+        handler<msg::payload>(&receiver::on_payload);
     }
 
 private:
-    void on_payload(const payload& msg) {
-        std::cout << "  receiver got payload " << msg.id << "\n";
-        delivered.fetch_add(1);
+    void on_payload(const msg::payload& _msg) {
+        std::cout << "  receiver got payload " << _msg.id << "\n";
+        s_delivered_count.fetch_add(1);
     }
 };
+
+} // namespace actor
 
 // What the tutorial's dead letter handler records. The handler runs on
 // whichever thread discovered the failure, so access is locked.
@@ -78,9 +88,9 @@ private:
 };
 
 void send_payload(const cas::actor_ref& to, int id) {
-    receiver::payload msg;
-    msg.id = id;
-    to.tell(msg);
+    msg::payload payload;
+    payload.id = id;
+    to.tell(payload);
 }
 
 } // namespace
@@ -92,10 +102,10 @@ bool run_dead_letters() {
 
     heading("Starting");
     //------------------
-    auto receiver_ref = cas::system::create<receiver>();
+    auto receiver_ref = cas::system::create<actor::receiver>();
     cas::system::start();
     send_payload(receiver_ref, 1);
-    ok &= check(wait_until(receiver::delivered, 1), "a normal message was delivered");
+    ok &= check(wait_until(actor::receiver::s_delivered_count, 1), "a normal message was delivered");
 
     heading("Sending to a stopped actor");
     //------------------------------------

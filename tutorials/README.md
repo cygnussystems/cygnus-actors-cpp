@@ -85,22 +85,33 @@ built only when the framework is built with ZeroMQ; see
 
 ## Conventions
 
-**An actor is self-contained.** Each actor class holds its messages, its
-state, its handlers and what it exposes. A message only one actor receives is
-a nested type of that actor (`greeter::greet`); messages exchanged between
-actors - a request and its reply, a shared event - sit in a short protocol
-block at the top of the file.
+Tutorial 3 is the reference layout.
+
+**Two blocks: `msg` and `actor`.** Every message type lives in `namespace
+msg`; the actor classes live in `namespace actor`. The file then reads as
+"what is said" followed by "who says it", and `msg::ping` / `actor::pinger`
+tell you at a glance which is which. Helpers that are neither (a dead-letter
+log registered as a callback) come after both.
+
+**An actor is self-contained.** An actor class holds its state, its handlers
+and what it exposes; nothing about it lives in globals.
+
+**Names say who owns the data.** `m_name` is the actor's own state - only its
+thread touches it, so it needs no lock. `s_name` is static, shared by every
+instance and read by `main()` from another thread - so it is atomic, a
+constant, or behind a mutex. Handler parameters are `_msg`; a variable is
+never called `msg`, which would hide the namespace.
 
 **No global state.** `create<T>()` returns an `actor_ref`, not the actor, so
-`main()` cannot reach in and read actor state. What a tutorial needs to check
-is published by the actor that owns it, as `static inline std::atomic`
-members marked "observed by the tutorial". Real programs reply with a message
-instead (tutorial 3).
+`main()` cannot reach in and read actor state. What a tutorial checks is
+published by the actor that owns it, as `static inline std::atomic` members
+(`s_pong_count`) marked "observed by the tutorial". Real programs reply with
+a message instead (tutorial 3).
 
 **Plain syntax: no lambdas.** Handlers are private member functions, so
 `on_start()` reads as the list of messages the actor accepts; callbacks are
 static member functions; waits name what they wait for -
-`wait_until(greeter::greetings, 1)`, `wait_until(&session::order_count, 3)`.
+`wait_until(actor::pinger::s_pong_count, 3)`, `wait_until(&actor::session::order_count, 3)`.
 
 **Each step is a `heading()`** - underlined in the output and by a
 `//----` comment in the source, so code and output line up.

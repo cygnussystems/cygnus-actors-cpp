@@ -34,10 +34,34 @@
 
 namespace {
 
-// Protocol: market data is handled by both trading systems and streams.
+// The messages. Market data is handled by both trading systems and streams;
+// the others are commands to a trading system or to the manager.
+namespace msg {
+
 struct market_update : cas::message_base {
     double price = 0.0;
 };
+
+struct run_complete : cas::message_base {};  // to a trading system: "your run is over"
+
+struct drop_stream : cas::message_base {  // from the manager to a trading system
+    cas::actor_ref stream;
+};
+
+struct launch : cas::message_base {  // to the manager: a trading system + one stream per subscriber
+    std::string system_id;
+    std::vector<std::string> subscribers;
+};
+
+struct unsubscribe : cas::message_base {  // to the manager: a client stopped listening
+    std::string system_id;
+    std::string subscriber;
+};
+
+} // namespace msg
+
+// The actors.
+namespace actor {
 
 // One per subscriber. Deliberately a plain pooled actor: there may be hundreds,
 // and a fast_actor each would mean a dedicated thread each. Unnamed - the
@@ -46,40 +70,35 @@ class stream : public cas::actor {
 public:
     explicit stream(std::string subscriber) : m_subscriber(std::move(subscriber)) {}
 
-    static inline std::atomic<int> stopped{0};  // observed by the tutorial
-    static inline std::atomic<int> updates{0};
+    static inline std::atomic<int> s_stopped_count{0};  // observed by the tutorial
+    static inline std::atomic<int> s_update_count{0};
 
     static int updates_for(const std::string& subscriber) {
         std::lock_guard<std::mutex> lock(s_mutex);
-        auto it = s_updates.find(subscriber);
-        return it == s_updates.end() ? 0 : it->second;
+        auto it = s_updates_by_subscriber.find(subscriber);
+        return it == s_updates_by_subscriber.end() ? 0 : it->second;
     }
 
 protected:
-    void on_start() override { handler<market_update>(&stream::on_update); }
-    void on_stop() override { stopped.fetch_add(1); }
+    void on_start() override { handler<msg::market_update>(&stream::on_update); }
+    void on_stop() override { s_stopped_count.fetch_add(1); }
 
 private:
-    void on_update(const market_update&) {
+    void on_update(const msg::market_update&) {
         // A real stream would write to the client's connection here
         std::lock_guard<std::mutex> lock(s_mutex);
-        ++s_updates[m_subscriber];
-        updates.fetch_add(1);
+        ++s_updates_by_subscriber[m_subscriber];
+        s_update_count.fetch_add(1);
     }
 
     std::string m_subscriber;
 
     static inline std::mutex s_mutex;
-    static inline std::map<std::string, int> s_updates;  // subscriber -> count
+    static inline std::map<std::string, int> s_updates_by_subscriber;
 };
 
 class trading_system : public cas::actor {
 public:
-    struct run_complete : cas::message_base {};  // "your run is over"
-    struct drop_stream : cas::message_base {     // from the manager
-        cas::actor_ref stream;
-    };
-
     trading_system(std::string id, std::vector<cas::actor_ref> streams)
         : m_id(std::move(id)), m_streams(std::move(streams)) {}
 
@@ -90,9 +109,9 @@ public:
 protected:
     void on_start() override {
         set_name(name_for(m_id));
-        handler<market_update>(&trading_system::on_update);
-        handler<drop_stream>(&trading_system::on_drop_stream);
-        handler<run_complete>(&trading_system::on_complete);
+        handler<msg::market_update>(&trading_system::on_update);
+        handler<msg::drop_stream>(&trading_system::on_drop_stream);
+        handler<msg::run_complete>(&trading_system::on_complete);
     }
 
     // A handler threw. Its state may be half-updated, so don't carry on:
@@ -105,20 +124,20 @@ protected:
     void on_stop() override { m_streams.clear(); }  // drop our references (see "Memory" in doc/70)
 
 private:
-    void on_update(const market_update& msg) {
-        if (msg.price < 0.0) {
+    void on_update(const msg::market_update& _msg) {
+        if (_msg.price < 0.0) {
             throw std::runtime_error("negative price");  // a bug, or data it cannot handle
         }
         for (const auto& s : m_streams) {
-            s.tell(msg);
+            s.tell(_msg);
         }
     }
 
-    void on_drop_stream(const drop_stream& msg) { std::erase(m_streams, msg.stream); }
+    void on_drop_stream(const msg::drop_stream& _msg) { std::erase(m_streams, _msg.stream); }
 
     // Stopping itself from its own handler returns at once; the stop completes
     // after the handler returns, and the manager (watching) is told.
-    void on_complete(const run_complete&) {
+    void on_complete(const msg::run_complete&) {
         std::cout << "  ts." << m_id << ": run complete, stopping\n";
         cas::system::stop_actor(self());
     }
@@ -129,23 +148,14 @@ private:
 
 class trading_manager : public cas::actor {
 public:
-    struct launch : cas::message_base {  // a trading system + one stream per subscriber
-        std::string system_id;
-        std::vector<std::string> subscribers;
-    };
-    struct unsubscribe : cas::message_base {  // a client stopped listening
-        std::string system_id;
-        std::string subscriber;
-    };
-
-    static inline std::atomic<int> launched{0};  // observed by the tutorial
-    static inline std::atomic<int> retired{0};
+    static inline std::atomic<int> s_launched_count{0};  // observed by the tutorial
+    static inline std::atomic<int> s_retired_count{0};
 
 protected:
     void on_start() override {
         set_name("trading_manager");
-        handler<launch>(&trading_manager::on_launch);
-        handler<unsubscribe>(&trading_manager::on_unsubscribe);
+        handler<msg::launch>(&trading_manager::on_launch);
+        handler<msg::unsubscribe>(&trading_manager::on_unsubscribe);
         handler<cas::termination_msg>(&trading_manager::on_terminated);
     }
 
@@ -156,49 +166,49 @@ private:
         std::map<std::string, cas::actor_ref> streams;  // subscriber -> stream
     };
 
-    void on_launch(const launch& msg) {
+    void on_launch(const msg::launch& _msg) {
         // create() from a handler: each new actor's on_start() has run by the
         // time create() returns, so it is ready for messages at once.
-        running_system sys{msg.system_id, {}, {}};
+        running_system sys{_msg.system_id, {}, {}};
         std::vector<cas::actor_ref> refs;
-        for (const auto& subscriber : msg.subscribers) {
+        for (const auto& subscriber : _msg.subscribers) {
             auto s = cas::system::create<stream>(subscriber);
             sys.streams[subscriber] = s;
             refs.push_back(s);
         }
-        sys.ts = cas::system::create<trading_system>(msg.system_id, refs);
+        sys.ts = cas::system::create<trading_system>(_msg.system_id, refs);
 
         // Be told when it terminates - however that happens. Keyed by instance
         // id, which termination_msg carries: names can be reused by a
         // relaunch, instance ids never are.
         cas::system::watch(self(), sys.ts);
         m_systems[sys.ts.get_actor()->instance_id()] = std::move(sys);
-        std::cout << "  manager: launched " << msg.system_id << " with "
-                  << msg.subscribers.size() << " stream(s)\n";
-        launched.fetch_add(1);
+        std::cout << "  manager: launched " << _msg.system_id << " with "
+                  << _msg.subscribers.size() << " stream(s)\n";
+        s_launched_count.fetch_add(1);
     }
 
-    void on_unsubscribe(const unsubscribe& msg) {
+    void on_unsubscribe(const msg::unsubscribe& _msg) {
         for (auto& [instance, sys] : m_systems) {
-            auto it = sys.streams.find(msg.subscriber);
-            if (sys.system_id != msg.system_id || it == sys.streams.end()) continue;
+            auto it = sys.streams.find(_msg.subscriber);
+            if (sys.system_id != _msg.system_id || it == sys.streams.end()) continue;
 
             // Tell the trading system to stop sending to it, then stop it.
             // Updates sent in between are dead letters - expected and harmless.
-            trading_system::drop_stream drop;
+            msg::drop_stream drop;
             drop.stream = it->second;
             sys.ts.tell(drop);
             stop_without_blocking(it->second);
             sys.streams.erase(it);
-            std::cout << "  manager: " << msg.subscriber << " unsubscribed from " << msg.system_id << "\n";
+            std::cout << "  manager: " << _msg.subscriber << " unsubscribed from " << _msg.system_id << "\n";
             return;
         }
     }
 
     // The trading system stopped - completed, failed, or stopped by someone
     // else. Either way its streams go with it.
-    void on_terminated(const cas::termination_msg& msg) {
-        auto it = m_systems.find(msg.instance_id);
+    void on_terminated(const cas::termination_msg& _msg) {
+        auto it = m_systems.find(_msg.instance_id);
         if (it == m_systems.end()) return;
         for (const auto& [subscriber, s] : it->second.streams) {
             stop_without_blocking(s);
@@ -206,7 +216,7 @@ private:
         std::cout << "  manager: retired " << it->second.system_id << " and its "
                   << it->second.streams.size() << " stream(s)\n";
         m_systems.erase(it);  // drop our references so the actors can be freed
-        retired.fetch_add(1);
+        s_retired_count.fetch_add(1);
     }
 
     // From a handler, never wait for a stop: that would block this worker
@@ -220,22 +230,24 @@ private:
     std::unordered_map<size_t, running_system> m_systems;  // by instance id
 };
 
+} // namespace actor
+
 // Handler exceptions anywhere in the system are reported here (without a
 // callback they would go to stderr). The trading system's failure in part 4
 // lands in it.
 struct failure_log {
-    static inline std::atomic<int> count{0};  // observed by the tutorial
+    static inline std::atomic<int> s_report_count{0};  // observed by the tutorial
 
     static void record(const cas::handler_exception_info& info) {
         std::cout << "  [report] " << info.actor_name << ": " << info.what << "\n";
-        count.fetch_add(1);
+        s_report_count.fetch_add(1);
     }
 };
 
 void publish(const std::string& system_id, double price) {
-    market_update update;
+    msg::market_update update;
     update.price = price;
-    trading_system::find(system_id).tell(update);
+    actor::trading_system::find(system_id).tell(update);
 }
 
 } // namespace
@@ -249,53 +261,53 @@ bool run_trading_manager() {
 
     heading("Starting the system with just the manager");
     //---------------------------------------------------
-    auto manager = cas::system::create<trading_manager>();
+    auto manager = cas::system::create<actor::trading_manager>();
     cas::system::start();
     const size_t baseline = cas::system::actor_count();  // the manager
 
     heading("1. Launching two trading systems at runtime");
     //-----------------------------------------------------
-    trading_manager::launch es;
+    msg::launch es;
     es.system_id = "es";
     es.subscribers = {"alice", "bob"};
     manager.tell(es);
-    trading_manager::launch nq;
+    msg::launch nq;
     nq.system_id = "nq";
     nq.subscribers = {"carol", "dave"};
     manager.tell(nq);
 
-    ok &= check(wait_until(trading_manager::launched, 2), "both trading systems are running");
+    ok &= check(wait_until(actor::trading_manager::s_launched_count, 2), "both trading systems are running");
     ok &= check(cas::system::actor_count() == baseline + 6, "two trading systems and four streams were created");
 
     publish("es", 101.5);
     publish("nq", 202.25);
-    ok &= check(wait_until(stream::updates, 4), "four updates reached the streams");
-    ok &= check(stream::updates_for("alice") == 1 && stream::updates_for("bob") == 1 &&
-                    stream::updates_for("carol") == 1 && stream::updates_for("dave") == 1,
+    ok &= check(wait_until(actor::stream::s_update_count, 4), "four updates reached the streams");
+    ok &= check(actor::stream::updates_for("alice") == 1 && actor::stream::updates_for("bob") == 1 &&
+                    actor::stream::updates_for("carol") == 1 && actor::stream::updates_for("dave") == 1,
                 "one to each subscriber, from its own trading system");
 
     heading("2. carol unsubscribes from nq; nq keeps running");
     //---------------------------------------------------------
-    trading_manager::unsubscribe leave;
+    msg::unsubscribe leave;
     leave.system_id = "nq";
     leave.subscriber = "carol";
     manager.tell(leave);
-    ok &= check(wait_until(stream::stopped, 1), "carol's stream was stopped");
-    ok &= check(trading_system::find("nq").is_running(), "nq keeps running");
+    ok &= check(wait_until(actor::stream::s_stopped_count, 1), "carol's stream was stopped");
+    ok &= check(actor::trading_system::find("nq").is_running(), "nq keeps running");
 
     heading("3. es completes its run");
     //---------------------------------
-    trading_system::find("es").tell(trading_system::run_complete{});
-    ok &= check(wait_until(trading_manager::retired, 1), "the manager was told es terminated");
-    ok &= check(wait_until(stream::stopped, 3), "alice's and bob's streams were stopped with it");
-    ok &= check(!cas::actor_registry::exists(trading_system::name_for("es")), "es's name was released");
+    actor::trading_system::find("es").tell(msg::run_complete{});
+    ok &= check(wait_until(actor::trading_manager::s_retired_count, 1), "the manager was told es terminated");
+    ok &= check(wait_until(actor::stream::s_stopped_count, 3), "alice's and bob's streams were stopped with it");
+    ok &= check(!cas::actor_registry::exists(actor::trading_system::name_for("es")), "es's name was released");
 
     heading("4. nq's handler throws");
     //--------------------------------
     publish("nq", -1.0);  // on_update throws; on_handler_exception() says stop
-    ok &= check(wait_until(failure_log::count, 1), "the exception was reported, not fatal");
-    ok &= check(wait_until(trading_manager::retired, 2), "the manager retired nq like a completed run");
-    ok &= check(wait_until(stream::stopped, 4), "dave's stream was stopped with it");
+    ok &= check(wait_until(failure_log::s_report_count, 1), "the exception was reported, not fatal");
+    ok &= check(wait_until(actor::trading_manager::s_retired_count, 2), "the manager retired nq like a completed run");
+    ok &= check(wait_until(actor::stream::s_stopped_count, 4), "dave's stream was stopped with it");
 
     // Everything the manager created is gone; only the manager is left
     ok &= check(wait_until(&cas::system::actor_count, baseline), "only the manager remains");

@@ -83,10 +83,10 @@ bool check(bool condition, const std::string& what);
 // neither flaky on a loaded machine nor slow on a fast one. Each returns true
 // once the condition holds, false if the timeout passes first.
 //
-//   wait_until(greeter::greetings, 1)      a counter reaches a value
-//   wait_until(exchange::bound)            a flag is set
-//   wait_until(&session::order_count, 3)   a function returns a value
-//   wait_until(&manager::all_retired)      a function returns true
+//   wait_until(actor::greeter::s_greeting_count, 1)   a counter reaches a value
+//   wait_until(actor::exchange::s_bound)              a flag is set
+//   wait_until(&actor::session::order_count, 3)       a function returns a value
+//   wait_until(&dead_letter_log::any_dropped)         a function returns true
 
 namespace detail {
 std::chrono::steady_clock::time_point deadline_after(int timeout_ms);

@@ -23,43 +23,52 @@
 
 namespace {
 
+// The messages. Pick N from the longest value you expect: overshooting costs
+// bytes per message, undershooting silently truncates.
+namespace msg {
+
+struct order : cas::message_base {
+    cas::fixed_string<8> symbol;    // "AAPL"
+    cas::fixed_string<16> trader;   // "desk-emea-01"
+    int quantity = 0;
+};
+
+} // namespace msg
+
+// The actors.
+namespace actor {
+
 class order_book : public cas::actor {
 public:
-    // Pick N from the longest value you expect: overshooting costs bytes per
-    // message, undershooting silently truncates.
-    struct order : cas::message_base {
-        cas::fixed_string<8> symbol;    // "AAPL"
-        cas::fixed_string<16> trader;   // "desk-emea-01"
-        int quantity = 0;
-    };
-
     // fixed_string is constexpr throughout, so it can be a compile-time constant.
-    static constexpr cas::fixed_string<8> default_symbol{"AAPL"};
+    static constexpr cas::fixed_string<8> s_default_symbol{"AAPL"};
 
-    static inline std::atomic<int> orders{0};            // observed by the tutorial
+    static inline std::atomic<int> s_order_count{0};     // observed by the tutorial
 
 protected:
     void on_start() override {
         set_name("order_book");
-        handler<order>(&order_book::on_order);
+        handler<msg::order>(&order_book::on_order);
     }
 
 private:
     // fixed_string streams and compares like a string: the handler reads no
     // differently from the std::string version.
-    void on_order(const order& msg) {
-        std::cout << "  order: " << msg.quantity << " " << msg.symbol
-                  << " from " << msg.trader << "\n";
-        if (msg.symbol == default_symbol && msg.trader == "desk-emea-01") {
-            orders.fetch_add(1);
+    void on_order(const msg::order& _msg) {
+        std::cout << "  order: " << _msg.quantity << " " << _msg.symbol
+                  << " from " << _msg.trader << "\n";
+        if (_msg.symbol == s_default_symbol && _msg.trader == "desk-emea-01") {
+            s_order_count.fetch_add(1);
         }
     }
 };
 
 // Checked by the compiler: if these were wrong, the file would not build.
-static_assert(order_book::default_symbol == "AAPL");
-static_assert(order_book::default_symbol.size() == 4);
-static_assert(order_book::default_symbol != "MSFT");
+static_assert(order_book::s_default_symbol == "AAPL");
+static_assert(order_book::s_default_symbol.size() == 4);
+static_assert(order_book::s_default_symbol != "MSFT");
+
+} // namespace actor
 
 } // namespace
 
@@ -101,15 +110,15 @@ bool run_fixed_string() {
 
     heading("Sending a message that does not allocate");
     //--------------------------------------------------
-    auto book = cas::system::create<order_book>();
+    auto book = cas::system::create<actor::order_book>();
     cas::system::start();
 
-    order_book::order o;
-    o.symbol = "AAPL";
-    o.trader = "desk-emea-01";
-    o.quantity = 100;
-    book.tell(o);
-    ok &= check(wait_until(order_book::orders, 1),
+    msg::order buy;
+    buy.symbol = "AAPL";
+    buy.trader = "desk-emea-01";
+    buy.quantity = 100;
+    book.tell(buy);
+    ok &= check(wait_until(actor::order_book::s_order_count, 1),
                 "the order arrived with its strings intact");
 
     heading("Shut down");
