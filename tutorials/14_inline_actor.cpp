@@ -41,6 +41,15 @@ public:
     static inline std::atomic<int> records{0};
     static inline std::atomic<std::thread::id> handler_thread{};
 
+    // Sends `count` records to `to` - run on several threads at once below
+    static void send_records(cas::actor_ref to, int count) {
+        for (int i = 0; i < count; ++i) {
+            record msg;
+            msg.value = i;
+            to.tell(msg);
+        }
+    }
+
 protected:
     void on_start() override {
         set_name("counter");
@@ -62,21 +71,25 @@ bool run_inline_actor() {
     bool ok = true;
 
     heading("Starting an inline actor");
+    //----------------------------------
     auto counter_ref = cas::system::create<counter>();
     cas::system::start();
 
     heading("tell() runs the handler before it returns");
+    //---------------------------------------------------
     // With an ordinary actor we would need wait_until() here. Not with this one.
     counter_ref.tell(counter::record{});
     ok &= check(counter::records.load() == 1, "the handler had already run when tell() returned");
 
     heading("The handler runs on the sender's thread");
+    //-------------------------------------------------
     // So a slow handler blocks the sender, and the actor's state is protected
     // only by the mutex, not by the one-thread-per-actor rule.
     ok &= check(counter::handler_thread.load() == std::this_thread::get_id(),
                 "the handler ran on the calling thread, not a worker");
 
     heading("Concurrent senders");
+    //----------------------------
     // The mutex serialises senders, so the count is exact - but they now
     // contend for a lock where an ordinary actor's mailbox would absorb them.
     counter::records.store(0);
@@ -84,13 +97,7 @@ bool run_inline_actor() {
     constexpr int per_thread = 250;
     std::vector<std::thread> senders;
     for (int t = 0; t < thread_count; ++t) {
-        senders.emplace_back([counter_ref] {
-            for (int i = 0; i < per_thread; ++i) {
-                counter::record msg;
-                msg.value = i;
-                counter_ref.tell(msg);
-            }
-        });
+        senders.emplace_back(&counter::send_records, counter_ref, per_thread);
     }
     for (auto& s : senders) {
         s.join();
@@ -99,6 +106,7 @@ bool run_inline_actor() {
                 "all 1000 sends from 4 threads were counted exactly");
 
     heading("Shut down");
+    //-------------------
     cas::system::shutdown();
     cas::system::wait_for_shutdown();
     return ok;

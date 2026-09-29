@@ -60,12 +60,14 @@ bool run_fast_actor() {
     bool ok = true;
 
     heading("Starting a fast actor");
+    //-------------------------------
     // From here on the actor's thread polls, even with nothing to do - that is
     // the price paid for the latency.
     auto engine = cas::system::create<price_engine>();
     cas::system::start();
 
     heading("Sending ticks");
+    //-----------------------
     constexpr int tick_count = 100;
     const auto begin = std::chrono::steady_clock::now();
     for (int i = 0; i < tick_count; ++i) {
@@ -73,7 +75,7 @@ bool run_fast_actor() {
         t.price = 100.0 + i;
         engine.tell(t);
     }
-    ok &= check(wait_until([] { return price_engine::ticks.load() == tick_count; }),
+    ok &= check(wait_until(price_engine::ticks, tick_count),
                 "the fast actor processed all 100 ticks");
 
     // Printed, not asserted: a timing threshold would fail on a loaded machine
@@ -83,6 +85,7 @@ bool run_fast_actor() {
     std::cout << "  100 ticks sent and processed in " << us.count() << " us\n";
 
     heading("Shut down");
+    //-------------------
     cas::system::shutdown();
     cas::system::wait_for_shutdown();
     ok &= check(price_engine::ticks.load() == tick_count, "no ticks were lost");

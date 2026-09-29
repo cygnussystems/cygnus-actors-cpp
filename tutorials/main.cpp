@@ -22,7 +22,7 @@ const tutorial_entry g_tutorials[] = {
      "Define a message and an actor, send it one message.",
      run_hello_actor},
     {2, "message_passing",
-     "Several message types, member-function and lambda handlers.",
+     "Several message types, and state that needs no locks.",
      run_message_passing},
     {3, "actor_to_actor",
      "Actors messaging each other, and replying via the sender.",
@@ -85,18 +85,37 @@ bool check(bool condition, const std::string& what) {
     return condition;
 }
 
-bool wait_until(const std::function<bool()>& done, int timeout_ms) {
-    using clock = std::chrono::steady_clock;
-    const auto deadline = clock::now() + std::chrono::milliseconds(timeout_ms);
-    while (clock::now() < deadline) {
-        if (done()) {
-            return true;
+namespace detail {
+
+std::chrono::steady_clock::time_point deadline_after(int timeout_ms) {
+    return std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+}
+
+bool expired(std::chrono::steady_clock::time_point deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    return std::chrono::steady_clock::now() >= deadline;
+}
+
+} // namespace detail
+
+bool wait_until(bool (*condition)(), int timeout_ms) {
+    const auto deadline = detail::deadline_after(timeout_ms);
+    while (!condition()) {
+        if (detail::expired(deadline)) {
+            return condition();  // one last look, so a late success still counts
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    // One final check, so a condition satisfied right at the deadline still
-    // counts rather than being reported as a timeout.
-    return done();
+    return true;
+}
+
+bool wait_until(const std::atomic<bool>& flag, int timeout_ms) {
+    const auto deadline = detail::deadline_after(timeout_ms);
+    while (!flag.load()) {
+        if (detail::expired(deadline)) {
+            return flag.load();
+        }
+    }
+    return true;
 }
 
 } // namespace tut

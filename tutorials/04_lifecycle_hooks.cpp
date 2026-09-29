@@ -59,6 +59,28 @@ public:
         return s_history;
     }
 
+    // Where `what` appears in the history (history().size() if it never ran)
+    static int position_of(const std::string& what) {
+        std::vector<std::string> log = history();
+        for (size_t i = 0; i < log.size(); ++i) {
+            if (log[i] == what) {
+                return static_cast<int>(i);
+            }
+        }
+        return static_cast<int>(log.size());
+    }
+
+    // How many work messages were handled
+    static int work_handled() {
+        int count = 0;
+        for (const std::string& entry : history()) {
+            if (entry.rfind("handled work", 0) == 0) {
+                ++count;
+            }
+        }
+        return count;
+    }
+
 protected:
     // 1. Once, on the actor's thread, before any message: register handlers,
     //    acquire resources.
@@ -104,11 +126,13 @@ bool run_lifecycle_hooks() {
     bool ok = true;
 
     heading("Starting");
+    //------------------
     auto undertaker_ref = cas::system::create<undertaker>();
     auto worker_ref = cas::system::create<worker>(undertaker_ref);
     cas::system::start();
 
     heading("Queueing work, then shutting down at once");
+    //---------------------------------------------------
     // The messages are already in the mailbox, so shutdown drains them rather
     // than discarding them: shutdown is graceful by default.
     for (int i = 1; i <= 3; ++i) {
@@ -120,19 +144,16 @@ bool run_lifecycle_hooks() {
     cas::system::wait_for_shutdown();
 
     heading("Checking what happened");
-    const auto log = worker::history();
-    auto at = [&](const std::string& what) {
-        return static_cast<int>(std::find(log.begin(), log.end(), what) - log.begin());
-    };
-    const int end = static_cast<int>(log.size());
+    //--------------------------------
+    const int end = static_cast<int>(worker::history().size());
 
-    ok &= check(std::count_if(log.begin(), log.end(),
-                              [](const std::string& s) { return s.rfind("handled", 0) == 0; }) == 3,
-                "all 3 queued messages were drained, not dropped");
-    ok &= check(!log.empty() && log.front() == "on_start", "on_start() ran first");
-    ok &= check(at("on_shutdown") < at("on_stop") && at("on_stop") < end,
+    ok &= check(worker::work_handled() == 3, "all 3 queued messages were drained, not dropped");
+    ok &= check(worker::position_of("on_start") == 0, "on_start() ran first");
+    ok &= check(worker::position_of("on_shutdown") < worker::position_of("on_stop") &&
+                    worker::position_of("on_stop") < end,
                 "on_shutdown() ran before on_stop()");
-    ok &= check(at("handled work 3") < at("on_stop"), "queued work was handled before on_stop()");
+    ok &= check(worker::position_of("handled work 3") < worker::position_of("on_stop"),
+                "queued work was handled before on_stop()");
 
     // Deliberately not asserted: whether the farewell arrived is a race, and
     // both outcomes are correct.

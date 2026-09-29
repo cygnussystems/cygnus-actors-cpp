@@ -250,6 +250,7 @@ bool run_zeromq_relay() {
     bool ok = true;
 
     heading("Two relays, an exchange and a trader");
+    //----------------------------------------------
     auto server_relay = cas::system::create<cas::zeromq_relay_actor>();
     auto client_relay = cas::system::create<cas::zeromq_relay_actor>();
     auto exchange_ref = cas::system::create<exchange>(server_relay);
@@ -257,34 +258,40 @@ bool run_zeromq_relay() {
     cas::system::start();
 
     heading("1. The server binds, then the client connects");
+    //-------------------------------------------------------
     exchange_ref.tell(exchange::listen{});
-    ok &= check(wait_until([] { return exchange::bound.load(); }), "the exchange's relay is bound");
+    ok &= check(wait_until(exchange::bound), "the exchange's relay is bound");
     trader_ref.tell(trader::connect{});
-    ok &= check(wait_until([] { return trader::connected.load(); }), "the trader's relay is connected");
+    ok &= check(wait_until(trader::connected), "the trader's relay is connected");
 
     heading("2. The trader sends an order; the exchange acknowledges it");
+    //--------------------------------------------------------------------
     trader_ref.tell(trader::place_order{});
-    ok &= check(wait_until([] { return exchange::orders.load() == 1; }),
+    ok &= check(wait_until(exchange::orders, 1),
                 "the exchange received the order (routed by message_type)");
-    ok &= check(wait_until([] { return trader::acks.load() == 1; }),
+    ok &= check(wait_until(trader::acks, 1),
                 "the ack came back to the trader (matched by correlation id)");
     ok &= check(trader::last_ack() == std::string("ACK ") + trader::order_text, "with the exchange's payload");
 
     heading("3. The exchange pushes market data");
+    //--------------------------------------------
     exchange_ref.tell(exchange::push_market_data{});
-    ok &= check(wait_until([] { return trader::market_data.load() == 1; }),
+    ok &= check(wait_until(trader::market_data, 1),
                 "the trader got it through its default route");
 
     heading("4. Asking the client relay for its status");
+    //---------------------------------------------------
     cas::system::create<status_monitor>(client_relay);
-    ok &= check(wait_until([] { return status_monitor::pending.load() == 0; }),
+    ok &= check(wait_until(status_monitor::pending, 0),
                 "no request is still waiting for a reply");
 
     heading("5. Binding twice is reported to the sender");
+    //----------------------------------------------------
     exchange_ref.tell(exchange::bind_again{});
-    ok &= check(wait_until([] { return exchange::errors.load() == 1; }), "the exchange received a zeromq_error");
+    ok &= check(wait_until(exchange::errors, 1), "the exchange received a zeromq_error");
 
     heading("Shutting down");
+    //-----------------------
     cas::system::shutdown();
     cas::system::wait_for_shutdown();
     return ok;

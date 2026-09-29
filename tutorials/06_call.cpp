@@ -78,10 +78,12 @@ bool run_call() {
     bool ok = true;
 
     heading("Starting");
+    //------------------
     auto calc = cas::system::create<calculator>();
     cas::system::start();
 
     heading("Asking for a value");
+    //----------------------------
     // call<Return>(tag, args...) blocks until the handler has returned.
     const int sum = calc.call<int>(calculator::add_op{}, 10, 5);
     const double quotient = calc.call<double>(calculator::divide_op{}, 7, 2);
@@ -90,6 +92,7 @@ bool run_call() {
     ok &= check(quotient == 3.5, "call<double>(divide_op{}, 7, 2) returned 3.5");
 
     heading("Asking with a timeout");
+    //-------------------------------
     // Returns an empty optional instead of blocking forever. Prefer it wherever
     // the target might be slow or stuck.
     auto quick = calc.call<int>(calculator::add_op{}, 1000ms, 2, 3);
@@ -99,6 +102,7 @@ bool run_call() {
     ok &= check(!late.has_value(), "a slow operation timed out and returned an empty optional");
 
     heading("A call handler that throws");
+    //------------------------------------
     bool caught = false;
     try {
         (void)calc.call<double>(calculator::divide_op{}, 1, 0);
@@ -109,6 +113,7 @@ bool run_call() {
     ok &= check(caught, "exception from the handler surfaced at the caller");
 
     heading("Deadlock protection");
+    //-----------------------------
     // call() deadlocks if the caller holds the thread the target needs. The
     // framework rejects these cases up front instead of hanging:
     //   1. call() from on_start()
@@ -126,6 +131,7 @@ bool run_call() {
     ok &= check(rejected, "an actor asking itself was rejected, not left to deadlock");
 
     heading("Shutting down");
+    //-----------------------
     cas::system::shutdown();
     cas::system::wait_for_shutdown();
     return ok;

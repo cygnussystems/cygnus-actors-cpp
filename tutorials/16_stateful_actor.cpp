@@ -55,6 +55,8 @@ public:
         std::lock_guard<std::mutex> lock(s_mutex);
         return s_orders_sent;
     }
+    static size_t order_count() { return orders_sent().size(); }
+    static inline std::atomic<int> disconnects{0};
 
 protected:
     void on_start() override {
@@ -96,7 +98,10 @@ private:
     // on_connect; on_new_order only ever runs when logged in.
     void on_connect(const connect&) { enter_logging_in(); }
     void on_login_ack(const login_ack&) { enter_logged_in(); }
-    void on_disconnect(const disconnect&) { enter_disconnected(); }
+    void on_disconnect(const disconnect&) {
+        enter_disconnected();
+        disconnects.fetch_add(1);
+    }
 
     void on_new_order(const new_order& msg) {
         std::cout << "  session: sending order " << msg.order_id << "\n";
@@ -113,6 +118,16 @@ private:
 using session = exchange_session<cas::stateful_actor>;
 using fast_session = exchange_session<cas::stateful_fast_actor>;
 
+// Counts dead letters - here, the order still held when the session stops
+struct dead_letter_log {
+    static inline std::atomic<int> count{0};  // observed by the tutorial
+
+    static void record(const cas::dead_letter_info& info) {
+        std::cout << "  [dead letter] " << info.message_type.name() << "\n";
+        count.fetch_add(1);
+    }
+};
+
 } // namespace
 
 namespace tut {
@@ -120,16 +135,13 @@ namespace tut {
 bool run_stateful_actor() {
     bool ok = true;
 
-    std::atomic<int> dead_letters{0};
-    cas::system::set_dead_letter_handler([&dead_letters](const cas::dead_letter_info& info) {
-        std::cout << "  [dead letter] " << info.message_type.name() << "\n";
-        dead_letters.fetch_add(1);
-    });
+    cas::system::set_dead_letter_handler(&dead_letter_log::record);
 
     auto s = cas::system::create<session>();
     cas::system::start();
 
     heading("1. Orders sent while disconnected are held");
+    //----------------------------------------------------
     session::send_order(s, 1);
     session::send_order(s, 2);
     // Answered although new_order is not accepted: calls are never held
@@ -137,39 +149,44 @@ bool run_stateful_actor() {
     ok &= check(session::orders_sent().empty(), "no order was sent before login");
 
     heading("2. Connecting and logging in releases them, oldest first");
+    //------------------------------------------------------------------
     s.tell(session::connect{});
     session::send_order(s, 3);  // still not logged in: held behind 1 and 2
     s.tell(session::login_ack{});
-    ok &= check(wait_until([] { return session::orders_sent().size() == 3; }),
+    ok &= check(wait_until(&session::order_count, 3),
                 "all three orders were sent once logged in");
     ok &= check(session::orders_sent() == std::vector<int>{1, 2, 3}, "in the order they were sent");
 
     heading("3. While logged in, orders go straight through");
+    //--------------------------------------------------------
     session::send_order(s, 4);
-    ok &= check(wait_until([] { return session::orders_sent().size() == 4; }),
+    ok &= check(wait_until(&session::order_count, 4),
                 "an order sent while logged in is handled at once");
 
     heading("4. Disconnecting, then stopping with an order still held");
+    //------------------------------------------------------------------
     s.tell(session::disconnect{});
     session::send_order(s, 5);  // arrives after disconnect: held
-    ok &= check(wait_until([&] { return s.call<size_t>(session::backlog_query{}) == 1; }),
+    ok &= check(wait_until(session::disconnects, 1) && s.call<size_t>(session::backlog_query{}) == 1,
                 "the order sent after disconnecting is held");
     cas::system::stop_actor(s);
-    ok &= check(dead_letters.load() == 1, "the held order became a dead letter when the session stopped");
+    ok &= check(dead_letter_log::count.load() == 1, "the held order became a dead letter when the session stopped");
     ok &= check(session::orders_sent().size() == 4, "it was never sent");
 
     heading("5. The same on a dedicated thread: stateful_fast_actor");
+    //----------------------------------------------------------------
     // Same API, same rules - for a session that is also latency-critical
     auto fs = cas::system::create<fast_session>();
     fast_session::send_order(fs, 10);
     fs.tell(fast_session::connect{});
     fast_session::send_order(fs, 11);
     fs.tell(fast_session::login_ack{});
-    ok &= check(wait_until([] { return fast_session::orders_sent().size() == 2; }),
+    ok &= check(wait_until(&fast_session::order_count, 2),
                 "the fast session held its orders until login too");
     ok &= check(fast_session::orders_sent() == std::vector<int>{10, 11}, "in order");
 
     heading("Shutting down");
+    //-----------------------
     cas::system::shutdown();
     cas::system::wait_for_shutdown();
     cas::system::clear_dead_letter_handler();

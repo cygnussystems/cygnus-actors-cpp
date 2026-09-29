@@ -69,6 +69,7 @@ bool run_fixed_string() {
     bool ok = true;
 
     heading("Basic use");
+    //-------------------
     cas::fixed_string<16> symbol("AAPL");
     ok &= check(symbol == "AAPL" && "AAPL" == symbol, "compares with a C string on either side");
     ok &= check(symbol.size() == 4, "size() is the content length");
@@ -77,6 +78,7 @@ bool run_fixed_string() {
     ok &= check(symbol == cas::fixed_string<8>("AAPL"), "compares equal across capacities");
 
     heading("Truncation is silent");
+    //------------------------------
     // Too long truncates - no exception, no allocation, no warning. Check the
     // capacity when you do not control the input length.
     cas::fixed_string<4> tiny("ABCDEFGH");
@@ -84,10 +86,12 @@ bool run_fixed_string() {
     ok &= check(tiny == "ABCD" && tiny.size() == 4, "content truncated to the capacity");
 
     heading("Converting");
+    //--------------------
     ok &= check(symbol.str() == std::string("AAPL"), "str() copies out to a std::string");
     ok &= check(symbol.view() == "AAPL", "view() gives a string_view, no copy");
 
     heading("Using it as a map key");
+    //-------------------------------
     // Hashes like the equivalent string_view, so equal content hashes equally.
     std::unordered_map<cas::fixed_string<8>, int> position_by_symbol;
     position_by_symbol[cas::fixed_string<8>("AAPL")] = 500;
@@ -96,6 +100,7 @@ bool run_fixed_string() {
     ok &= check(position_by_symbol.size() == 2, "two distinct keys stored");
 
     heading("Sending a message that does not allocate");
+    //--------------------------------------------------
     auto book = cas::system::create<order_book>();
     cas::system::start();
 
@@ -104,10 +109,11 @@ bool run_fixed_string() {
     o.trader = "desk-emea-01";
     o.quantity = 100;
     book.tell(o);
-    ok &= check(wait_until([] { return order_book::orders.load() == 1; }),
+    ok &= check(wait_until(order_book::orders, 1),
                 "the order arrived with its strings intact");
 
     heading("Shut down");
+    //-------------------
     cas::system::shutdown();
     cas::system::wait_for_shutdown();
     return ok;

@@ -97,9 +97,13 @@ is published by the actor that owns it, as `static inline std::atomic`
 members marked "observed by the tutorial". Real programs reply with a message
 instead (tutorial 3).
 
-**Handlers are private member functions**, so `on_start()` reads as the list
-of messages the actor accepts. Lambdas appear where a handler is a genuine
-one-liner.
+**Plain syntax: no lambdas.** Handlers are private member functions, so
+`on_start()` reads as the list of messages the actor accepts; callbacks are
+static member functions; waits name what they wait for -
+`wait_until(greeter::greetings, 1)`, `wait_until(&session::order_count, 3)`.
+
+**Each step is a `heading()`** - underlined in the output and by a
+`//----` comment in the source, so code and output line up.
 
 **Waiting is by polling, not by sleeping.** `wait_until()` polls for the
 condition, so the tutorials are neither flaky on a loaded machine nor slow on

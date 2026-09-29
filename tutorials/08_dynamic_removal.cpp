@@ -66,18 +66,21 @@ bool run_dynamic_removal() {
     bool ok = true;
 
     heading("Starting a worker");
+    //---------------------------
     auto worker_ref = cas::system::create<worker>("worker_a");
     cas::system::start();
     send_job(worker_ref, 1);
-    ok &= check(wait_until([] { return worker::jobs_done.load() == 1; }), "worker handled a job normally");
+    ok &= check(wait_until(worker::jobs_done, 1), "worker handled a job normally");
 
     heading("Stopping the worker (default: drain)");
+    //----------------------------------------------
     // stop_actor() stops one actor; the system keeps running. By default it
     // drains - queued messages are handled first - and blocks until done.
     ok &= check(cas::system::stop_actor(worker_ref), "stop_actor() reported success");
     ok &= check(cas::system::is_running(), "system still running after stopping one actor");
 
     heading("The reference is now stale");
+    //------------------------------------
     // Not dangling - safe to use - but messages through it are silently
     // dropped (tutorial 10 shows how to observe that).
     ok &= check(!worker_ref.is_running(), "is_running() is false for the stopped actor");
@@ -87,6 +90,7 @@ bool run_dynamic_removal() {
     ok &= check(worker::jobs_done.load() == before, "a message to a stopped actor was silently dropped");
 
     heading("Stopping with stop_mode::discard");
+    //------------------------------------------
     // discard drops queued messages instead of handling them: for work that
     // is worthless once the actor goes away.
     auto second = cas::system::create<worker>("worker_b");
@@ -103,15 +107,17 @@ bool run_dynamic_removal() {
     ok &= check(!second.is_running(), "discarded actor is no longer running");
 
     heading("Creating a replacement under the same name");
+    //----------------------------------------------------
     // A stopped actor's name is free again - the basis of restarting a worker.
     auto replacement = cas::system::create<worker>("worker_a");
     ok &= check(replacement.is_running(), "replacement actor is running");
     const int before_replacement = worker::jobs_done.load();
     send_job(replacement, 2);
-    ok &= check(wait_until([&] { return worker::jobs_done.load() > before_replacement; }),
+    ok &= check(wait_until(worker::jobs_done, before_replacement + 1),
                 "the replacement handled a job");
 
     heading("Shutting down");
+    //-----------------------
     cas::system::shutdown();
     cas::system::wait_for_shutdown();
     return ok;

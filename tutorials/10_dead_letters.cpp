@@ -69,6 +69,9 @@ struct dead_letter_log {
         return s.dropped_tell + s.dropped_ask + s.dropped_to_invalid;
     }
 
+    static bool any_dropped() { return total_dropped() > 0; }
+    static bool any_reported() { return !targets().empty(); }
+
 private:
     static inline std::mutex s_mutex;
     static inline std::vector<std::string> s_targets;
@@ -88,34 +91,38 @@ bool run_dead_letters() {
     bool ok = true;
 
     heading("Starting");
+    //------------------
     auto receiver_ref = cas::system::create<receiver>();
     cas::system::start();
     send_payload(receiver_ref, 1);
-    ok &= check(wait_until([] { return receiver::delivered.load() == 1; }), "a normal message was delivered");
+    ok &= check(wait_until(receiver::delivered, 1), "a normal message was delivered");
 
     heading("Sending to a stopped actor");
+    //------------------------------------
     // Statistics are always collected; nothing needs enabling.
     cas::system::reset_dead_letter_stats();
     cas::system::stop_actor(receiver_ref);
     send_payload(receiver_ref, 2);                       // nowhere to go
-    ok &= check(wait_until([] { return dead_letter_log::total_dropped() > 0; }),
+    ok &= check(wait_until(&dead_letter_log::any_dropped),
                 "the undeliverable message was counted as a dead letter");
     const auto stats = cas::system::get_dead_letter_stats();
     std::cout << "  dropped tells: " << stats.dropped_tell << ", dropped calls: " << stats.dropped_ask
               << ", to invalid refs: " << stats.dropped_to_invalid << "\n";
 
     heading("Installing a dead letter handler");
+    //------------------------------------------
     // The handler gives the detail behind the count: which actor, which
     // message type, what state. It runs on the send path - keep it short and
     // thread-safe.
     cas::system::set_dead_letter_handler(&dead_letter_log::record);
     send_payload(receiver_ref, 3);
-    ok &= check(wait_until([] { return !dead_letter_log::targets().empty(); }),
+    ok &= check(wait_until(&dead_letter_log::any_reported),
                 "the handler was called for the undeliverable message");
     ok &= check(dead_letter_log::targets().front() == "receiver",
                 "the handler reported the intended recipient's name");
 
     heading("Removing the handler");
+    //------------------------------
     // The handler is global and outlives any actor: remove it when done.
     cas::system::clear_dead_letter_handler();
     const std::size_t before = dead_letter_log::targets().size();
@@ -128,6 +135,7 @@ bool run_dead_letters() {
                 "statistics still counted the drops after the handler was cleared");
 
     heading("Shutting down");
+    //-----------------------
     cas::system::shutdown();
     cas::system::wait_for_shutdown();
     return ok;

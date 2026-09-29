@@ -92,16 +92,18 @@ bool run_timers() {
     bool ok = true;
 
     heading("Arming timers");
+    //-----------------------
     auto ticker_ref = cas::system::create<ticker>();
     cas::system::start();
     ticker_ref.tell(ticker::arm{});
 
-    ok &= check(wait_until([] { return ticker::one_shots.load() == 1; }),
+    ok &= check(wait_until(ticker::one_shots, 1),
                 "one-shot timer fired exactly once");
-    ok &= check(wait_until([] { return ticker::cancelled.load(); }),
+    ok &= check(wait_until(ticker::cancelled),
                 "periodic timer fired repeatedly, then cancelled itself");
 
     heading("Confirming the cancellation held");
+    //------------------------------------------
     // Several more intervals pass; nothing may move.
     const int after_cancel = ticker::heartbeats.load();
     std::this_thread::sleep_for(std::chrono::milliseconds(60));
@@ -109,6 +111,7 @@ bool run_timers() {
     ok &= check(ticker::one_shots.load() == 1, "the one-shot timer did not repeat");
 
     heading("Shutting down");
+    //-----------------------
     cas::system::shutdown();
     cas::system::wait_for_shutdown();
     return ok;

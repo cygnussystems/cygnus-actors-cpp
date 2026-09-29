@@ -1,7 +1,8 @@
 #ifndef CAS_TUTORIALS_H
 #define CAS_TUTORIALS_H
 
-#include <functional>
+#include <atomic>
+#include <chrono>
 #include <string>
 
 // Shared declarations for the tutorial programs.
@@ -74,13 +75,48 @@ void heading(const std::string& title);
 // so tutorials can accumulate a result without early-exiting.
 bool check(bool condition, const std::string& what);
 
-// Waits until done() returns true, or the timeout expires.
+// Waiting for an actor.
 //
 // Sending a message does not block, so a tutorial that wants to observe the
-// result has to wait for the actor's thread to get there. Polling for the
-// actual condition - rather than sleeping a fixed time - keeps the tutorials
-// from being flaky on a loaded machine and slow on a fast one.
-bool wait_until(const std::function<bool()>& done, int timeout_ms = 2000);
+// result has to wait for the actor's thread to get there. These poll for the
+// actual condition - rather than sleeping a fixed time - so the tutorials are
+// neither flaky on a loaded machine nor slow on a fast one. Each returns true
+// once the condition holds, false if the timeout passes first.
+//
+//   wait_until(greeter::greetings, 1)      a counter reaches a value
+//   wait_until(exchange::bound)            a flag is set
+//   wait_until(&session::order_count, 3)   a function returns a value
+//   wait_until(&manager::all_retired)      a function returns true
+
+namespace detail {
+std::chrono::steady_clock::time_point deadline_after(int timeout_ms);
+bool expired(std::chrono::steady_clock::time_point deadline);  // sleeps a moment first
+}
+
+bool wait_until(bool (*condition)(), int timeout_ms = 2000);
+bool wait_until(const std::atomic<bool>& flag, int timeout_ms = 2000);
+
+template<typename T, typename U>
+bool wait_until(const std::atomic<T>& value, U expected, int timeout_ms = 2000) {
+    const auto deadline = detail::deadline_after(timeout_ms);
+    while (value.load() != static_cast<T>(expected)) {
+        if (detail::expired(deadline)) {
+            return value.load() == static_cast<T>(expected);
+        }
+    }
+    return true;
+}
+
+template<typename T, typename U>
+bool wait_until(T (*getter)(), U expected, int timeout_ms = 2000) {
+    const auto deadline = detail::deadline_after(timeout_ms);
+    while (getter() != static_cast<T>(expected)) {
+        if (detail::expired(deadline)) {
+            return getter() == static_cast<T>(expected);
+        }
+    }
+    return true;
+}
 
 } // namespace tut
 

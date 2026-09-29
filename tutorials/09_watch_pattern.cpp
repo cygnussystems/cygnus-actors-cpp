@@ -33,7 +33,12 @@ public:
 protected:
     void on_start() override {
         set_name("fragile_worker");
-        handler<do_work>([](const do_work&) { std::cout << "  fragile_worker did some work\n"; });
+        handler<do_work>(&fragile_worker::on_do_work);
+    }
+
+private:
+    void on_do_work(const do_work&) {
+        std::cout << "  fragile_worker did some work\n";
     }
 };
 
@@ -89,6 +94,7 @@ bool run_watch_pattern() {
     bool ok = true;
 
     heading("Watching");
+    //------------------
     auto worker_ref = cas::system::create<fragile_worker>();
     auto supervisor_ref = cas::system::create<supervisor>();
     cas::system::start();
@@ -97,12 +103,13 @@ bool run_watch_pattern() {
     worker_ref.tell(fragile_worker::do_work{});
 
     heading("Stopping the watched actor");
+    //------------------------------------
     cas::system::stop_actor(worker_ref);
-    ok &= check(wait_until([] { return supervisor::terminations.load() == 1; }),
+    ok &= check(wait_until(supervisor::terminations, 1),
                 "supervisor was notified of the termination");
     ok &= check(supervisor::last_terminated() == "fragile_worker",
                 "termination_msg named the actor that stopped");
-    ok &= check(wait_until([] { return supervisor::restarts.load() == 1; }),
+    ok &= check(wait_until(supervisor::restarts, 1),
                 "supervisor restarted the worker");
 
     // The restarted actor is a new one; the old reference stays stale.
@@ -112,6 +119,7 @@ bool run_watch_pattern() {
     ok &= check(!worker_ref.is_running(), "the original reference is still stale after the restart");
 
     heading("Unwatching, then stopping again");
+    //-----------------------------------------
     // unwatch() spares the watcher a notification it would only ignore.
     cas::system::unwatch(supervisor_ref, restarted);
     const int before = supervisor::terminations.load();
@@ -120,6 +128,7 @@ bool run_watch_pattern() {
     ok &= check(supervisor::terminations.load() == before, "no notification arrived after unwatch()");
 
     heading("Shutting down");
+    //-----------------------
     cas::system::shutdown();
     cas::system::wait_for_shutdown();
     return ok;
