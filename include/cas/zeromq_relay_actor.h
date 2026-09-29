@@ -5,6 +5,7 @@
 
 #include "actor.h"
 #include "actor_ref.h"
+#include "detail/transport.h"
 #include <vector>
 #include <unordered_map>
 #include <string>
@@ -121,23 +122,22 @@ protected:
     void send_error(const std::string& message, int error_code = 0,
                     const cas::actor_ref& reply_to = cas::actor_ref());
 
+public:
+    zeromq_relay_actor();
+    ~zeromq_relay_actor() override;
+
 private:
-    // ZeroMQ context, shared by every relay in the process (so inproc://
-    // works between them) and destroyed with the last one. Type-erased
-    // zmq::context_t to keep zmq.hpp out of this header.
-    std::shared_ptr<void> m_context;
-    void* m_socket = nullptr;         // zmq::socket_t*
+    // The connection. The relay is the actor side - routing, correlation,
+    // errors, status; the transport moves the bytes (detail::transport,
+    // detail::zeromq_transport). Created by bind/connect, released on stop.
+    std::unique_ptr<detail::transport> m_transport;
+    detail::transport_options m_options;
     mode m_mode = mode::router;
     std::atomic<bool> m_connected{false};
     std::string m_endpoint;
 
-    // Configuration
+    // Relay configuration (transport settings are in m_options)
     int m_poll_interval_ms = 10;
-    int m_send_timeout_ms = 1000;
-    int m_recv_timeout_ms = 1000;
-    int m_max_message_size = 1048576;
-    bool m_auto_reconnect = true;
-    int m_reconnect_delay_ms = 1000;
     int m_request_timeout_ms = 30000;
 
     // Timer for polling
@@ -154,24 +154,21 @@ private:
     };
     std::unordered_map<uint64_t, pending_request> m_pending_requests;
 
-    // Receive and route one multipart message; false when none is waiting
-    bool receive_one();
+    // Reused receive buffers
+    std::vector<detail::envelope> m_inbound;
+    std::vector<detail::transport_event> m_events;
+
     void expire_pending_requests();
     void start_polling();
+    void report_transport_events();
 
     // Default route (for unmatched messages)
     cas::actor_ref m_default_route;
 
     // Helper to route received message
-    void route_message(const std::string& source, uint64_t correlation_id,
-                       const std::vector<char>& data,
-                       const std::string& content_type,
-                       const std::string& message_type);
+    void route_message(detail::envelope& message);
 
-    // Initialize socket with current configuration
-    void configure_socket();
-
-    // Clean up socket
+    // Release the connection and forget pending requests
     void cleanup_socket();
 };
 

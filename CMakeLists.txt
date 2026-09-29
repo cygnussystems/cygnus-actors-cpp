@@ -23,11 +23,12 @@ set(SOURCES
     source/message_pool.cpp
     source/mailbox.cpp
     source/ready_queue.cpp
+    source/transport.cpp
 )
 
 # ZeroMQ relay actor (optional)
 if(ENABLE_ZEROMQ)
-    list(APPEND SOURCES source/zeromq_relay_actor.cpp)
+    list(APPEND SOURCES source/zeromq_relay_actor.cpp source/zeromq_transport.cpp)
 endif()
 
 # Create library
@@ -147,6 +148,7 @@ if(BUILD_TESTS)
         tests/07_dynamic_removal/test_watch.cpp
         # Level 8: ZeroMQ relay (optional - requires CAS_ENABLE_ZEROMQ)
         tests/08_zeromq_relay/test_zeromq_relay.cpp
+        tests/08_zeromq_relay/test_zeromq_transport.cpp
         # Level 9: Fixed types (zero-allocation)
         tests/09_fixed_types/test_fixed_string.cpp
         # Level 10: Dead letter handling

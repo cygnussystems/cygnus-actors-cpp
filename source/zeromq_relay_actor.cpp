@@ -1,42 +1,30 @@
 #ifdef CAS_ENABLE_ZEROMQ
 
 #include "cas/zeromq_relay_actor.h"
+#include "cas/detail/zeromq_transport.h"
 #include "cas/system.h"
 #include "cas/actor_registry.h"
 #include "cas/actor_ref_impl.h"
 #include "cas/actor_impl.h"
-#include <zmq.hpp>
 #include <iostream>
 #include <algorithm>
-#include <mutex>
 #include <string>
 
 namespace cas {
 
 namespace {
 
-// Wakes the relay to read its socket
+// Wakes the relay to read its transport
 struct poll_tick : public cas::message_base {};
 
 // Most inbound messages handled per poll: drains bursts without starving the
 // relay's other messages (sends, routes) for long
-constexpr int k_max_recv_per_poll = 256;
-
-// One context for every relay in the process: inproc:// endpoints are only
-// visible within a context. Lives as long as some relay holds it.
-std::shared_ptr<zmq::context_t> shared_context() {
-    static std::mutex mutex;
-    static std::weak_ptr<zmq::context_t> cached;
-    std::lock_guard<std::mutex> lock(mutex);
-    auto context = cached.lock();
-    if (!context) {
-        context = std::make_shared<zmq::context_t>(1);
-        cached = context;
-    }
-    return context;
-}
+constexpr size_t k_max_recv_per_poll = 256;
 
 } // namespace
+
+zeromq_relay_actor::zeromq_relay_actor() = default;
+zeromq_relay_actor::~zeromq_relay_actor() = default;
 
 void zeromq_relay_actor::on_start() {
     // The first relay takes the well-known name; later ones keep their unique
@@ -79,26 +67,12 @@ void zeromq_relay_actor::on_connect(const msg::zeromq_connect& msg) {
     }
 
     try {
-        if (!m_context) {
-            m_context = shared_context();
-        }
-
-        // Create DEALER socket
-        auto* socket = new zmq::socket_t(*static_cast<zmq::context_t*>(m_context.get()), ZMQ_DEALER);
-        m_socket = socket;
-
-        // Set identity (routing_id) if provided
-        if (!msg.identity.empty()) {
-            socket->set(zmq::sockopt::routing_id, zmq::buffer(msg.identity));
-        }
-
         m_mode = mode::dealer;
         m_endpoint = msg.endpoint;
 
-        configure_socket();
-
-        // Connect
-        socket->connect(msg.endpoint);
+        m_transport = std::make_unique<detail::zeromq_transport>();
+        m_transport->configure(m_options);
+        m_transport->connect(msg.endpoint, msg.identity);
         m_connected = true;
 
         start_polling();
@@ -116,9 +90,9 @@ void zeromq_relay_actor::on_connect(const msg::zeromq_connect& msg) {
             msg.sender.tell(status);
         }
 
-    } catch (const zmq::error_t& e) {
+    } catch (const detail::transport_error& e) {
         cleanup_socket();
-        send_error(std::string("Connect failed: ") + e.what(), e.num(), msg.sender);
+        send_error(std::string("Connect failed: ") + e.what(), e.code(), msg.sender);
     }
 }
 
@@ -129,21 +103,12 @@ void zeromq_relay_actor::on_bind(const msg::zeromq_bind& msg) {
     }
 
     try {
-        if (!m_context) {
-            m_context = shared_context();
-        }
-
-        // Create ROUTER socket
-        auto* socket = new zmq::socket_t(*static_cast<zmq::context_t*>(m_context.get()), ZMQ_ROUTER);
-        m_socket = socket;
-
         m_mode = mode::router;
         m_endpoint = msg.endpoint;
 
-        configure_socket();
-
-        // Bind
-        socket->bind(msg.endpoint);
+        m_transport = std::make_unique<detail::zeromq_transport>();
+        m_transport->configure(m_options);
+        m_transport->bind(msg.endpoint);
         m_connected = true;
 
         start_polling();
@@ -161,71 +126,37 @@ void zeromq_relay_actor::on_bind(const msg::zeromq_bind& msg) {
             msg.sender.tell(status);
         }
 
-    } catch (const zmq::error_t& e) {
+    } catch (const detail::transport_error& e) {
         cleanup_socket();
-        send_error(std::string("Bind failed: ") + e.what(), e.num(), msg.sender);
+        send_error(std::string("Bind failed: ") + e.what(), e.code(), msg.sender);
     }
 }
 
 void zeromq_relay_actor::on_send(const msg::zeromq_send& msg) {
-    if (!m_connected || !m_socket) {
+    if (!m_connected || !m_transport) {
         send_error("Not connected", 0, msg.sender);
         return;
     }
 
-    if (msg.data.size() > static_cast<size_t>(m_max_message_size)) {
+    if (msg.data.size() > static_cast<size_t>(m_options.max_message_size)) {
         send_error("Message too large: " + std::to_string(msg.data.size()), 0, msg.sender);
         return;
     }
 
+    if (m_mode == mode::router && msg.target.empty()) {
+        send_error("ROUTER mode requires target identity", 0, msg.sender);
+        return;
+    }
+
+    detail::envelope out;
+    out.peer = msg.target;
+    out.correlation_id = msg.correlation_id;
+    out.message_type = msg.message_type;
+    out.content_type = msg.content_type;
+    out.payload = msg.data;
+
     try {
-        auto* socket = static_cast<zmq::socket_t*>(m_socket);
-
-        if (m_mode == mode::router) {
-            // ROUTER: must send identity frame first
-            if (msg.target.empty()) {
-                send_error("ROUTER mode requires target identity", 0, msg.sender);
-                return;
-            }
-
-            // Send: [identity][correlation_id][data][content_type][message_type]
-            // Identity frame
-            zmq::message_t identity_msg(msg.target.begin(), msg.target.end());
-            socket->send(identity_msg, zmq::send_flags::sndmore);
-
-            // Correlation ID as string
-            std::string corr_str = std::to_string(msg.correlation_id);
-            zmq::message_t corr_msg(corr_str.begin(), corr_str.end());
-            socket->send(corr_msg, zmq::send_flags::sndmore);
-
-            // Payload
-            zmq::message_t data_msg(msg.data.begin(), msg.data.end());
-            socket->send(data_msg, zmq::send_flags::sndmore);
-
-            // Content type
-            zmq::message_t type_msg(msg.content_type.begin(), msg.content_type.end());
-            socket->send(type_msg, zmq::send_flags::sndmore);
-
-            // Message type (final frame)
-            zmq::message_t mtype_msg(msg.message_type.begin(), msg.message_type.end());
-            socket->send(mtype_msg, zmq::send_flags::none);
-
-        } else {
-            // DEALER: just send data, no identity needed
-            // Send: [correlation_id][data][content_type][message_type]
-            std::string corr_str = std::to_string(msg.correlation_id);
-            zmq::message_t corr_msg(corr_str.begin(), corr_str.end());
-            socket->send(corr_msg, zmq::send_flags::sndmore);
-
-            zmq::message_t data_msg(msg.data.begin(), msg.data.end());
-            socket->send(data_msg, zmq::send_flags::sndmore);
-
-            zmq::message_t type_msg(msg.content_type.begin(), msg.content_type.end());
-            socket->send(type_msg, zmq::send_flags::sndmore);
-
-            zmq::message_t mtype_msg(msg.message_type.begin(), msg.message_type.end());
-            socket->send(mtype_msg, zmq::send_flags::none);
-        }
+        m_transport->send(out);
 
         // Track pending request if correlation_id set
         if (msg.correlation_id != 0 && msg.sender.is_valid()) {
@@ -234,8 +165,8 @@ void zeromq_relay_actor::on_send(const msg::zeromq_send& msg) {
                 std::chrono::steady_clock::now() + std::chrono::milliseconds(m_request_timeout_ms)};
         }
 
-    } catch (const zmq::error_t& e) {
-        send_error(std::string("Send failed: ") + e.what(), e.num(), msg.sender);
+    } catch (const detail::transport_error& e) {
+        send_error(std::string("Send failed: ") + e.what(), e.code(), msg.sender);
     }
 }
 
@@ -255,22 +186,24 @@ void zeromq_relay_actor::on_route(const msg::zeromq_route& msg) {
 
 void zeromq_relay_actor::on_config(const msg::zeromq_config& msg) {
     m_poll_interval_ms = msg.poll_interval_ms;
-    m_send_timeout_ms = msg.send_timeout_ms;
-    m_recv_timeout_ms = msg.recv_timeout_ms;
-    m_max_message_size = msg.max_message_size;
-    m_auto_reconnect = msg.auto_reconnect;
-    m_reconnect_delay_ms = msg.reconnect_delay_ms;
     m_request_timeout_ms = msg.request_timeout_ms;
 
-    // Reconfigure socket if connected
-    if (m_socket) {
-        configure_socket();
+    m_options.send_timeout_ms = msg.send_timeout_ms;
+    m_options.recv_timeout_ms = msg.recv_timeout_ms;
+    m_options.max_message_size = msg.max_message_size;
+    m_options.auto_reconnect = msg.auto_reconnect;
+    m_options.reconnect_delay_ms = msg.reconnect_delay_ms;
+
+    // Re-apply to a live connection
+    if (m_transport) {
+        m_transport->configure(m_options);
+        report_transport_events();
     }
 }
 
 void zeromq_relay_actor::process_next_message() {
-    // First, poll for ZeroMQ messages
-    if (m_connected && m_socket) {
+    // First, poll for inbound messages
+    if (m_connected && m_transport) {
         poll();
     }
 
@@ -292,112 +225,36 @@ void zeromq_relay_actor::expire_pending_requests() {
 
 void zeromq_relay_actor::poll() {
     // Drain what is waiting (up to a budget), not one message per wake-up
-    for (int i = 0; i < k_max_recv_per_poll && m_connected && m_socket; ++i) {
-        if (!receive_one()) {
-            break;
-        }
+    m_inbound.clear();
+    m_transport->receive(m_inbound, k_max_recv_per_poll);
+    report_transport_events();
+    for (auto& message : m_inbound) {
+        route_message(message);
     }
+    m_inbound.clear();
 }
 
-bool zeromq_relay_actor::receive_one() {
-    auto* socket = static_cast<zmq::socket_t*>(m_socket);
-
-    try {
-        // Non-blocking receive - get all frames
-        zmq::message_t frame;
-        std::vector<std::vector<char>> frames;
-
-        // Receive first frame
-        auto result = socket->recv(frame, zmq::recv_flags::dontwait);
-        if (!result.has_value()) {
-            return false;  // No message available
-        }
-
-        // Store first frame
-        frames.emplace_back(frame.data<char>(), frame.data<char>() + frame.size());
-
-        // Receive remaining frames while more flag is set
-        while (frame.more()) {
-            result = socket->recv(frame, zmq::recv_flags::dontwait);
-            if (!result.has_value()) {
-                break;  // Incomplete multipart message
-            }
-            frames.emplace_back(frame.data<char>(), frame.data<char>() + frame.size());
-        }
-
-        // Parse frames
-        // ROUTER: [identity][correlation_id][data][content_type][message_type]
-        // DEALER: [correlation_id][data][content_type][message_type]
-
-        size_t min_frames = (m_mode == mode::router) ? 5 : 4;
-        if (frames.size() < min_frames) {
-            send_error("Received malformed message (frame count: " + std::to_string(frames.size()) + ")");
-            return true;  // consumed; keep reading
-        }
-
-        size_t idx = 0;
-        std::string source;
-
-        if (m_mode == mode::router) {
-            // First frame is identity
-            source = std::string(frames[0].begin(), frames[0].end());
-            idx = 1;
-        }
-
-        // Parse remaining frames
-        uint64_t correlation_id = 0;
-        std::vector<char> data;
-        std::string content_type;
-        std::string message_type;
-
-        // Correlation ID
-        std::string corr_str(frames[idx].begin(), frames[idx].end());
-        try {
-            correlation_id = std::stoull(corr_str);
-        } catch (...) {
-            correlation_id = 0;
-        }
-        idx++;
-
-        // Data
-        data = frames[idx];
-        idx++;
-
-        // Content type
-        content_type = std::string(frames[idx].begin(), frames[idx].end());
-        idx++;
-
-        // Message type
-        message_type = std::string(frames[idx].begin(), frames[idx].end());
-
-        // Route the message
-        route_message(source, correlation_id, data, content_type, message_type);
-        return true;
-
-    } catch (const zmq::error_t& e) {
-        // EAGAIN is expected when no messages available
-        if (e.num() != EAGAIN) {
-            send_error(std::string("Receive error: ") + e.what(), e.num());
-        }
-        return false;
+void zeromq_relay_actor::report_transport_events() {
+    m_events.clear();
+    m_transport->drain_events(m_events);
+    for (const auto& event : m_events) {
+        send_error(event.detail, event.code);
     }
+    m_events.clear();
 }
 
-void zeromq_relay_actor::route_message(const std::string& source, uint64_t correlation_id,
-                                        const std::vector<char>& data,
-                                        const std::string& content_type,
-                                        const std::string& message_type) {
+void zeromq_relay_actor::route_message(detail::envelope& message) {
     // Create received message
     msg::zeromq_recv recv_msg;
-    recv_msg.source = source;
-    recv_msg.correlation_id = correlation_id;
-    recv_msg.data = data;
-    recv_msg.content_type = content_type;
-    recv_msg.message_type = message_type;
+    recv_msg.source = std::move(message.peer);
+    recv_msg.correlation_id = message.correlation_id;
+    recv_msg.data = std::move(message.payload);
+    recv_msg.content_type = std::move(message.content_type);
+    recv_msg.message_type = std::move(message.message_type);
 
     // Check if this is a reply to a pending request
-    if (correlation_id != 0) {
-        auto it = m_pending_requests.find(correlation_id);
+    if (recv_msg.correlation_id != 0) {
+        auto it = m_pending_requests.find(recv_msg.correlation_id);
         if (it != m_pending_requests.end()) {
             // Send to original sender
             it->second.requester.tell(recv_msg);
@@ -407,8 +264,8 @@ void zeromq_relay_actor::route_message(const std::string& source, uint64_t corre
     }
 
     // Route by message_type
-    if (!message_type.empty()) {
-        auto it = m_routes.find(message_type);
+    if (!recv_msg.message_type.empty()) {
+        auto it = m_routes.find(recv_msg.message_type);
         if (it != m_routes.end() && it->second.is_valid()) {
             it->second.tell(recv_msg);
             return;
@@ -423,31 +280,8 @@ void zeromq_relay_actor::route_message(const std::string& source, uint64_t corre
 
     // No route found - log warning
 #ifdef CAS_DEBUG_LOGGING
-    std::cout << "[ZEROMQ] No route for message_type '" << message_type << "'\n" << std::flush;
+    std::cout << "[ZEROMQ] No route for message_type '" << recv_msg.message_type << "'\n" << std::flush;
 #endif
-}
-
-void zeromq_relay_actor::configure_socket() {
-    if (!m_socket) return;
-
-    auto* socket = static_cast<zmq::socket_t*>(m_socket);
-
-    // Set timeouts
-    socket->set(zmq::sockopt::sndtimeo, m_send_timeout_ms);
-    socket->set(zmq::sockopt::rcvtimeo, m_recv_timeout_ms);
-    socket->set(zmq::sockopt::maxmsgsize, static_cast<int64_t>(m_max_message_size));
-
-    // Bounded linger: the default (-1) makes the last relay's context
-    // teardown wait forever for undeliverable outbound messages
-    socket->set(zmq::sockopt::linger, m_send_timeout_ms);
-
-    // ZeroMQ reconnects dropped connections by itself; -1 disables it
-    socket->set(zmq::sockopt::reconnect_ivl, m_auto_reconnect ? m_reconnect_delay_ms : -1);
-
-    // ROUTER: set router mandatory to get errors for unknown identities
-    if (m_mode == mode::router) {
-        socket->set(zmq::sockopt::router_mandatory, true);
-    }
 }
 
 void zeromq_relay_actor::cleanup_socket() {
@@ -456,13 +290,7 @@ void zeromq_relay_actor::cleanup_socket() {
         m_poll_timer = INVALID_TIMER_ID;
     }
 
-    if (m_socket) {
-        auto* socket = static_cast<zmq::socket_t*>(m_socket);
-        delete socket;
-        m_socket = nullptr;
-    }
-
-    m_context.reset();  // the last relay's release terminates the context
+    m_transport.reset();  // closes; the last one terminates the shared context
 
     m_connected = false;
     m_pending_requests.clear();

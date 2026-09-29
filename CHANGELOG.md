@@ -53,6 +53,13 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **The ZeroMQ relay is split into a relay and a transport** (internal,
+  no behaviour change): routing, correlation, errors and status stay in
+  `zeromq_relay_actor`; all ZeroMQ code moved to `detail::zeromq_transport`
+  behind a transport interface (`detail::transport`), the first step
+  towards pluggable transports (shared memory, Unix sockets). The interface
+  is internal and may change within 1.x.
+
 - **Pooled actors are scheduled from ready queues, as in CAF**, instead of
   workers scanning every actor pinned to them. Before, each worker took the
   single system-wide `m_actors_mutex` on every loop iteration to copy its
