@@ -32,7 +32,7 @@ public:
     void bind(const std::string& endpoint) override;
     void connect(const std::string& endpoint, const std::string& identity) override;
     void configure(const transport_options& options) override;
-    void send(const envelope& message) override;
+    bool try_send(const envelope& message) override;
     size_t receive(std::vector<envelope>& out, size_t max) override;
     void drain_events(std::vector<transport_event>& out) override;
     void wait(std::chrono::milliseconds timeout) override;

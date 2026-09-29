@@ -9,6 +9,7 @@
 #include <iostream>
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <string>
 
 namespace cas {
@@ -22,6 +23,11 @@ constexpr size_t k_max_recv_per_poll = 256;
 // Longest the relay sleeps without a reason to wake: bounds how late an
 // expired request is noticed. Inbound messages and actor messages wake it.
 constexpr std::chrono::milliseconds k_idle_backstop{100};
+
+// While sends are held for a slow peer, how often they are retried. The
+// transport does not signal "writable again" per peer, so this is a poll -
+// only while something is held.
+constexpr std::chrono::milliseconds k_send_retry_interval{1};
 
 } // namespace
 
@@ -66,6 +72,8 @@ void zeromq_relay_actor::on_start() {
         status.mode = (m_mode == mode::router) ? "router" : "dealer";
         status.pending_count = m_pending_requests.size();
         status.route_count = m_routes.size();
+        status.queued_sends = m_queued_sends;
+        status.dropped_sends = m_dropped_sends;
 
         if (msg.sender.is_valid()) {
             msg.sender.tell(status);
@@ -169,19 +177,103 @@ void zeromq_relay_actor::on_send(const msg::zeromq_send& msg) {
     out.content_type = msg.content_type;
     out.payload = msg.data;
 
+    send_or_hold(std::move(out), msg.sender);
+}
+
+void zeromq_relay_actor::send_or_hold(detail::envelope message, const cas::actor_ref& sender) {
+    // Messages already held for this peer go first: never overtake them
+    auto held = m_outbound.find(message.peer);
+    const bool behind = held != m_outbound.end() && !held->second.empty();
+
     try {
-        m_transport->send(out);
-
-        // Track pending request if correlation_id set
-        if (msg.correlation_id != 0 && msg.sender.is_valid()) {
-            m_pending_requests[msg.correlation_id] = pending_request{
-                msg.sender,
-                std::chrono::steady_clock::now() + std::chrono::milliseconds(m_request_timeout_ms)};
+        if (!behind && m_transport->try_send(message)) {
+            track_request(message, sender);
+            return;
         }
-
     } catch (const detail::transport_error& e) {
-        send_error(std::string("Send failed: ") + e.what(), e.code(), msg.sender);
+        send_error(std::string("Send failed: ") + e.what(), e.code(), sender);
+        return;
     }
+
+    // The peer is not keeping up
+    switch (m_send_policy) {
+        case msg::zeromq_send_policy::drop:
+            ++m_dropped_sends;
+            return;
+
+        case msg::zeromq_send_policy::fail:
+            send_error("Send failed: the peer is not keeping up (send queue at its high-water mark)",
+                       EAGAIN, sender);
+            return;
+
+        case msg::zeromq_send_policy::queue:
+            if (m_queued_sends >= m_max_queued_sends) {
+                send_error("Send failed: send queue full (" + std::to_string(m_queued_sends) +
+                           " messages waiting for slow peers)", EAGAIN, sender);
+                return;
+            }
+            m_outbound[message.peer].push_back(queued_send{
+                std::move(message), sender,
+                std::chrono::steady_clock::now() + std::chrono::milliseconds(m_options.send_timeout_ms)});
+            ++m_queued_sends;
+            return;
+    }
+}
+
+bool zeromq_relay_actor::flush_outbound() {
+    if (m_queued_sends == 0) {
+        return false;
+    }
+    const auto now = std::chrono::steady_clock::now();
+
+    for (auto peer = m_outbound.begin(); peer != m_outbound.end();) {
+        auto& queue = peer->second;
+        while (!queue.empty()) {
+            queued_send& front = queue.front();
+            if (front.deadline <= now) {
+                send_error("Send failed: timed out after " + std::to_string(m_options.send_timeout_ms) +
+                           " ms waiting for the peer", ETIMEDOUT, front.sender);
+            } else {
+                bool sent = false;
+                try {
+                    sent = m_transport->try_send(front.message);
+                } catch (const detail::transport_error& e) {
+                    send_error(std::string("Send failed: ") + e.what(), e.code(), front.sender);
+                    sent = true;  // reported; do not retry
+                    front.sender = cas::actor_ref();  // not a request that went out
+                }
+                if (!sent) {
+                    break;  // still full: keep this peer's order, try again later
+                }
+                if (front.sender.is_valid()) {
+                    track_request(front.message, front.sender);
+                }
+            }
+            queue.pop_front();
+            --m_queued_sends;
+        }
+        peer = queue.empty() ? m_outbound.erase(peer) : std::next(peer);
+    }
+    return m_queued_sends > 0;
+}
+
+void zeromq_relay_actor::track_request(const detail::envelope& message, const cas::actor_ref& sender) {
+    // Only a request sent from inside an actor has someone to reply to
+    if (message.correlation_id != 0 && sender.is_valid()) {
+        m_pending_requests[message.correlation_id] = pending_request{
+            sender,
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(m_request_timeout_ms)};
+    }
+}
+
+void zeromq_relay_actor::fail_all_outbound(const std::string& reason) {
+    for (auto& [peer, queue] : m_outbound) {
+        for (auto& held : queue) {
+            send_error(reason, 0, held.sender);
+        }
+    }
+    m_outbound.clear();
+    m_queued_sends = 0;
 }
 
 void zeromq_relay_actor::on_route(const msg::zeromq_route& msg) {
@@ -201,6 +293,10 @@ void zeromq_relay_actor::on_route(const msg::zeromq_route& msg) {
 void zeromq_relay_actor::on_config(const msg::zeromq_config& msg) {
     m_request_timeout_ms = msg.request_timeout_ms;
     m_spin_before_block_us = msg.spin_before_block_us;
+    m_send_policy = msg.send_policy;
+    m_max_queued_sends = msg.max_queued_sends > 0 ? static_cast<size_t>(msg.max_queued_sends) : 0;
+    m_options.send_hwm = msg.send_hwm;
+    m_options.recv_hwm = msg.recv_hwm;
 
     m_options.send_timeout_ms = msg.send_timeout_ms;
     m_options.recv_timeout_ms = msg.recv_timeout_ms;
@@ -214,9 +310,11 @@ void zeromq_relay_actor::on_config(const msg::zeromq_config& msg) {
 }
 
 void zeromq_relay_actor::process_next_message() {
-    // Inbound first, so a busy mailbox does not starve the socket
+    // Inbound first, so a busy mailbox does not starve the socket; then give
+    // held sends another chance
     if (m_connected) {
         poll();
+        flush_outbound();
     }
 
     // Then process normal actor messages
@@ -233,6 +331,7 @@ void zeromq_relay_actor::wait_for_work() {
         ~context_scope() { current_actor_context = prev; }
     } scope(this);
 
+    const bool holding = m_connected && flush_outbound();
     if (m_connected && poll() > 0) {
         return;  // there may be more; the loop comes straight back
     }
@@ -270,7 +369,9 @@ void zeromq_relay_actor::wait_for_work() {
         m_mailbox.try_unblock();
         return;  // a stop requested before the block: its wake() may have come early
     }
-    m_transport->wait(k_idle_backstop);  // ends on inbound data, wake(), or the backstop
+    // Ends on inbound data, wake(), or the timeout - short while sends are
+    // held, so they are retried as soon as the peer catches up
+    m_transport->wait(holding ? k_send_retry_interval : k_idle_backstop);
     m_mailbox.try_unblock();             // back to running (a pusher may have done it already)
     report_transport_events();
 }
@@ -352,6 +453,7 @@ void zeromq_relay_actor::route_message(detail::envelope& message) {
 }
 
 void zeromq_relay_actor::cleanup_socket() {
+    fail_all_outbound("Send failed: the relay closed its connection before the message was sent");
     m_transport->close();  // the transport itself stays: wake() may still be called
 
     m_connected = false;

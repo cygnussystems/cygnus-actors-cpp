@@ -11,6 +11,7 @@
 #include <string>
 #include <memory>
 #include <chrono>
+#include <deque>
 
 namespace cas {
 
@@ -55,12 +56,25 @@ struct zeromq_route : public cas::message_base {
     cas::actor_ref target;          // Forward to this actor
 };
 
+// What the relay does with a send the peer cannot take right now (its queue
+// is at the send high-water mark: a slow or stalled peer)
+enum class zeromq_send_policy {
+    queue,  // hold it in the relay and retry, in order per peer, for up to
+            // send_timeout_ms; then report it to the sender (zeromq_error)
+    fail,   // report it to the sender at once (zeromq_error)
+    drop    // drop it and count it (zeromq_status::dropped_sends) - e.g. market data
+};
+
 // Configuration
 struct zeromq_config : public cas::message_base {
     int poll_interval_ms = 10;          // No effect: the relay waits on its socket on its own thread
     int spin_before_block_us = 0;       // Idle: poll this long before blocking (lower latency, costs CPU);
                                         //   0 = block at once, -1 = never block (busy-poll, a full core)
-    int send_timeout_ms = 1000;         // Send timeout; also the linger on close
+    int send_timeout_ms = 1000;         // queue policy: how long an unsent message may wait; also the linger on close
+    zeromq_send_policy send_policy = zeromq_send_policy::queue;  // when a peer is not keeping up
+    int max_queued_sends = 10000;       // queue policy: unsent messages held in total; beyond -> reported
+    int send_hwm = 1000;                // ZeroMQ send high-water mark (per peer), set at bind/connect
+    int recv_hwm = 1000;                // ZeroMQ receive high-water mark, set at bind/connect
     int recv_timeout_ms = 1000;         // No effect: receives are non-blocking
     int max_message_size = 1048576;     // 1MB max
     bool auto_reconnect = true;         // Reconnect after a dropped connection (ZMQ_RECONNECT_IVL)
@@ -75,6 +89,8 @@ struct zeromq_status : public cas::message_base {
     std::string mode;                  // "router" or "dealer"
     size_t pending_count = 0;          // Outstanding correlation IDs
     size_t route_count = 0;            // Number of routing rules
+    size_t queued_sends = 0;           // Sends waiting for a slow peer (queue policy)
+    size_t dropped_sends = 0;          // Sends dropped because a peer was not keeping up (drop policy)
 };
 
 // Error notification
@@ -166,6 +182,28 @@ private:
     // Reused receive buffers
     std::vector<detail::envelope> m_inbound;
     std::vector<detail::transport_event> m_events;
+
+    // Outbound back-pressure (send_policy). Per peer ("" for a client), so a
+    // slow peer delays only its own messages; in send order within a peer.
+    struct queued_send {
+        detail::envelope message;
+        cas::actor_ref sender;
+        std::chrono::steady_clock::time_point deadline;
+    };
+    std::unordered_map<std::string, std::deque<queued_send>> m_outbound;
+    size_t m_queued_sends = 0;
+    size_t m_dropped_sends = 0;
+    msg::zeromq_send_policy m_send_policy = msg::zeromq_send_policy::queue;
+    size_t m_max_queued_sends = 10000;
+
+    // Send now if possible, else apply the policy
+    void send_or_hold(detail::envelope message, const cas::actor_ref& sender);
+    // Retry held sends; report expired ones. Returns true while some remain.
+    bool flush_outbound();
+    // After a send went out: remember the requester for the reply
+    void track_request(const detail::envelope& message, const cas::actor_ref& sender);
+    // Report every held send to its sender and forget them
+    void fail_all_outbound(const std::string& reason);
 
     void expire_pending_requests();
     void report_transport_events();

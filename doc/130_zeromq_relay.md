@@ -181,11 +181,18 @@ struct zeromq_route : public cas::message_base {
     // Empty message_type = default route
 };
 
+// What to do with a send a slow peer cannot take (see Back-Pressure)
+enum class zeromq_send_policy { queue, fail, drop };
+
 // Configuration
 struct zeromq_config : public cas::message_base {
     int poll_interval_ms = 10;      // No effect: the relay waits on its socket (see Performance)
     int spin_before_block_us = 0;   // Idle: poll this long before blocking; -1 = never block
-    int send_timeout_ms = 1000;     // Send timeout; also the linger on close
+    int send_timeout_ms = 1000;     // queue policy: how long an unsent message may wait; also the linger on close
+    zeromq_send_policy send_policy = zeromq_send_policy::queue;
+    int max_queued_sends = 10000;   // queue policy: unsent messages held in total
+    int send_hwm = 1000;            // ZeroMQ send high-water mark (per peer), set at bind/connect
+    int recv_hwm = 1000;            // ZeroMQ receive high-water mark, set at bind/connect
     int recv_timeout_ms = 1000;     // No effect: receives are non-blocking
     int max_message_size = 1048576; // 1MB
     bool auto_reconnect = true;     // ZeroMQ reconnects dropped connections (false: never)
@@ -202,6 +209,8 @@ struct zeromq_status : public cas::message_base {
     std::string mode;              // "router" or "dealer"
     size_t pending_count = 0;
     size_t route_count = 0;
+    size_t queued_sends = 0;       // held for slow peers (queue policy)
+    size_t dropped_sends = 0;      // dropped because a peer was not keeping up (drop policy)
 };
 
 // Error notification - sent to every route target, the default route, and
@@ -389,7 +398,8 @@ messages are simpler and faster.
 // Configure before connecting
 cas::msg::zeromq_config config;
 config.spin_before_block_us = 50;  // Trading: poll 50 us before sleeping (costs CPU)
-config.send_timeout_ms = 500;      // Fail fast on send
+config.send_policy = cas::msg::zeromq_send_policy::queue;  // see Back-Pressure
+config.send_timeout_ms = 500;      // a held send is reported after 500 ms
 config.max_message_size = 10 * 1024 * 1024;  // 10MB max
 config.auto_reconnect = true;       // Reconnect dropped connections...
 config.reconnect_delay_ms = 100;    // ...after 100 ms
@@ -405,6 +415,27 @@ relay.tell(connect);
 A `zeromq_config` sent after bind/connect re-applies the socket options
 (send/receive timeouts, maximum message size, linger, reconnect interval) to
 the open socket; the other settings take effect at once.
+
+## Back-Pressure
+
+A send never blocks the relay. When a peer is not keeping up - its queue is at
+the send high-water mark (`send_hwm`, default 1000 messages) because it is
+slow, stalled or gone - the relay applies `send_policy`:
+
+| Policy | What happens to the send | Use for |
+|--------|--------------------------|---------|
+| `queue` (default) | Held in the relay and retried, in order, as the peer catches up. A message not sent within `send_timeout_ms` is dropped and reported to its sender (`zeromq_error`, "timed out"); beyond `max_queued_sends` held messages, new ones are reported at once ("queue full"). | orders, requests - anything that must not vanish silently |
+| `fail` | Reported to the sender at once (`zeromq_error`, "not keeping up"). | callers that retry or reroute themselves |
+| `drop` | Dropped and counted in `zeromq_status::dropped_sends`, no error. | market data and other streams where only the latest matters |
+
+- Held messages are kept **per peer**: on a server (ROUTER), one slow client
+  holds up only its own messages, not the other clients'.
+- While anything is held the relay retries about every millisecond; it still
+  handles inbound messages and its mailbox in between.
+- `zeromq_status::queued_sends` shows how many are held right now.
+- Messages still held when the relay stops are reported to their senders.
+- Errors go to the actor that sent the `zeromq_send`, so send from inside an
+  actor if you want to hear about them.
 
 ## Thread Safety
 

@@ -66,7 +66,12 @@ struct zeromq_transport::impl {
         // ZeroMQ reconnects dropped connections by itself; -1 disables it
         socket->set(zmq::sockopt::reconnect_ivl, options.auto_reconnect ? options.reconnect_delay_ms : -1);
 
-        // ROUTER: report unknown identities as errors instead of dropping silently
+        // Queue limits (effective for connections made after this)
+        socket->set(zmq::sockopt::sndhwm, options.send_hwm);
+        socket->set(zmq::sockopt::rcvhwm, options.recv_hwm);
+
+        // ROUTER: report unknown identities as errors instead of dropping
+        // silently, and a full peer as EAGAIN instead of dropping silently
         if (server) {
             socket->set(zmq::sockopt::router_mandatory, true);
         }
@@ -227,7 +232,7 @@ void zeromq_transport::configure(const transport_options& options) {
     }
 }
 
-void zeromq_transport::send(const envelope& message) {
+bool zeromq_transport::try_send(const envelope& message) {
     if (!m_impl->socket) {
         throw transport_error("Not connected", 0);
     }
@@ -237,12 +242,24 @@ void zeromq_transport::send(const envelope& message) {
 
     try {
         auto& socket = *m_impl->socket;
+
+        // Only the first frame may be refused: the high-water mark counts
+        // whole messages, so once the first frame is accepted the rest of the
+        // multipart message goes through without blocking.
+        const auto first_flags = zmq::send_flags::sndmore | zmq::send_flags::dontwait;
         if (m_impl->server) {
             zmq::message_t identity = frame_of(message.peer);
-            socket.send(identity, zmq::send_flags::sndmore);
+            if (!socket.send(identity, first_flags)) {
+                return false;  // this peer is not keeping up
+            }
+            zmq::message_t correlation = frame_of(std::to_string(message.correlation_id));
+            socket.send(correlation, zmq::send_flags::sndmore);
+        } else {
+            zmq::message_t correlation = frame_of(std::to_string(message.correlation_id));
+            if (!socket.send(correlation, first_flags)) {
+                return false;  // the server is not keeping up (or not connected yet)
+            }
         }
-        zmq::message_t correlation = frame_of(std::to_string(message.correlation_id));
-        socket.send(correlation, zmq::send_flags::sndmore);
 
         zmq::message_t payload(message.payload.begin(), message.payload.end());
         socket.send(payload, zmq::send_flags::sndmore);
@@ -252,6 +269,7 @@ void zeromq_transport::send(const envelope& message) {
 
         zmq::message_t message_type = frame_of(message.message_type);
         socket.send(message_type, zmq::send_flags::none);
+        return true;
     } catch (const zmq::error_t& e) {
         throw transport_error(e.what(), e.num());
     }

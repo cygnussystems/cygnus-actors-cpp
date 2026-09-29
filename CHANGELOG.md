@@ -53,6 +53,15 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **A slow ZeroMQ peer no longer stalls the relay.** A send used to block
+  the relay's thread for up to `send_timeout_ms` when the peer's queue was
+  full, delaying everything else it did. Sends are now non-blocking, and
+  the new `zeromq_config::send_policy` decides what happens instead:
+  `queue` (default - held in the relay per peer, retried in order, reported
+  to the sender after `send_timeout_ms` or when `max_queued_sends` is
+  reached), `fail` (reported at once) or `drop` (counted in
+  `zeromq_status::dropped_sends`). New: `send_hwm` / `recv_hwm`,
+  `zeromq_status::queued_sends`.
 - **The ZeroMQ relay runs on its own thread and no longer waits for a poll
   tick.** It was a pooled actor that read its socket only when its poll
   timer fired (`poll_interval_ms`, default 10 ms) or another message

@@ -59,7 +59,7 @@ TEST_CASE("Transport: envelopes round-trip between server and client",
     client.connect(endpoint, "client-7");
 
     // Client -> server: the server sees who sent it
-    client.send(make("NewOrderSingle", "BUY 1", 42));
+    REQUIRE(client.try_send(make("NewOrderSingle", "BUY 1", 42)));
     auto at_server = receive_n(server, 1);
     REQUIRE(at_server.size() == 1);
     REQUIRE(at_server[0].peer == "client-7");
@@ -71,7 +71,7 @@ TEST_CASE("Transport: envelopes round-trip between server and client",
     // Server -> client: addressed by that peer; the client sees no peer
     envelope reply = make("OrderAck", "ACK", 42);
     reply.peer = at_server[0].peer;
-    server.send(reply);
+    REQUIRE(server.try_send(reply));
     auto at_client = receive_n(client, 1);
     REQUIRE(at_client.size() == 1);
     REQUIRE(at_client[0].peer.empty());
@@ -87,7 +87,7 @@ TEST_CASE("Transport: receive drains up to the budget and preserves order",
     client.connect(server.local_endpoint(), "c");
 
     for (int i = 0; i < 50; ++i) {
-        client.send(make("tick", std::to_string(i)));
+        REQUIRE(client.try_send(make("tick", std::to_string(i))));
     }
     auto got = receive_n(server, 50);
     REQUIRE(got.size() == 50);
@@ -110,11 +110,11 @@ TEST_CASE("Transport: bind and send failures throw transport_error",
     }
 
     zeromq_transport unconnected;
-    REQUIRE_THROWS_AS(unconnected.send(make("t", "x")), transport_error);
+    REQUIRE_THROWS_AS(unconnected.try_send(make("t", "x")), transport_error);
 
     zeromq_transport server;
     server.bind("tcp://127.0.0.1:*");
-    REQUIRE_THROWS_AS(server.send(make("t", "x")), transport_error);  // a server must name the peer
+    REQUIRE_THROWS_AS(server.try_send(make("t", "x")), transport_error);  // a server must name the peer
 }
 
 TEST_CASE("Transport: a malformed inbound message becomes an error event",
@@ -211,7 +211,7 @@ TEST_CASE("Transport: inbound data ends a wait()",
 
     std::thread sender([&] {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        client.send(make("tick", "x"));
+        client.try_send(make("tick", "x"));
     });
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<envelope> got;
@@ -222,6 +222,52 @@ TEST_CASE("Transport: inbound data ends a wait()",
     sender.join();
     REQUIRE(got.size() == 1);
     REQUIRE(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(2));
+}
+
+// --- back-pressure: try_send() (070 stage 1, item 3) ----------------------------
+
+TEST_CASE("Transport: try_send() refuses when the peer is not reading, then recovers",
+          "[08_zeromq_relay][transport][backpressure]") {
+    cas::detail::transport_options small;
+    small.send_hwm = 1;
+    small.recv_hwm = 1;
+
+    zeromq_transport server;  // never reads until told to
+    server.configure(small);
+    server.bind("inproc://transport-backpressure");
+
+    zeromq_transport client;
+    client.configure(small);
+    client.connect("inproc://transport-backpressure", "c");
+
+    // inproc: the queue between the two holds send_hwm + recv_hwm messages
+    int accepted = 0;
+    bool refused = false;
+    for (int i = 0; i < 1000 && !refused; ++i) {
+        if (client.try_send(make("tick", std::to_string(i)))) {
+            ++accepted;
+        } else {
+            refused = true;
+        }
+    }
+    REQUIRE(refused);
+    REQUIRE(accepted >= 1);
+    REQUIRE(accepted < 1000);
+
+    // Nothing half-sent: the server gets exactly the accepted messages, whole
+    auto got = receive_n(server, static_cast<size_t>(accepted));
+    REQUIRE(got.size() == static_cast<size_t>(accepted));
+    for (int i = 0; i < accepted; ++i) {
+        REQUIRE(text(got[static_cast<size_t>(i)]) == std::to_string(i));
+    }
+
+    // Once the server has read, the client can send again
+    bool resumed = false;
+    for (int i = 0; i < 2000 && !resumed; ++i) {
+        resumed = client.try_send(make("tick", "again"));
+        if (!resumed) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    REQUIRE(resumed);
 }
 
 #endif // CAS_ENABLE_ZEROMQ

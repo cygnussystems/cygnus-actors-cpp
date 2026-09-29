@@ -36,11 +36,14 @@ struct envelope {
 /// Settings a transport applies to its connection. configure() may be called
 /// before or after bind()/connect().
 struct transport_options {
-    int send_timeout_ms = 1000;       ///< how long a send may block; also the linger on close
+    int send_timeout_ms = 1000;       ///< linger on close (sends never block: see try_send())
     int recv_timeout_ms = 1000;       ///< applied, but receives are non-blocking
     int max_message_size = 1048576;   ///< larger inbound messages are refused by the transport
     bool auto_reconnect = true;       ///< re-establish dropped connections
     int reconnect_delay_ms = 1000;    ///< delay before a reconnect attempt
+    int send_hwm = 1000;              ///< outbound messages queued per peer before try_send() refuses
+    int recv_hwm = 1000;              ///< inbound messages queued before the peer is pushed back
+    ///< (the high-water marks apply to connections made after they are set)
 };
 
 /// Something the transport noticed outside a call's return value
@@ -77,8 +80,12 @@ public:
     /// Apply options now (if connected) and to any later bind()/connect()
     virtual void configure(const transport_options& options) = 0;
 
-    /// Send one envelope. A server must name the peer. Throws transport_error.
-    virtual void send(const envelope& message) = 0;
+    /// Send one envelope without blocking. Returns false if the peer is not
+    /// keeping up (its queue is at the high-water mark) - nothing was sent;
+    /// the caller decides whether to retry, fail or drop. Throws
+    /// transport_error when the send cannot succeed at all (not connected,
+    /// unknown peer, a server not naming the peer).
+    virtual bool try_send(const envelope& message) = 0;
 
     /// Non-blocking: append up to max waiting envelopes to out; returns how
     /// many were appended. Problems are reported through drain_events().

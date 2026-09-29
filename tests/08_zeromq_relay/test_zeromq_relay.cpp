@@ -2,6 +2,7 @@
 
 #ifdef CAS_ENABLE_ZEROMQ
 #include "cas/cas.h"
+#include "cas/detail/zeromq_transport.h"
 #include <thread>
 #include <chrono>
 #include <atomic>
@@ -481,6 +482,220 @@ TEST_CASE("System shutdown with an idle relay completes promptly",
     cas::system::shutdown();
     cas::system::wait_for_shutdown();
     REQUIRE(std::chrono::steady_clock::now() - t0 < 80ms);
+}
+
+// ---------------------------------------------------------------------------
+// 070 stage 1, item 3: sends never block the relay; a slow peer is handled
+// by zeromq_config::send_policy
+// ---------------------------------------------------------------------------
+
+namespace relay_backpressure {
+
+struct send_batch : public cas::message_base {
+    int count = 0;
+};
+struct ask_status : public cas::message_base {};
+
+// Sends numbered messages through the relay; records errors and status
+class producer : public cas::actor {
+public:
+    cas::actor_ref relay;
+    std::mutex mutex;
+    std::vector<std::string> errors;
+    std::atomic<int> statuses{0};
+    std::atomic<size_t> queued{0};
+    std::atomic<size_t> dropped{0};
+
+    size_t error_count(const std::string& containing) {
+        std::lock_guard<std::mutex> lock(mutex);
+        size_t n = 0;
+        for (const auto& e : errors) n += (e.find(containing) != std::string::npos) ? 1 : 0;
+        return n;
+    }
+
+protected:
+    void on_start() override {
+        handler<send_batch>([this](const send_batch& msg) {
+            for (int i = 0; i < msg.count; ++i) {
+                cas::msg::zeromq_send out;
+                out.message_type = "tick";
+                const std::string text = std::to_string(i);
+                out.data.assign(text.begin(), text.end());
+                relay.tell(out);
+            }
+        });
+        handler<ask_status>([this](const ask_status&) { relay.tell(cas::msg::zeromq_status{}); });
+        handler<cas::msg::zeromq_error>([this](const cas::msg::zeromq_error& e) {
+            std::lock_guard<std::mutex> lock(mutex);
+            errors.push_back(e.message);
+        });
+        handler<cas::msg::zeromq_status>([this](const cas::msg::zeromq_status& s) {
+            queued = s.queued_sends;
+            dropped = s.dropped_sends;
+            statuses.fetch_add(1);
+        });
+    }
+};
+
+// A peer that reads only when told to: a bare transport, not a relay
+struct stalled_peer {
+    cas::detail::zeromq_transport transport;
+
+    explicit stalled_peer(const std::string& endpoint) {
+        cas::detail::transport_options small;
+        small.recv_hwm = 1;
+        transport.configure(small);
+        transport.bind(endpoint);
+    }
+
+    std::vector<cas::detail::envelope> read(size_t count, int timeout_ms = 3000) {
+        std::vector<cas::detail::envelope> got;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+        while (got.size() < count && std::chrono::steady_clock::now() < deadline) {
+            if (transport.receive(got, count - got.size()) == 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        }
+        return got;
+    }
+};
+
+struct setup {
+    cas::actor_ref relay;
+    cas::actor_ref producer_ref;
+    producer* p = nullptr;
+
+    setup(const std::string& endpoint, cas::msg::zeromq_config config) {
+        relay = cas::system::create<cas::zeromq_relay_actor>();
+        producer_ref = cas::system::create<producer>();
+        p = &producer_ref.get_checked<producer>();
+        p->relay = relay;
+        cas::system::start();
+
+        config.send_hwm = 1;  // stall after a couple of messages
+        relay.tell(config);
+        cas::msg::zeromq_connect connect;
+        connect.endpoint = endpoint;
+        connect.identity = "producer";
+        relay.tell(connect);
+        std::this_thread::sleep_for(50ms);
+    }
+
+    // Asks the relay for its status and waits for the answer
+    void refresh_status() {
+        const int before = p->statuses.load();
+        producer_ref.tell(ask_status{});
+        relay_e2e::wait_for([&] { return p->statuses.load() > before; });
+    }
+};
+
+} // namespace relay_backpressure
+
+TEST_CASE("Send policy queue: held for a slow peer, delivered in order when it catches up",
+          "[08_zeromq_relay][backpressure]") {
+    CAS_TEST_GUARD();
+    using namespace relay_backpressure;
+    stalled_peer peer("inproc://bp-queue");
+    cas::msg::zeromq_config config;
+    config.send_policy = cas::msg::zeromq_send_policy::queue;
+    config.send_timeout_ms = 10000;
+    setup s("inproc://bp-queue", config);
+
+    send_batch batch;
+    batch.count = 50;
+    s.producer_ref.tell(batch);
+    REQUIRE(relay_e2e::wait_for([&] { s.refresh_status(); return s.p->queued.load() > 0; }));
+
+    // The relay is not blocked while it holds them: it still answers
+    s.refresh_status();
+    REQUIRE(s.p->statuses.load() >= 2);
+
+    auto got = peer.read(50);
+    REQUIRE(got.size() == 50);
+    for (size_t i = 0; i < got.size(); ++i) {
+        REQUIRE(std::string(got[i].payload.begin(), got[i].payload.end()) == std::to_string(i));
+    }
+    REQUIRE(s.p->error_count("") == 0);
+    REQUIRE(relay_e2e::wait_for([&] { s.refresh_status(); return s.p->queued.load() == 0; }));
+}
+
+TEST_CASE("Send policy queue: a message that waits too long is reported to its sender",
+          "[08_zeromq_relay][backpressure]") {
+    CAS_TEST_GUARD();
+    using namespace relay_backpressure;
+    stalled_peer peer("inproc://bp-timeout");
+    cas::msg::zeromq_config config;
+    config.send_policy = cas::msg::zeromq_send_policy::queue;
+    config.send_timeout_ms = 100;
+    setup s("inproc://bp-timeout", config);
+
+    send_batch batch;
+    batch.count = 20;
+    s.producer_ref.tell(batch);
+    REQUIRE(relay_e2e::wait_for([&] { return s.p->error_count("timed out") > 0; }));
+    REQUIRE(relay_e2e::wait_for([&] { s.refresh_status(); return s.p->queued.load() == 0; }));
+
+    // Every message was either delivered or reported - none silently lost
+    auto got = peer.read(20, 500);
+    REQUIRE(got.size() + s.p->error_count("timed out") == 20);
+}
+
+TEST_CASE("Send policy queue: a full queue is reported at once",
+          "[08_zeromq_relay][backpressure]") {
+    CAS_TEST_GUARD();
+    using namespace relay_backpressure;
+    stalled_peer peer("inproc://bp-full");
+    cas::msg::zeromq_config config;
+    config.send_policy = cas::msg::zeromq_send_policy::queue;
+    config.send_timeout_ms = 10000;
+    config.max_queued_sends = 3;
+    setup s("inproc://bp-full", config);
+
+    send_batch batch;
+    batch.count = 20;
+    s.producer_ref.tell(batch);
+    REQUIRE(relay_e2e::wait_for([&] { return s.p->error_count("queue full") > 0; }));
+    s.refresh_status();
+    REQUIRE(s.p->queued.load() == 3);
+}
+
+TEST_CASE("Send policy fail: reported to the sender at once",
+          "[08_zeromq_relay][backpressure]") {
+    CAS_TEST_GUARD();
+    using namespace relay_backpressure;
+    stalled_peer peer("inproc://bp-fail");
+    cas::msg::zeromq_config config;
+    config.send_policy = cas::msg::zeromq_send_policy::fail;
+    setup s("inproc://bp-fail", config);
+
+    send_batch batch;
+    batch.count = 20;
+    s.producer_ref.tell(batch);
+    REQUIRE(relay_e2e::wait_for([&] { return s.p->error_count("not keeping up") > 0; }));
+    s.refresh_status();
+    REQUIRE(s.p->queued.load() == 0);
+
+    auto got = peer.read(20, 500);
+    REQUIRE(got.size() + s.p->error_count("not keeping up") == 20);
+}
+
+TEST_CASE("Send policy drop: dropped and counted, no errors",
+          "[08_zeromq_relay][backpressure]") {
+    CAS_TEST_GUARD();
+    using namespace relay_backpressure;
+    stalled_peer peer("inproc://bp-drop");
+    cas::msg::zeromq_config config;
+    config.send_policy = cas::msg::zeromq_send_policy::drop;
+    setup s("inproc://bp-drop", config);
+
+    send_batch batch;
+    batch.count = 20;
+    s.producer_ref.tell(batch);
+    REQUIRE(relay_e2e::wait_for([&] { s.refresh_status(); return s.p->dropped.load() > 0; }));
+    REQUIRE(s.p->error_count("") == 0);
+
+    auto got = peer.read(20, 500);
+    REQUIRE(got.size() + s.p->dropped.load() == 20);
 }
 
 #else
