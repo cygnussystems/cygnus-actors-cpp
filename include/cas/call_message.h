@@ -1,5 +1,5 @@
-#ifndef CAS_ASK_MESSAGE_H
-#define CAS_ASK_MESSAGE_H
+#ifndef CAS_CALL_MESSAGE_H
+#define CAS_CALL_MESSAGE_H
 
 #include "message_base.h"
 #include <future>
@@ -156,4 +156,4 @@ void call_request<ReturnType, OpTag, Args...>::process(actor* target) {
 
 } // namespace cas
 
-#endif // CAS_ASK_MESSAGE_H
+#endif // CAS_CALL_MESSAGE_H

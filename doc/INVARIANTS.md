@@ -268,6 +268,7 @@ Where user code runs, and what happens when it throws:
 | `on_handler_exception()` | executor | caught; actor stopped; reported |
 | `call()` handler | executor | stored in the promise; the caller rethrows |
 | `inline_actor` handler | sender's thread | propagates to the sender's `tell()`/`call()` (by design) |
+| `inline_actor` handler, reached by the framework (timer tick, `termination_msg` from a stop, relay routing / error fan-out) | timer thread / stopping actor's executor / relay thread | caught at the framework's send, reported (source `handler`, the inline actor's name); the framework carries on |
 | `on_shutdown()`, `on_stop()` | executor / `wait_for_shutdown()` caller | `run_stop_hook`: reported, the stop completes |
 | dead-letter, queue-threshold callbacks | whichever thread dropped / sent (incl. timer thread, workers) | caught, reported (source `dead_letter_handler` / `queue_threshold_handler`) |
 | handler-exception callback | as above | caught; falls back to stderr |

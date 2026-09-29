@@ -168,6 +168,9 @@ private:
     std::vector<std::thread> m_thread_pool;
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_shutdown_requested{false};
+    // Set when shutdown() begins: an actor created from then on is sent
+    // system_shutdown by register_actor(), since shutdown() will not see it
+    std::atomic<bool> m_shutdown_started{false};
 
     // True while worker and fast-actor threads may be executing actors: set in
     // start() before they are launched, cleared in wait_for_shutdown() after

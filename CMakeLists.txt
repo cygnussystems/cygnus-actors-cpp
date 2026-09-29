@@ -135,6 +135,7 @@ if(BUILD_TESTS)
         tests/05_call/test_call_timeout.cpp
         tests/05_call/test_call_argument_types.cpp
         tests/05_call/test_call_deprecated_ask.cpp
+        tests/05_call/test_ask_header_standalone.cpp
         # Level 6: Timers
         tests/06_timers/test_timer_basic.cpp
         tests/06_timers/test_timer_periodic.cpp

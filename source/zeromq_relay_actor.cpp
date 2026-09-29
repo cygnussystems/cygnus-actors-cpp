@@ -20,6 +20,20 @@ namespace {
 // relay's other messages (sends, routes) for long
 constexpr size_t k_max_recv_per_poll = 256;
 
+// Sends from the relay's own loop - routing inbound messages, fanning out
+// errors - run outside any handler. An inline actor handles the message
+// right here and passes its exception to the sender (the relay): report it
+// instead of letting it out of the relay's thread (INVARIANT 7).
+template<typename Message>
+void tell_safely(const cas::actor_ref& to, const Message& message) {
+    try {
+        to.tell(message);
+    } catch (...) {
+        system::report_handler_exception(to.name(), typeid(Message), 0, "handler",
+                                         std::current_exception(), exception_action::resume);
+    }
+}
+
 // Longest the relay sleeps without a reason to wake: bounds how late an
 // expired request is noticed. Inbound messages and actor messages wake it.
 constexpr std::chrono::milliseconds k_idle_backstop{100};
@@ -425,7 +439,7 @@ void zeromq_relay_actor::route_message(detail::envelope& message) {
         auto it = m_pending_requests.find(recv_msg.correlation_id);
         if (it != m_pending_requests.end()) {
             // Send to original sender
-            it->second.requester.tell(recv_msg);
+            tell_safely(it->second.requester, recv_msg);
             m_pending_requests.erase(it);
             return;
         }
@@ -435,14 +449,14 @@ void zeromq_relay_actor::route_message(detail::envelope& message) {
     if (!recv_msg.message_type.empty()) {
         auto it = m_routes.find(recv_msg.message_type);
         if (it != m_routes.end() && it->second.is_valid()) {
-            it->second.tell(recv_msg);
+            tell_safely(it->second, recv_msg);
             return;
         }
     }
 
     // Fall back to default route
     if (m_default_route.is_valid()) {
-        m_default_route.tell(recv_msg);
+        tell_safely(m_default_route, recv_msg);
         return;
     }
 
@@ -473,7 +487,7 @@ void zeromq_relay_actor::send_error(const std::string& message, int error_code,
         const actor* target = ref.get_actor().get();
         if (target && std::find(told.begin(), told.end(), target) == told.end()) {
             told.push_back(target);
-            ref.tell(err);
+            tell_safely(ref, err);
         }
     };
     tell_once(reply_to);

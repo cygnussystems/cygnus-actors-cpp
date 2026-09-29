@@ -698,6 +698,75 @@ TEST_CASE("Send policy drop: dropped and counted, no errors",
     REQUIRE(got.size() + s.p->dropped.load() == 20);
 }
 
+// An inline actor as a route target handles the message on the relay's own
+// thread; its exception must be reported, not unwound out of that thread
+// (INVARIANT 7).
+namespace relay_inline_route {
+
+class throwing_inline : public cas::inline_actor<> {
+protected:
+    void on_start() override {
+        handler<cas::msg::zeromq_recv>([](const cas::msg::zeromq_recv&) {
+            throw std::runtime_error("inline route target");
+        });
+    }
+};
+
+class counter : public cas::actor {
+public:
+    std::atomic<int> received{0};
+protected:
+    void on_start() override {
+        handler<cas::msg::zeromq_recv>([this](const cas::msg::zeromq_recv&) { received++; });
+    }
+};
+
+} // namespace relay_inline_route
+
+TEST_CASE("A throwing inline route target is reported and the relay keeps routing",
+          "[08_zeromq_relay][invariant7]") {
+    CAS_CONFIG_GUARD();
+    using namespace relay_inline_route;
+    std::atomic<int> reported{0};
+    cas::system::set_handler_exception_handler([&](const cas::handler_exception_info&) { reported++; });
+
+    auto server = cas::system::create<cas::zeromq_relay_actor>();
+    auto client = cas::system::create<cas::zeromq_relay_actor>();
+    auto bad = cas::system::create<throwing_inline>();
+    auto good = cas::system::create<counter>();
+    cas::system::start();
+
+    cas::msg::zeromq_route to_bad;
+    to_bad.message_type = "bad";
+    to_bad.target = bad;
+    server.tell(to_bad);
+    cas::msg::zeromq_route to_good;
+    to_good.message_type = "good";
+    to_good.target = good;
+    server.tell(to_good);
+
+    cas::msg::zeromq_bind bind;
+    bind.endpoint = "inproc://relay-inline-route";
+    server.tell(bind);
+    std::this_thread::sleep_for(50ms);
+    cas::msg::zeromq_connect connect;
+    connect.endpoint = "inproc://relay-inline-route";
+    connect.identity = "c";
+    client.tell(connect);
+    std::this_thread::sleep_for(50ms);
+
+    cas::msg::zeromq_send first;
+    first.message_type = "bad";
+    client.tell(first);
+    cas::msg::zeromq_send second;
+    second.message_type = "good";
+    client.tell(second);
+
+    REQUIRE(relay_e2e::wait_for([&] { return good.get_checked<counter>().received.load() == 1; }));
+    REQUIRE(reported.load() == 1);
+    REQUIRE(server.is_running());
+}
+
 #else
 
 // ZeroMQ not enabled - provide a placeholder test

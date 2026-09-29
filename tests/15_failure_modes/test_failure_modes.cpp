@@ -371,6 +371,79 @@ TEST_CASE("Matrix: a throwing handler-exception callback falls back to stderr",
 }
 
 // ---------------------------------------------------------------------------
+// Inline actors reached from framework threads. An inline actor's handler
+// exception goes to its sender - but when the "sender" is the framework (the
+// timer thread, a stop notifying watchers), there is no user code to take
+// it. It must be reported, not unwound out of the framework thread.
+// ---------------------------------------------------------------------------
+
+namespace inline_from_framework {
+
+    struct tick : public cas::message_base {};
+
+    // Schedules a timer to itself; the tick's handler throws
+    class ticking_inline : public cas::inline_actor<> {
+    public:
+        std::atomic<int> ticks{0};
+    protected:
+        void on_start() override {
+            handler<tick>([this](const tick&) {
+                ticks++;
+                throw std::runtime_error("inline timer handler");
+            });
+            schedule_once(std::chrono::milliseconds(1), tick{});
+        }
+    };
+
+    // Watches someone; its termination handler throws
+    class throwing_watcher : public cas::inline_actor<> {
+    public:
+        std::atomic<int> notified{0};
+    protected:
+        void on_start() override {
+            handler<cas::termination_msg>([this](const cas::termination_msg&) {
+                notified++;
+                throw std::runtime_error("inline termination handler");
+            });
+        }
+    };
+
+    class plain : public cas::actor {
+    protected:
+        void on_start() override {}
+    };
+}
+
+TEST_CASE("Matrix: an inline actor's throwing timer handler is reported, not fatal",
+          "[15_failure_modes][invariant7]") {
+    CAS_CONFIG_GUARD();
+    recorder rec;
+    rec.install();
+    auto ref = cas::system::create<inline_from_framework::ticking_inline>();
+    cas::system::start();
+
+    auto& a = ref.get_checked<inline_from_framework::ticking_inline>();
+    REQUIRE(wait_for([&] { return a.ticks.load() == 1 && rec.count("handler") == 1; }));
+    REQUIRE(ref.is_running());
+}
+
+TEST_CASE("Matrix: an inline watcher's throwing termination handler is reported; the stop completes",
+          "[15_failure_modes][invariant7]") {
+    CAS_CONFIG_GUARD();
+    recorder rec;
+    rec.install();
+    auto watched = cas::system::create<inline_from_framework::plain>();
+    auto watcher = cas::system::create<inline_from_framework::throwing_watcher>();
+    cas::system::watch(watcher, watched);
+    cas::system::start();
+
+    REQUIRE(cas::system::stop_actor(watched));
+    REQUIRE(watcher.get_checked<inline_from_framework::throwing_watcher>().notified.load() == 1);
+    REQUIRE(wait_for([&] { return rec.count("handler") == 1; }));
+    REQUIRE(watched.get_checked<inline_from_framework::plain>().get_state() == cas::actor_state::stopped);
+}
+
+// ---------------------------------------------------------------------------
 // Construction and on_start(): propagate to the caller of create()/start()
 // ---------------------------------------------------------------------------
 

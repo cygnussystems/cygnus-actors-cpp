@@ -62,6 +62,7 @@ void system::start() {
 
     inst.m_running = true;
     inst.m_shutdown_requested = false;
+    inst.m_shutdown_started = false;
 
     // Determine thread pool size
     size_t thread_count = inst.m_config.thread_pool_size;
@@ -139,6 +140,7 @@ void system::start() {
 
 void system::shutdown(const shutdown_config& config) {
     auto& inst = instance();
+    inst.m_shutdown_started = true;
 
     // Clear previous shutdown log
     {
@@ -324,6 +326,7 @@ void system::reset() {
 
     // Reset flags
     inst.m_shutdown_requested = false;
+    inst.m_shutdown_started = false;
 
     // Note: m_config is preserved across resets
 }
@@ -445,6 +448,14 @@ void system::register_actor(std::shared_ptr<actor> actor_ptr) {
                 fast_ptr->m_dedicated_thread =
                     std::thread(&fast_actor::run_dedicated_thread_started, fast_ptr);
             }
+        }
+
+        // Created while the system is shutting down: shutdown() sent
+        // system_shutdown to the actors it knew about, not this one. Without
+        // it a fast actor's thread would never leave its loop, and
+        // wait_for_shutdown() would wait forever to join it.
+        if (inst.m_shutdown_started.load() && actor_ptr->get_state() == actor_state::running) {
+            actor_ptr->enqueue_message(std::make_unique<system_shutdown>());
         }
     }
 }
@@ -664,7 +675,17 @@ timer_id system::schedule_timer(actor* target, std::unique_ptr<message_base> msg
         if (auto alive = weak_target.lock()) {
             // Each firing is a new message; timer messages have no sender
             fired_msg->message_id = next_message_id();
-            alive->enqueue_message(std::move(fired_msg));
+            const std::type_index type = typeid(*fired_msg);
+            const uint64_t id = fired_msg->message_id;
+            try {
+                alive->enqueue_message(std::move(fired_msg));
+            } catch (...) {
+                // An inline actor runs its handler right here, on the timer
+                // thread, and passes exceptions to its sender - which is us.
+                // Nobody to hand it to: report it (INVARIANT 7).
+                report_handler_exception(*alive, type, id, "handler",
+                                         std::current_exception(), exception_action::resume);
+            }
         }
         // else: the actor was destroyed between the callback being extracted
         // and invoked. Dropping the message is correct - there is nobody left
@@ -1185,7 +1206,14 @@ void system::end_watches(actor* stopped_actor, bool notify) {
         msg.actor_name = stopped_actor->name();
         msg.instance_id = id;
         msg.type_name = stopped_actor->type_name();
-        actor_ref(watcher).tell(msg);
+        try {
+            actor_ref(watcher).tell(msg);
+        } catch (...) {
+            // An inline watcher handles it here, on the stopping actor's
+            // executor, outside any handler: report, keep stopping (INVARIANT 7)
+            report_handler_exception(*watcher, typeid(termination_msg), 0, "handler",
+                                     std::current_exception(), exception_action::resume);
+        }
     }
 }
 

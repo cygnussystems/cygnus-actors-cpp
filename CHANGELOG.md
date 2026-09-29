@@ -126,6 +126,21 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Three more ways user code could take down the process** (INVARIANT 7).
+  An `inline_actor` runs its handler on the sending thread and passes
+  exceptions to the sender - but some sends come from the framework, with no
+  user code to receive them: a timer tick (timer thread), a `termination_msg`
+  to an inline watcher (the stopping actor's executor), and the ZeroMQ relay
+  routing an inbound message or an error to an inline actor (relay thread).
+  A throwing handler there terminated the process. These sends now catch and
+  report (`set_handler_exception_handler()`), and the framework carries on.
+- **`wait_for_shutdown()` hung on a fast actor created during shutdown.**
+  An actor created after `shutdown()` began never received `system_shutdown`,
+  so a fast actor's thread never left its loop and the join never returned.
+  Such actors are now sent `system_shutdown` when they are created.
+- **`#include "cas/ask_message.h"` on its own declared nothing.** It and
+  `call_message.h` shared an include guard, so the forwarded header was
+  skipped; it only worked after `cas/cas.h`. `call_message.h` now has its own.
 - **`stop_actor()` on a stateful actor returned before its held messages were
   reported.** Held messages were dropped (as dead letters) only after the
   actor was marked stopped, so a caller waiting in `stop_actor()` could see

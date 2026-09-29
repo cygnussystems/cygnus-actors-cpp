@@ -126,3 +126,43 @@ TEST_CASE("Multiple actors all complete lifecycle", "[03_lifecycle][hooks]") {
 
     TEST_CLEANUP();
 }
+
+// A fast actor created after shutdown() began, before wait_for_shutdown():
+// it never got a system_shutdown, so its thread never left its loop and
+// wait_for_shutdown() waited forever to join it.
+namespace late_fast_test {
+    class late_fast : public cas::fast_actor {
+    public:
+        std::atomic<bool> stopped{false};
+    protected:
+        void on_start() override {}
+        void on_stop() override { stopped = true; }
+    };
+    class early : public cas::actor {
+    protected:
+        void on_start() override {}
+    };
+}
+
+TEST_CASE("A fast actor created during shutdown does not hang wait_for_shutdown()",
+          "[03_lifecycle][shutdown]") {
+    CAS_TEST_GUARD();
+    cas::system::create<late_fast_test::early>();
+    cas::system::start();
+
+    cas::system::shutdown();
+    auto late = cas::system::create<late_fast_test::late_fast>();
+
+    std::atomic<bool> done{false};
+    std::thread waiter([&] {
+        cas::system::wait_for_shutdown();
+        done = true;
+    });
+    const bool finished = wait_until([&] { return done.load(); }, std::chrono::seconds(5));
+    if (!finished) {
+        waiter.detach();  // cannot recover the process; fail loudly
+        FAIL("wait_for_shutdown() hung on a fast actor created during shutdown");
+    }
+    waiter.join();
+    REQUIRE(late.get_checked<late_fast_test::late_fast>().stopped.load());
+}
