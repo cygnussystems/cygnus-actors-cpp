@@ -12,7 +12,7 @@ namespace fast_actor_test {
 
     class low_latency_actor : public cas::fast_actor {
     private:
-        int m_tick_count = 0;
+        std::atomic<int> m_tick_count{0};
         std::chrono::microseconds m_total_latency{0};
         std::chrono::microseconds m_max_latency{0};
 
@@ -47,7 +47,7 @@ namespace fast_actor_test {
 
         std::chrono::microseconds avg_latency() const {
             if (m_tick_count == 0) return std::chrono::microseconds(0);
-            return m_total_latency / m_tick_count;
+            return m_total_latency / m_tick_count.load();
         }
 
         std::chrono::microseconds max_latency() const { return m_max_latency; }
@@ -60,8 +60,7 @@ TEST_CASE("Fast actor processes messages with low latency", "[04_advanced][fast_
 
     auto actor = cas::system::create<low_latency_actor>();
     cas::system::start();
-    wait_ms(50);  // Let actor start
-
+    REQUIRE(wait_until([] { return cas::actor_registry::exists("low_latency"); }));
     auto actor_ref = cas::actor_registry::get("low_latency");
     REQUIRE(actor_ref.is_valid());
 
@@ -73,11 +72,8 @@ TEST_CASE("Fast actor processes messages with low latency", "[04_advanced][fast_
         actor_ref.tell(t);
     }
 
-    // Wait for processing
-    wait_ms(100);
-
     auto& la = actor.get_checked<low_latency_actor>();
-    REQUIRE(la.tick_count() == num_ticks);
+    REQUIRE(wait_until([&] { return la.tick_count() == num_ticks; }));
 
     TEST_CLEANUP();
 }
@@ -89,8 +85,7 @@ TEST_CASE("Fast actor with yield strategy (default)", "[04_advanced][fast_actor]
     // Yield strategy - cooperative CPU usage
     auto actor = cas::system::create<low_latency_actor>(cas::polling_strategy::yield);
     cas::system::start();
-    wait_ms(50);
-
+    REQUIRE(wait_until([] { return cas::actor_registry::exists("low_latency"); }));
     auto actor_ref = cas::actor_registry::get("low_latency");
     REQUIRE(actor_ref.is_valid());
 
@@ -101,9 +96,8 @@ TEST_CASE("Fast actor with yield strategy (default)", "[04_advanced][fast_actor]
         actor_ref.tell(t);
     }
 
-    wait_ms(50);
     auto& la = actor.get_checked<low_latency_actor>();
-    REQUIRE(la.tick_count() == 10);
+    REQUIRE(wait_until([&] { return la.tick_count() == 10; }));
 
     TEST_CLEANUP();
 }
@@ -115,8 +109,7 @@ TEST_CASE("Fast actor with hybrid strategy", "[04_advanced][fast_actor]") {
     // Hybrid strategy - spin then yield
     auto actor = cas::system::create<low_latency_actor>(cas::polling_strategy::hybrid);
     cas::system::start();
-    wait_ms(50);
-
+    REQUIRE(wait_until([] { return cas::actor_registry::exists("low_latency"); }));
     auto actor_ref = cas::actor_registry::get("low_latency");
     REQUIRE(actor_ref.is_valid());
 
@@ -127,9 +120,8 @@ TEST_CASE("Fast actor with hybrid strategy", "[04_advanced][fast_actor]") {
         actor_ref.tell(t);
     }
 
-    wait_ms(50);
     auto& la = actor.get_checked<low_latency_actor>();
-    REQUIRE(la.tick_count() == 20);
+    REQUIRE(wait_until([&] { return la.tick_count() == 20; }));
 
     TEST_CLEANUP();
 }
@@ -140,8 +132,7 @@ TEST_CASE("Fast actor handles shutdown correctly", "[04_advanced][fast_actor]") 
 
     auto actor = cas::system::create<low_latency_actor>();
     cas::system::start();
-    wait_ms(50);
-
+    REQUIRE(wait_until([] { return cas::actor_registry::exists("low_latency"); }));
     auto actor_ref = cas::actor_registry::get("low_latency");
     REQUIRE(actor_ref.is_valid());
 
@@ -152,10 +143,8 @@ TEST_CASE("Fast actor handles shutdown correctly", "[04_advanced][fast_actor]") 
         actor_ref.tell(t);
     }
 
-    wait_ms(50);
-
     auto& la = actor.get_checked<low_latency_actor>();
-    REQUIRE(la.tick_count() == 10);
+    REQUIRE(wait_until([&] { return la.tick_count() == 10; }));
 
     TEST_CLEANUP();
 }

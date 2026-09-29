@@ -19,7 +19,8 @@ namespace timer_lifecycle_test {
     class lifecycle_actor : public cas::actor {
     private:
         std::atomic<int> tick_count_{0};
-        cas::timer_id last_timer_id_ = cas::INVALID_TIMER_ID;
+        std::atomic<cas::timer_id> last_timer_id_{cas::INVALID_TIMER_ID};
+        std::atomic<int> cancels_handled_{0};
 
     protected:
         void on_start() override {
@@ -41,11 +42,13 @@ namespace timer_lifecycle_test {
 
         void on_cancel_timer_msg(const cancel_timer_msg& msg) {
             cancel_timer(msg.id_to_cancel);
+            cancels_handled_++;
         }
 
     public:
         int get_tick_count() const { return tick_count_.load(); }
         cas::timer_id get_last_timer_id() const { return last_timer_id_; }
+        int get_cancels_handled() const { return cancels_handled_.load(); }
     };
 }
 
@@ -54,32 +57,28 @@ TEST_CASE("Cancel timer before it fires", "[06_timers][lifecycle]") {
     auto actor = cas::system::create<timer_lifecycle_test::lifecycle_actor>();
 
     cas::system::start();
-    wait_ms(50);
-
+    REQUIRE(wait_until([] { return cas::actor_registry::exists("lifecycle_actor"); }));
     auto actor_ref = cas::actor_registry::get("lifecycle_actor");
     REQUIRE(actor_ref.is_valid());
 
-    // Schedule timer for 200ms
+    // Schedule a timer far enough out that the cancel surely comes first
     timer_lifecycle_test::start_timer_msg start_msg;
-    start_msg.delay_ms = 200;
+    start_msg.delay_ms = 500;
     start_msg.value = 99;
     actor_ref.tell(start_msg);
 
-    wait_ms(50);  // Let message be processed
-
     auto& lifecycle = actor.get_checked<timer_lifecycle_test::lifecycle_actor>();
+    REQUIRE(wait_until([&] { return lifecycle.get_last_timer_id() != cas::INVALID_TIMER_ID; }));
     cas::timer_id id = lifecycle.get_last_timer_id();
-    REQUIRE(id != cas::INVALID_TIMER_ID);
 
     // Cancel immediately
     timer_lifecycle_test::cancel_timer_msg cancel_msg;
     cancel_msg.id_to_cancel = id;
     actor_ref.tell(cancel_msg);
+    REQUIRE(wait_until([&] { return lifecycle.get_cancels_handled() == 1; }));
 
-    wait_ms(50);  // Let cancel message be processed
-
-    // Wait past when it would have fired
-    wait_ms(200);
+    // Wait past when it would have fired (a real sleep: proving it does not)
+    wait_ms(600);
 
     // Verify it never fired
     REQUIRE(lifecycle.get_tick_count() == 0);
@@ -92,22 +91,19 @@ TEST_CASE("Cancelling same timer multiple times is safe", "[06_timers][lifecycle
     auto actor = cas::system::create<timer_lifecycle_test::lifecycle_actor>();
 
     cas::system::start();
-    wait_ms(50);
-
+    REQUIRE(wait_until([] { return cas::actor_registry::exists("lifecycle_actor"); }));
     auto actor_ref = cas::actor_registry::get("lifecycle_actor");
     REQUIRE(actor_ref.is_valid());
 
-    // Schedule timer
+    // Schedule a timer far enough out that the cancels surely come first
     timer_lifecycle_test::start_timer_msg start_msg;
-    start_msg.delay_ms = 100;
+    start_msg.delay_ms = 500;
     start_msg.value = 1;
     actor_ref.tell(start_msg);
 
-    wait_ms(50);  // Let message be processed
-
     auto& lifecycle = actor.get_checked<timer_lifecycle_test::lifecycle_actor>();
+    REQUIRE(wait_until([&] { return lifecycle.get_last_timer_id() != cas::INVALID_TIMER_ID; }));
     cas::timer_id id = lifecycle.get_last_timer_id();
-    REQUIRE(id != cas::INVALID_TIMER_ID);
 
     // Cancel multiple times
     timer_lifecycle_test::cancel_timer_msg cancel_msg;
@@ -115,11 +111,10 @@ TEST_CASE("Cancelling same timer multiple times is safe", "[06_timers][lifecycle
     actor_ref.tell(cancel_msg);
     actor_ref.tell(cancel_msg);
     actor_ref.tell(cancel_msg);
+    REQUIRE(wait_until([&] { return lifecycle.get_cancels_handled() == 3; }));
 
-    wait_ms(50);  // Let cancel messages be processed
-
-    // Verify no crashes and no ticks
-    wait_ms(150);
+    // Verify no crashes and no ticks (a real sleep: proving it does not fire)
+    wait_ms(600);
     REQUIRE(lifecycle.get_tick_count() == 0);
 
     TEST_CLEANUP();
@@ -130,8 +125,7 @@ TEST_CASE("Cancelling INVALID_TIMER_ID is safe", "[06_timers][lifecycle]") {
     auto actor = cas::system::create<timer_lifecycle_test::lifecycle_actor>();
 
     cas::system::start();
-    wait_ms(50);
-
+    REQUIRE(wait_until([] { return cas::actor_registry::exists("lifecycle_actor"); }));
     auto actor_ref = cas::actor_registry::get("lifecycle_actor");
     REQUIRE(actor_ref.is_valid());
 
@@ -142,7 +136,8 @@ TEST_CASE("Cancelling INVALID_TIMER_ID is safe", "[06_timers][lifecycle]") {
     actor_ref.tell(cancel_msg1);
     actor_ref.tell(cancel_msg2);
 
-    wait_ms(50);  // Let messages be processed
+    auto& lifecycle = actor.get_checked<timer_lifecycle_test::lifecycle_actor>();
+    REQUIRE(wait_until([&] { return lifecycle.get_cancels_handled() == 2; }));
 
     // System should still work fine - schedule a real timer
     timer_lifecycle_test::start_timer_msg start_msg;
@@ -150,10 +145,7 @@ TEST_CASE("Cancelling INVALID_TIMER_ID is safe", "[06_timers][lifecycle]") {
     start_msg.value = 42;
     actor_ref.tell(start_msg);
 
-    wait_ms(150);
-
-    auto& lifecycle = actor.get_checked<timer_lifecycle_test::lifecycle_actor>();
-    REQUIRE(lifecycle.get_tick_count() >= 1);
+    REQUIRE(wait_until([&] { return lifecycle.get_tick_count() >= 1; }));
 
     TEST_CLEANUP();
 }
@@ -198,8 +190,7 @@ TEST_CASE("Timers are cleaned up when actor stops", "[06_timers][lifecycle]") {
     auto actor = cas::system::create<periodic_lifecycle_actor>();
 
     cas::system::start();
-    wait_ms(50);
-
+    REQUIRE(wait_until([] { return cas::actor_registry::exists("periodic_lifecycle"); }));
     auto actor_ref = cas::actor_registry::get("periodic_lifecycle");
     REQUIRE(actor_ref.is_valid());
 
@@ -208,14 +199,8 @@ TEST_CASE("Timers are cleaned up when actor stops", "[06_timers][lifecycle]") {
     start_msg.interval_ms = 50;
     actor_ref.tell(start_msg);
 
-    wait_ms(50);  // Let message be processed
-
-    // Let them run
-    wait_ms(150);
-
     auto& periodic = actor.get_checked<periodic_lifecycle_actor>();
-    int count_before_shutdown = periodic.get_tick_count();
-    REQUIRE(count_before_shutdown >= 2);
+    REQUIRE(wait_until([&] { return periodic.get_tick_count() >= 2; }));
 
     // Shutdown system - should cancel all timers
     cas::system::shutdown();
@@ -233,8 +218,7 @@ TEST_CASE("Timer fires to correct actor after system restart", "[06_timers][life
     {
         auto actor = cas::system::create<timer_lifecycle_test::lifecycle_actor>();
         cas::system::start();
-        wait_ms(50);
-
+        REQUIRE(wait_until([] { return cas::actor_registry::exists("lifecycle_actor"); }));
         auto actor_ref = cas::actor_registry::get("lifecycle_actor");
         REQUIRE(actor_ref.is_valid());
 
@@ -243,10 +227,8 @@ TEST_CASE("Timer fires to correct actor after system restart", "[06_timers][life
         start_msg.value = 1;
         actor_ref.tell(start_msg);
 
-        wait_ms(150);
-
         auto& lifecycle = actor.get_checked<timer_lifecycle_test::lifecycle_actor>();
-        REQUIRE(lifecycle.get_tick_count() >= 1);
+        REQUIRE(wait_until([&] { return lifecycle.get_tick_count() >= 1; }));
 
         TEST_CLEANUP();
     }
@@ -255,8 +237,7 @@ TEST_CASE("Timer fires to correct actor after system restart", "[06_timers][life
     {
         auto actor = cas::system::create<timer_lifecycle_test::lifecycle_actor>();
         cas::system::start();
-        wait_ms(50);
-
+        REQUIRE(wait_until([] { return cas::actor_registry::exists("lifecycle_actor"); }));
         auto actor_ref = cas::actor_registry::get("lifecycle_actor");
         REQUIRE(actor_ref.is_valid());
 
@@ -270,12 +251,9 @@ TEST_CASE("Timer fires to correct actor after system restart", "[06_timers][life
         start_msg.value = 1;
         actor_ref.tell(start_msg);
 
-        wait_ms(150);
-
         // Should only have ticks from this run
-        int count = lifecycle.get_tick_count();
-        REQUIRE(count >= 1);
-        REQUIRE(count < 10);  // Shouldn't have accumulated from previous run
+        REQUIRE(wait_until([&] { return lifecycle.get_tick_count() >= 1; }));
+        REQUIRE(lifecycle.get_tick_count() < 10);  // Shouldn't have accumulated from previous run
 
         TEST_CLEANUP();
     }
@@ -325,7 +303,10 @@ namespace timer_shutdown_test {
         wait_ms(100);  // ~100 ticks would have become dead letters here
         cas::system::wait_for_shutdown();
 
-        REQUIRE(cas::system::get_dead_letter_stats().dropped_tell == 0);
+        // Before the fix: ~100 here. A tick already on its way when the timer
+        // is cancelled can still arrive (documented), so allow one per timer
+        // (on_start's and on_shutdown's) - on a loaded machine that happens.
+        REQUIRE(cas::system::get_dead_letter_stats().dropped_tell <= 2);
         cas::system::reset();
     }
 }

@@ -87,4 +87,25 @@ inline void wait_ms(int milliseconds) {
     std::this_thread::sleep_for(std::chrono::milliseconds(milliseconds));
 }
 
+// Poll until pred() holds or the timeout expires; returns pred().
+//
+// Use this - not wait_ms() - before asserting that something *happened*
+// (a message was handled, a timer fired, a name was registered): it returns
+// as soon as the condition holds on an idle machine and still passes on a
+// loaded one, where a fixed sleep turns into a false failure.
+// A fixed wait_ms() is right only for proving that something does NOT happen
+// within a window - load can make such a check pass wrongly, never fail.
+// Anything pred() reads that an actor writes must be atomic.
+template<typename Pred>
+bool wait_until(Pred pred, std::chrono::milliseconds timeout = std::chrono::seconds(5)) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!pred()) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return pred();
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return true;
+}
+
 #endif // TEST_COMMON_H
