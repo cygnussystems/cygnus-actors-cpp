@@ -68,6 +68,12 @@ public:
     // Check if actor reference is valid AND actor is running
     bool is_running() const;
 
+    /// Release this handle, like std::shared_ptr::reset(): afterwards
+    /// is_valid() is false. The actor itself is destroyed once no handle
+    /// refers to it any more and the system has let go of it (when its stop
+    /// completes). Releasing does not stop a running actor.
+    void reset();
+
     // Get actor name (for testing and debugging)
     std::string name() const;
 

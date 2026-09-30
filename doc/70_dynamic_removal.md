@@ -341,8 +341,10 @@ references. The actor object is freed when the **last `actor_ref`** to it goes -
 including refs in other actors' members and in `message_base::sender` of
 messages still held somewhere. Two actors holding `actor_ref` members to each
 other form a `shared_ptr` cycle and are never freed: clear such members in
-`on_stop()`. `system::actor_count()` counts live actors; instance ids are never
-reused until `system::reset()`.
+`on_stop()`. Release a handle with `actor_ref::reset()` (like
+`std::shared_ptr::reset()`); releasing does not stop a running actor.
+`system::actor_count()` counts live actors; instance ids are never reused until
+`system::reset()`. Tutorial 8 shows the whole sequence.
 
 ### Interaction with System Shutdown
 

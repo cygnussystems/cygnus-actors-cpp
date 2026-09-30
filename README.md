@@ -1103,6 +1103,7 @@ std::optional<R> call(Tag op, std::chrono::milliseconds timeout, Args&&... args)
 bool is_valid() const;    // Points to an actor
 bool is_running() const;  // Actor is active
 std::string name() const; // Actor's registered name
+void reset();             // Release this handle (the last one frees a stopped actor)
 ```
 
 ### cas::actor_registry

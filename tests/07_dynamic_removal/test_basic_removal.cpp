@@ -132,3 +132,42 @@ TEST_CASE("Basic actor removal", "[07_dynamic_removal][basic]") {
         cas::system::wait_for_shutdown();
     }
 }
+
+// actor_ref::reset(): releasing the last handle to a stopped actor destroys it;
+// releasing a handle to a running actor does not stop it.
+namespace ref_reset_test {
+    class tracked : public cas::actor {
+    public:
+        static inline std::atomic<int> s_destroyed{0};
+        ~tracked() override { s_destroyed.fetch_add(1); }
+    protected:
+        void on_start() override { set_name("tracked"); }
+    };
+}
+
+TEST_CASE("actor_ref::reset() releases the handle; the last one frees a stopped actor",
+          "[07_dynamic_removal][actor_ref]") {
+    CAS_TEST_GUARD();
+    using ref_reset_test::tracked;
+    tracked::s_destroyed = 0;
+
+    auto ref = cas::system::create<tracked>();
+    cas::system::start();
+
+    // Releasing a copy of a running actor's handle does not stop it
+    auto copy = ref;
+    copy.reset();
+    REQUIRE_FALSE(copy.is_valid());
+    REQUIRE(ref.is_running());
+
+    // Stopped: the handle still refers to the object, which is still alive
+    REQUIRE(cas::system::stop_actor(ref));
+    REQUIRE(ref.is_valid());
+    REQUIRE_FALSE(ref.is_running());
+    REQUIRE(tracked::s_destroyed.load() == 0);
+
+    // Releasing the last handle frees it
+    ref.reset();
+    REQUIRE_FALSE(ref.is_valid());
+    REQUIRE(wait_until([] { return tracked::s_destroyed.load() == 1; }));
+}

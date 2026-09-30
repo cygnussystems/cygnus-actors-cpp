@@ -3,7 +3,8 @@
 // TEACHES
 //   - system::stop_actor() while the system keeps running
 //   - stop_mode::drain vs stop_mode::discard
-//   - is_running() on an actor_ref, and what a stale ref does
+//   - what an actor_ref to a stopped actor still does
+//   - when a stopped actor is actually destroyed, and actor_ref::reset()
 //   - creating a replacement actor under the same name
 //
 // ASSUMES
@@ -18,10 +19,8 @@
 #include "cas/cas.h"
 
 #include <atomic>
-#include <chrono>
 #include <iostream>
 #include <string>
-#include <thread>
 
 namespace {
 
@@ -40,8 +39,10 @@ namespace actor {
 class worker : public cas::actor {
 public:
     static inline std::atomic<int> s_job_count{0};       // observed by the tutorial
+    static inline std::atomic<int> s_destroyed_count{0};
 
     explicit worker(std::string name) : m_name(name) {}
+    ~worker() override { s_destroyed_count.fetch_add(1); }
 
 protected:
     void on_start() override {
@@ -91,13 +92,25 @@ bool run_dynamic_removal() {
 
     heading("The reference is now stale");
     //------------------------------------
-    // Not dangling - safe to use - but messages through it are silently
-    // dropped (tutorial 10 shows how to observe that).
-    ok &= check(!worker.is_running(), "is_running() is false for the stopped actor");
-    const int before = actor::worker::s_job_count.load();
+    // An actor_ref holds on to the actor object, so it never dangles: it
+    // still refers to the (stopped) actor and is safe to use. Messages
+    // through it are dropped and counted as dead letters (tutorial 10).
+    ok &= check(worker.is_valid() && !worker.is_running(), "still a valid handle, but not running");
+    const size_t dropped_before = cas::system::get_dead_letter_stats().dropped_tell;
     send_job(worker, 99);
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    ok &= check(actor::worker::s_job_count.load() == before, "a message to a stopped actor was silently dropped");
+    ok &= check(cas::system::get_dead_letter_stats().dropped_tell == dropped_before + 1,
+                "a message to the stopped actor became a dead letter");
+
+    heading("When the actor goes away");
+    //----------------------------------
+    // There is no separate "delete": stopping removes the actor from the
+    // system, and the object is destroyed when the last actor_ref to it is
+    // released. Our handle is the last one, so it is still alive.
+    ok &= check(actor::worker::s_destroyed_count.load() == 0, "alive while a handle refers to it");
+    worker.reset();  // release the handle (like std::shared_ptr::reset())
+    ok &= check(wait_until(actor::worker::s_destroyed_count, 1), "destroyed once the last handle was released");
+    // Handles kept in other actors count too: two actors holding refs to each
+    // other keep each other alive, so clear such members in on_stop().
 
     heading("Stopping with stop_mode::discard");
     //------------------------------------------

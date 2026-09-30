@@ -34,6 +34,10 @@ bool actor_ref::operator!=(const actor_ref& other) const {
     return !(*this == other);
 }
 
+void actor_ref::reset() {
+    m_actor_ptr.reset();
+}
+
 bool actor_ref::is_running() const {
     if (!m_actor_ptr) {
         return false;
