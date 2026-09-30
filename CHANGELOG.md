@@ -24,6 +24,10 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`actor_ref::reset()`** releases a handle, like `std::shared_ptr::reset()`.
+  A stopped actor is destroyed once its last handle is released; releasing
+  does not stop a running actor. Tutorial 8 now shows what a handle to a
+  stopped actor still does and when the actor is freed.
 - **`cas::stateful_fast_actor`**: selective receive on a dedicated thread, for
   state machines that are also latency-critical (e.g. an exchange session
   holding orders until logged in). Same API as `stateful_actor`; the
