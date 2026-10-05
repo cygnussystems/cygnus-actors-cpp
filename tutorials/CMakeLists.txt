@@ -19,16 +19,17 @@ set(TUTORIAL_SOURCES
     10_dead_letters.cpp
     11_fixed_string.cpp
     12_message_pool.cpp
-    13_fast_actor.cpp
-    14_inline_actor.cpp
-    15_trading_manager.cpp
-    16_stateful_actor.cpp
+    13_shared_payload.cpp
+    14_fast_actor.cpp
+    15_inline_actor.cpp
+    16_trading_manager.cpp
+    17_stateful_actor.cpp
 )
 
 # Needs the framework built with ZeroMQ (ENABLE_ZEROMQ, vcpkg cppzmq).
 # Last in the list, so its number is the same whether it is built or not.
 if(ENABLE_ZEROMQ)
-    list(APPEND TUTORIAL_SOURCES 17_zeromq_relay.cpp)
+    list(APPEND TUTORIAL_SOURCES 18_zeromq_relay.cpp)
 endif()
 
 add_executable(tutorials ${TUTORIAL_SOURCES})
@@ -60,6 +61,7 @@ set(TUTORIAL_NAMES
     dead_letters
     fixed_string
     message_pool
+    shared_payload
     fast_actor
     inline_actor
     trading_manager

@@ -54,6 +54,15 @@ This project follows [Semantic Versioning](https://semver.org/).
   p99.9, max) for pooled and fast actors; and an 8-senders-to-8-receivers
   scenario in the throughput benchmark.
 - `THIRD_PARTY_NOTICES.md`, covering CAF and moodycamel.
+- **Tutorial 13, `shared_payload`**: sending a large payload as a
+  `std::shared_ptr<const T>` in the message, so that each send copies a
+  pointer instead of the data. It checks that every receiver reads the
+  producer's buffer, that the message stays in the pool, and which holder
+  frees the payload. Tutorials 13-17 move up one, to 14-18 (`fast_actor`,
+  `inline_actor`, `trading_manager`, `stateful_actor`, `zeromq_relay`).
+  `doc/40_message_passing.md` has a new section, "Large Payloads", which
+  covers what `tell()` copies, why the payload is `const`, and on which
+  thread it is freed.
 
 ### Changed
 

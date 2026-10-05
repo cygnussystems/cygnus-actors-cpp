@@ -188,7 +188,11 @@ budget, the options are:
    (see [40_message_passing.md](40_message_passing.md)), but parts from different
    senders can interleave.
 
-Option 2 is usually the right answer for bulk market data.
+Option 2 is usually the right answer for bulk market data. Make the payload
+`const` (`std::shared_ptr<const T>`), because every receiver reads the same
+object. [40_message_passing.md](40_message_passing.md#large-payloads-share-them-dont-copy-them)
+covers the rules, including which thread frees the payload. The runnable
+version is `tutorials/13_shared_payload.cpp`.
 
 ---
 

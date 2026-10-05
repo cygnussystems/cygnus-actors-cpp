@@ -21,7 +21,7 @@ shared worker.
 
 Fast actors run on dedicated threads with tight polling loops for ultra-low latency message processing.
 
-> **Runnable version:** `tutorials/13_fast_actor.cpp` — run `tutorials 13`.
+> **Runnable version:** `tutorials/14_fast_actor.cpp` — run `tutorials 14`.
 
 > **Warning:** a fast actor created **before** `system::start()` runs
 > `on_start()` on its own thread. If that `on_start()` throws, the exception is
@@ -217,7 +217,7 @@ for (int i = 0; i < 1000; ++i) {  // Too many threads!
 
 Inline actors process messages synchronously in the caller's thread with zero queuing latency.
 
-> **Runnable version:** `tutorials/14_inline_actor.cpp` — run `tutorials 14`.
+> **Runnable version:** `tutorials/15_inline_actor.cpp` — run `tutorials 15`.
 
 ### When to Use Inline Actors
 
@@ -463,7 +463,7 @@ actor.tell(calculate_msg);       // Not as good (result lost in copy)
 
 Stateful actors selectively process messages based on current state, deferring incompatible messages.
 
-> **Runnable version:** `tutorials/16_stateful_actor.cpp` — run `tutorials 16`.
+> **Runnable version:** `tutorials/17_stateful_actor.cpp` — run `tutorials 17`.
 > An exchange session that holds orders until it is logged in, on both
 > `stateful_actor` and `stateful_fast_actor`.
 

@@ -2,7 +2,7 @@
 
 Inter-process actor communication via ZeroMQ. The `zeromq_relay_actor` enables actor systems in separate processes (or machines) to communicate transparently through actor messages.
 
-> **Runnable version:** `tutorials/17_zeromq_relay.cpp` — run `tutorials 17`
+> **Runnable version:** `tutorials/18_zeromq_relay.cpp` — run `tutorials 18`
 > (built when the framework is built with ZeroMQ). A server and a client relay
 > in one process over `inproc://`: routing by message type, request/reply by
 > correlation id, pushes, status and errors.

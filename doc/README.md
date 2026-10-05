@@ -9,7 +9,7 @@ Documentation files are numbered for easy ordering and insertion of new topics.
 ### Getting Started
 - **[10_overview.md](10_overview.md)** - Framework overview, architecture, and core concepts
 - **[20_getting_started.md](20_getting_started.md)** - Quick start guide with complete examples
-- **[../tutorials/](../tutorials/)** - Seventeen runnable, self-checking programs (17 needs ZeroMQ),
+- **[../tutorials/](../tutorials/)** - Eighteen runnable, self-checking programs (18 needs ZeroMQ),
   ordered from a first actor to fast and inline actors. Every one is built and
   run by `ctest`, so unlike the prose here it cannot silently go stale.
 
@@ -123,7 +123,7 @@ Documentation files are numbered for easy ordering and insertion of new topics.
 ## Examples
 
 All documentation includes complete, runnable examples. Additional examples can be found in:
-- `tutorials/` - 17 self-checking programs, built and run by `ctest` (the most reliable examples)
+- `tutorials/` - 18 self-checking programs, built and run by `ctest` (the most reliable examples)
 - `tests/00_basic/` - Basic usage patterns
 - `tests/02_interactions/` - Actor communication
 - `tests/05_call/` - RPC-style messaging

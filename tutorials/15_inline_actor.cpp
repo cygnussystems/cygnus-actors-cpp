@@ -1,4 +1,4 @@
-// Tutorial 14: Inline actors
+// Tutorial 15: Inline actors
 //
 // TEACHES
 //   - inline_actor, which handles messages on the SENDER's thread
@@ -6,7 +6,7 @@
 //   - inline_actor<true> vs inline_actor<false>
 //
 // ASSUMES
-//   Tutorials 1-13.
+//   Tutorials 1-14.
 //
 // THE IDEA
 //   An inline_actor has no mailbox: tell() runs the handler immediately, on

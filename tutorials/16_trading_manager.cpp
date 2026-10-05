@@ -1,4 +1,4 @@
-// Tutorial 15: A manager that launches and retires actors at runtime
+// Tutorial 16: A manager that launches and retires actors at runtime
 //
 // TEACHES
 //   - creating actors from inside a handler while the system runs

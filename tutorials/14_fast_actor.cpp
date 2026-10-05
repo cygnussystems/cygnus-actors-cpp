@@ -1,4 +1,4 @@
-// Tutorial 13: Fast actors
+// Tutorial 14: Fast actors
 //
 // TEACHES
 //   - fast_actor, which runs on its own dedicated thread
@@ -6,7 +6,7 @@
 //   - when a dedicated thread is worth it, and when it is waste
 //
 // ASSUMES
-//   Tutorials 1-12.
+//   Tutorials 1-13.
 //
 // THE IDEA
 //   Ordinary actors share a pool of workers - thousands of actors, few

@@ -1,4 +1,4 @@
-// Tutorial 17: Talking to other processes - the ZeroMQ relay
+// Tutorial 18: Talking to other processes - the ZeroMQ relay
 //
 // TEACHES
 //   - zeromq_relay_actor as a server (ROUTER, zeromq_bind) and a client

@@ -64,22 +64,23 @@ the examples cannot quietly go stale.
 |---|----------|---------|
 | 11 | `fixed_string` | Inline strings, for messages that do not allocate |
 | 12 | `message_pool` | How messages are allocated; keeping them on the fast path |
-| 13 | `fast_actor` | A dedicated thread, for latency-critical work |
-| 14 | `inline_actor` | Synchronous dispatch in the sender's thread |
+| 13 | `shared_payload` | Large payloads: a `shared_ptr<const T>` in the message instead of a copy per send |
+| 14 | `fast_actor` | A dedicated thread, for latency-critical work |
+| 15 | `inline_actor` | Synchronous dispatch in the sender's thread |
 
 **Putting it together.**
 
 | # | Tutorial | Teaches |
 |---|----------|---------|
-| 15 | `trading_manager` | A manager that creates actors at runtime (a trading system plus one stream per subscriber), watches them, and retires everything that belonged to a trading system when it completes or fails |
-| 16 | `stateful_actor` | Selective receive: an exchange session that holds orders, in order, until it is logged in; `stateful_fast_actor` |
-| 17 | `zeromq_relay` | Talking to other processes: a server and a client relay, routing by message type, request/reply by correlation id, pushes, errors, status. Built only with ZeroMQ (`ENABLE_ZEROMQ`, vcpkg `cppzmq`) |
+| 16 | `trading_manager` | A manager that creates actors at runtime (a trading system plus one stream per subscriber), watches them, and retires everything that belonged to a trading system when it completes or fails |
+| 17 | `stateful_actor` | Selective receive: an exchange session that holds orders, in order, until it is logged in; `stateful_fast_actor` |
+| 18 | `zeromq_relay` | Talking to other processes: a server and a client relay, routing by message type, request/reply by correlation id, pushes, errors, status. Built only with ZeroMQ (`ENABLE_ZEROMQ`, vcpkg `cppzmq`) |
 
 Each assumes the ones before it and does not repeat their explanations.
 
 ## Not covered
 
-Everything in the framework has a tutorial. Tutorial 17 (the ZeroMQ relay) is
+Everything in the framework has a tutorial. Tutorial 18 (the ZeroMQ relay) is
 built only when the framework is built with ZeroMQ; see
 [doc/130_zeromq_relay.md](../doc/130_zeromq_relay.md).
 

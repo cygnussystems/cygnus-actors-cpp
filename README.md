@@ -45,7 +45,7 @@ class greeter : public cas::actor {
 
 **Beyond this page:**
 
-- **[Tutorials](tutorials/)** - fourteen runnable, self-checking programs, in
+- **[Tutorials](tutorials/)** - eighteen runnable, self-checking programs, in
   teaching order. Every one is compiled and executed by `ctest`, so unlike
   prose they cannot silently go stale. Start at `tutorials 1`.
 - **[Full documentation](doc/)** - reference chapters on messaging, lifecycle,
@@ -599,6 +599,23 @@ static_assert(cas::fixed_string<8>("AAPL") == "AAPL");
 
 **Note**: `fixed_string` silently truncates if content exceeds capacity (no exceptions for performance).
 
+### Large Payloads
+
+`tell()` copies the message, members and all. For bulk data, send a
+`std::shared_ptr<const T>`. The message stays small and pooled, and each send
+copies a pointer and bumps a reference count instead of copying the data:
+
+```cpp
+struct snapshot : cas::message_base {
+    std::shared_ptr<const price_ladder> ladder;  // shared, read-only
+};
+```
+
+Keep the payload `const`: every receiver reads the same object. The last
+holder frees it, on its own thread. See
+[doc/40_message_passing.md](doc/40_message_passing.md#large-payloads-share-them-dont-copy-them)
+and `tutorials 13`.
+
 ### Pool Configuration
 
 ```cpp
@@ -943,7 +960,8 @@ protected:
 
 1. **Pool unlimited**: Set `cas::message_pool::set_max_pool_size(10000)`
 2. **Message queues growing**: Check if consumers are slower than producers
-3. **Large messages**: Messages >1KB bypass pool, use heap directly
+3. **Large messages**: Messages >1KB bypass pool, use heap directly; put bulk
+   data behind a `std::shared_ptr<const T>` (see [Large Payloads](#large-payloads))
 
 ### Performance Issues
 

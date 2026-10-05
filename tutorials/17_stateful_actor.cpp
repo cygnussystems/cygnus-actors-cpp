@@ -1,4 +1,4 @@
-// Tutorial 16: Stateful actors - selective receive
+// Tutorial 17: Stateful actors - selective receive
 //
 // TEACHES
 //   - stateful_actor: in each state, accept only some message types
@@ -9,7 +9,7 @@
 //   - stateful_fast_actor: the same, on a dedicated thread
 //
 // ASSUMES
-//   Tutorials 1-10 (6 for call(), 10 for dead letters), and 13 for fast actors.
+//   Tutorials 1-10 (6 for call(), 10 for dead letters), and 14 for fast actors.
 //
 // THE IDEA
 //   An exchange session must not send orders before it is logged in. With a

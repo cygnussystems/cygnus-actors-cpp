@@ -357,7 +357,7 @@ other form a `shared_ptr` cycle and are never freed: clear such members in
 
 ### Example: Trading Systems and Their Streams
 
-> **Runnable version:** `tutorials/15_trading_manager.cpp` — run `tutorials 15`.
+> **Runnable version:** `tutorials/16_trading_manager.cpp` — run `tutorials 16`.
 > It adds a subscriber leaving mid-run and a trading system whose handler
 > throws (`on_handler_exception()` returning `stop`), and checks every step.
 

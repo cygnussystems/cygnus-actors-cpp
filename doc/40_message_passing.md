@@ -151,7 +151,10 @@ struct payment_received : public cas::message_base {
 
 ### Complex Data Types
 
-Messages can contain any copyable data:
+Messages can contain any copyable data. Every send copies all of it (see
+[Message Copying](#message-copying)); for large data, send a
+`std::shared_ptr<const T>` instead (see
+[Large Payloads](#large-payloads-share-them-dont-copy-them)):
 
 ```cpp
 struct user_data : public cas::message_base {
@@ -779,33 +782,81 @@ protected:
 
 ### Message Copying
 
-Messages are copied when sent:
+`tell()` takes the message by `const&` and copy-constructs it into the
+receiver's mailbox; there is no move overload. Every member is copied with
+it, so a container member is copied element by element, on every send:
 
 ```cpp
 my_message msg;
 msg.data = large_string;  // 10KB string
 
-actor.tell(msg);  // Message is COPIED to queue
+actor.tell(msg);  // the message, and the 10KB, are COPIED to the queue
 // Original msg can be reused or modified
 ```
 
-**Optimization:** Keep messages small, use shared_ptr for large data:
+The copy itself is allocated from the message pool when it fits a size class
+(up to 1024 bytes including a 16-byte header) and from the heap otherwise -
+see [140_message_pool.md](140_message_pool.md).
+
+### Large Payloads: Share Them, Don't Copy Them
+
+For bulk data - an order book, a price ladder, a binary blob - put the data
+behind a `std::shared_ptr<const T>` and send the pointer:
 
 ```cpp
-struct large_data_msg : public cas::message_base {
-    std::shared_ptr<const std::vector<uint8_t>> data;
+struct price_ladder {
+    std::vector<double> prices;
 };
 
-// Create once
-auto data = std::make_shared<std::vector<uint8_t>>(1000000);
+struct snapshot : public cas::message_base {
+    int sequence = 0;
+    std::shared_ptr<const price_ladder> ladder;
+};
 
-// Send to many actors (only pointer copied)
-large_data_msg msg;
-msg.data = data;
-actor1.tell(msg);  // Fast
-actor2.tell(msg);  // Fast
-actor3.tell(msg);  // Fast
+// Build once, then hand it out as const
+auto built = std::make_shared<price_ladder>();
+built->prices.resize(10'000);
+std::shared_ptr<const price_ladder> ladder = built;
+
+snapshot msg;
+msg.ladder = ladder;
+pricer.tell(msg);    // copies the message: a pointer and a reference-count increment
+recorder.tell(msg);  // same ladder, no second copy of the prices
 ```
+
+What happens on each send:
+
+- **The message is copied, and with it the `shared_ptr`.** Copying a
+  `shared_ptr` copies two pointers and atomically increments the reference
+  count. The payload itself is not touched, whatever its size.
+- **The message stays small**, so it stays in a pool size class:
+  `sizeof(snapshot)` is the same for ten prices or ten million.
+- **When the handler returns**, the framework destroys its copy of the
+  message, which atomically decrements the count. So a payload costs about two
+  atomic operations per send.
+
+Rules that keep this correct:
+
+- **Make the payload `const`** (`shared_ptr<const T>`). Every receiver reads
+  the same object, each on its own thread. The framework runs an actor on one
+  thread at a time, but it cannot stop two actors touching data they share;
+  `const` makes "nobody writes it after sending" a compile error rather than a
+  data race. Build the payload through a non-const pointer, then publish it as
+  const and never modify it again.
+- **To keep the payload after the handler**, copy the `shared_ptr` into a
+  member (`m_latest = _msg.ladder;`). That is another reference, not a copy.
+- **Whoever releases the last reference frees the payload**, on whatever
+  thread that happens. Often that is a receiver's thread, inside its handler -
+  so the free of a large payload can land in a latency-sensitive handler. If
+  that matters, keep a reference where the free is harmless (the producer, or
+  an actor that recycles buffers), or give the `shared_ptr` a deleter that
+  returns the buffer to a pool of your own.
+- **This is in-process only.** A message sent to another process through
+  `zeromq_relay_actor` is serialized; a pointer means nothing there.
+
+> **Runnable version:** `tutorials/13_shared_payload.cpp` — run `tutorials 13`.
+> It checks that every receiver reads the producer's buffer, that the message
+> stays in the pool, and when the payload is freed.
 
 ### Lock-Free Mailboxes
 

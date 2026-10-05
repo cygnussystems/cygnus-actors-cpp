@@ -48,12 +48,13 @@ bool run_watch_pattern();     // 9
 bool run_dead_letters();      // 10
 bool run_fixed_string();      // 11
 bool run_message_pool();      // 12
-bool run_fast_actor();        // 13
-bool run_inline_actor();      // 14
-bool run_trading_manager();   // 15
-bool run_stateful_actor();    // 16
+bool run_shared_payload();    // 13
+bool run_fast_actor();        // 14
+bool run_inline_actor();      // 15
+bool run_trading_manager();   // 16
+bool run_stateful_actor();    // 17
 #ifdef CAS_ENABLE_ZEROMQ
-bool run_zeromq_relay();      // 17 - only with ZeroMQ
+bool run_zeromq_relay();      // 18 - only with ZeroMQ
 #endif
 
 // The registry. Defined in main.cpp.
