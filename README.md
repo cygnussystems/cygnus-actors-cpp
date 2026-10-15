@@ -11,16 +11,20 @@ Most actor frameworks force you to choose: either raw performance with complex A
   round trips ~0.7 µs typical, ~3 µs at p99.9 (MSVC, Ryzen 9 5900X -
   [benchmarks](#benchmarks), with ranges and caveats - run it yourself)
 - **Intuitive API**: Define actors in ~10 lines. No boilerplate, no macros, no inheritance hierarchies
-- **Easy Learning Curve**: If you know C++ lambdas and inheritance, you already know 80% of Cygnus
-- **Production Ready**: Timer scheduling, RPC-style call, actor supervision, dead letter handling
+- **Easy Learning Curve**: If you know C++ classes and member functions, you already know 80% of Cygnus
+- **Ordered**: messages from one sender are handled in the order they were sent
+- **Production Ready**: Timer scheduling, RPC-style call, actor supervision, dead letter handling,
+  handler exceptions caught and reported, inter-process messaging over ZeroMQ
 
 ```cpp
 // This is a complete actor. Really.
 class greeter : public cas::actor {
     void on_start() override {
-        handler<greet>([](const greet& msg) {
-            std::cout << "Hello, " << msg.name << "!\n";
-        });
+        handler<greet>(&greeter::on_greet);
+    }
+
+    void on_greet(const greet& _msg) {
+        std::cout << "Hello, " << _msg.name << "!\n";
     }
 };
 ```
@@ -38,6 +42,7 @@ class greeter : public cas::actor {
 - [Timers](#timers)
 - [Call (RPC)](#call-rpc)
 - [Actor Types](#actor-types)
+- [Inter-Process Messaging (ZeroMQ)](#inter-process-messaging-zeromq)
 - [Common Patterns](#common-patterns)
 - [Troubleshooting](#troubleshooting)
 - [Benchmarks](#benchmarks)
@@ -47,10 +52,11 @@ class greeter : public cas::actor {
 
 - **[Tutorials](tutorials/)** - eighteen runnable, self-checking programs, in
   teaching order. Every one is compiled and executed by `ctest`, so unlike
-  prose they cannot silently go stale. Start at `tutorials 1`.
+  prose they cannot silently go stale. Start at `tutorials 1`; tutorial 18
+  (the ZeroMQ relay) is built when ZeroMQ is enabled.
 - **[Full documentation](doc/)** - reference chapters on messaging, lifecycle,
-  the registry, call, timers, dynamic removal, advanced actor types and the
-  message pool.
+  the registry, call, timers, dynamic removal, advanced actor types, the
+  ZeroMQ relay and the message pool.
 - **[Threading invariants](doc/INVARIANTS.md)** - read before changing the
   threading model.
 
@@ -106,41 +112,49 @@ directly, compile them as C++20 - the public headers use concepts,
 #include "cas/cas.h"
 #include <iostream>
 
-// 1. Define a message
+// 1. Define a message. Messages are not aggregates (the base has a virtual
+//    destructor): construct, set the fields, send.
+namespace msg {
+
 struct greet : cas::message_base {
     std::string name;
 };
 
+} // namespace msg
+
 // 2. Define an actor
+namespace actor {
+
 class greeter : public cas::actor {
 protected:
+    // Runs once, on the actor's thread, before any message arrives
     void on_start() override {
         set_name("greeter");
-        handler<greet>(&greeter::on_greet);
+        handler<msg::greet>(&greeter::on_greet);
     }
 
-    void on_greet(const greet& msg) {
-        std::cout << "Hello, " << msg.name << "!\n";
+private:
+    void on_greet(const msg::greet& _msg) {
+        std::cout << "Hello, " << _msg.name << "!\n";
     }
 };
 
+} // namespace actor
+
 // 3. Run
 int main() {
-    // Create actors BEFORE starting the system
-    auto greeter_ref = cas::system::create<greeter>();
+    // create() returns a handle (actor_ref); copy it freely
+    auto greeter = cas::system::create<actor::greeter>();
 
-    // Start the system (begins processing messages)
+    // Start the system (runs on_start(), begins processing messages)
     cas::system::start();
 
-    // Send a message
-    greet msg;
-    msg.name = "World";
-    greeter_ref.tell(msg);
+    // Send a message: tell() copies it into the mailbox and returns at once
+    msg::greet greeting;
+    greeting.name = "World";
+    greeter.tell(greeting);
 
-    // Give time for processing (in real apps, use proper synchronization)
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    // Shutdown gracefully
+    // Shut down: queued messages are handled first
     cas::system::shutdown();
     cas::system::wait_for_shutdown();
 
@@ -363,15 +377,17 @@ private:
 
 ```cpp
 void on_start() override {
-    // Method 1: Member function pointer (recommended)
+    // Member function (recommended): the handler reads like ordinary code
     handler<my_message>(&my_actor::on_my_message);
 
-    // Method 2: Lambda
-    handler<other_message>([this](const other_message& msg) {
-        // Handle inline
+    // A lambda works too, for one-liners
+    handler<other_message>([this](const other_message& _msg) {
+        m_counter += _msg.count;
     });
 }
 ```
+
+One handler per message type; the message type is the dispatch key.
 
 ### Actor Naming
 
@@ -440,6 +456,23 @@ protected:
     }
 };
 ```
+
+### Delivery and Ordering
+
+Every message sent to a live actor is delivered exactly once.
+**Messages from one sender are handled in the order they were sent**: if
+sending A happens before sending B (from the same actor or the same thread),
+the receiver handles A first. Two exceptions, both deliberate:
+
+- A `call()` is handled **next**, ahead of queued messages, so an RPC gets an
+  answer even from an actor that is behind.
+- There is **no order between different senders**: their messages may
+  interleave. If that matters, route one through the other or carry a sequence
+  number.
+
+The guarantee is enforced by the mailbox (INVARIANT 3 in
+[doc/INVARIANTS.md](doc/INVARIANTS.md)); details in
+[doc/40_message_passing.md](doc/40_message_passing.md).
 
 ### Checking Actor State
 
@@ -845,6 +878,39 @@ dedicated thread. Call `accept_*`/`reject_*` only from the actor's own
 | `cas::inline_actor` | Caller's thread | None (no queue) | Synchronous transforms |
 | `cas::stateful_actor` | Shared pool | as `cas::actor` | State machines (selective receive) |
 | `cas::stateful_fast_actor` | Dedicated thread | as `cas::fast_actor` | Latency-critical state machines |
+| `cas::zeromq_relay_actor` | Dedicated thread, blocks on its socket | ZeroMQ + network | Talking to other processes |
+
+## Inter-Process Messaging (ZeroMQ)
+
+`cas::zeromq_relay_actor` connects actor systems in different processes or
+machines (ROUTER/DEALER over `tcp://`, `ipc://` or `inproc://`). Actors talk to
+it with ordinary messages: `zeromq_bind` / `zeromq_connect`, `zeromq_route`
+(deliver incoming messages of a type to an actor), `zeromq_send`; replies are
+matched by correlation id.
+
+- **Own thread, no polling delay.** The relay blocks on its socket and wakes
+  for both network traffic and actor messages
+  (`spin_before_block_us` trades CPU for a little latency).
+- **Sends never block the relay.** When a peer is slow or gone,
+  `send_policy` decides: `queue` (default - held and retried in order, up to
+  `send_timeout_ms` / `max_queued_sends`), `fail` (reported at once) or
+  `drop` (counted; for market data where only the latest matters).
+- **Errors go to the actor that sent the request** (`zeromq_error`), and to the
+  routes.
+
+```cpp
+auto relay = cas::system::create<cas::zeromq_relay_actor>();
+cas::system::start();
+
+cas::msg::zeromq_connect connect;
+connect.endpoint = "tcp://localhost:5555";
+relay.tell(connect);
+```
+
+Build with `-DENABLE_ZEROMQ=ON` (needs cppzmq). Full reference:
+[doc/130_zeromq_relay.md](doc/130_zeromq_relay.md); runnable walkthrough:
+`tutorials 18`. The relay sits on a transport layer so that further transports
+can follow ZeroMQ.
 
 ## Common Patterns
 

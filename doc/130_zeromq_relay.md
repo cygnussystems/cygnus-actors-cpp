@@ -57,8 +57,7 @@ void run_server() {
     bind.endpoint = "tcp://*:5555";
     relay.tell(bind);
 
-    // Keep the process alive. Do not call wait_for_shutdown() yet: it stops the
-    // timer manager, and the relay polls its socket from a periodic timer
+    // Keep the process alive until your signal handler clears g_running
     while (g_running) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
